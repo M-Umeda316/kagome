@@ -1,0 +1,69 @@
+"""Tests for calculator backends."""
+import numpy as np
+import pytest
+
+from src.backends.toy import ToyCalculator
+
+
+class TestToyCalculator:
+
+    def test_energy_and_forces_shape(self):
+        calc = ToyCalculator()
+        positions = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        energy, forces = calc.compute(positions, ['C', 'C'])
+        assert isinstance(energy, float)
+        assert forces.shape == (2, 3)
+
+    def test_newtons_third_law(self):
+        calc = ToyCalculator()
+        positions = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        _, forces = calc.compute(positions, ['C', 'C'])
+        np.testing.assert_allclose(forces[0], -forces[1], atol=1e-12)
+
+    def test_name(self):
+        assert ToyCalculator().name == 'toy'
+
+
+class TestASEAdapter:
+
+    @pytest.fixture
+    def _skip_no_ase(self):
+        pytest.importorskip('ase')
+
+    @pytest.mark.usefixtures('_skip_no_ase')
+    def test_adapter_with_lj(self):
+        from ase.calculators.lj import LennardJones
+        from src.backends.ase_adapter import ASECalculatorAdapter
+
+        calc = ASECalculatorAdapter(LennardJones(), name='ase-lj')
+        positions = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        energy, forces = calc.compute(positions, ['Ar', 'Ar'])
+
+        assert isinstance(energy, float)
+        assert forces.shape == (2, 3)
+        assert calc.name == 'ase-lj'
+
+
+class TestMACEBackend:
+
+    @pytest.fixture
+    def _skip_no_mace(self):
+        pytest.importorskip('mace')
+
+    @pytest.mark.usefixtures('_skip_no_mace')
+    @pytest.mark.slow
+    def test_mace_compute(self):
+        from src.backends.mace_backend import create_mace_calculator
+
+        calc = create_mace_calculator(model='small', device='cpu')
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+        ])
+        energy, forces = calc.compute(positions, ['C', 'C'])
+
+        assert isinstance(energy, float)
+        assert forces.shape == (2, 3)
+        # C-C at 1.5 Å should have repulsive forces
+        np.testing.assert_allclose(forces[0], -forces[1], atol=1e-6)
+        assert 'mace' in calc.name

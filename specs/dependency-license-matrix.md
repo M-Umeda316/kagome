@@ -2,9 +2,14 @@
 
 | Component | Category | License / status | Commercial-use default? | Notes |
 |---|---|---|---|---|
-| OpenMM | engine | review and pin exact upstream license before release | yes, after verification | candidate default engine |
-| OpenMM-Torch | plugin | MIT | yes | good candidate for default bias implementation |
-| PyTorch | runtime | verify exact distribution terms in release process | yes, after verification | runtime dependency |
+| MACE (code) | MLIP framework | MIT | **yes** | default uMLIP backend |
+| MACE-MP-0 model | pretrained weights | MIT | **yes** | 89-element universal potential, default model |
+| MACE-OFF23 model | pretrained weights | ASL (restricted) | no | organic chemistry focus, ASL restricts commercial use |
+| MACE-MH/OMAT models | pretrained weights | ASL (restricted) | no | do not use as default |
+| ASE | atomistic toolkit | LGPL-2.1 | yes (import-only) | used as Calculator adapter layer |
+| PyTorch | ML runtime | BSD-3-Clause | **yes** | required by MACE |
+| OpenMM | engine | MIT + LGPL (GPU) | yes | optional, not required for MACE path |
+| OpenMM-Torch | plugin | MIT | yes | optional, not required for MACE path |
 | PFP / Matlantis-related backend | model/backend | blocked_pending_review | no | do not enable by default without explicit rights confirmation |
 | Toy backend | internal test backend | internal code | yes | required for open/public CI |
 | matplotlib | plotting (optional) | PSF (permissive) | yes | optional `[plot]` dependency, not required at runtime |

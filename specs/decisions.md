@@ -91,3 +91,21 @@ Use this template for each decision.
 - Scientific risk: Low for formation. Dissociation events are not handled (atoms are not re-added).
 - Licensing/commercial impact: None.
 - Follow-up: Add re-addition logic for dissociation if needed for curing simulations.
+
+## 2026-06-12: MACE-MP-0 as default uMLIP backend
+- Context: Phase 3 requires a real uMLIP to run paper-faithful simulations. The paper uses PFP/Matlantis (proprietary, blocked_pending_review).
+- Paper anchor: Section 2, "universal machine learning interatomic potential."
+- Decision: Use MACE-MP-0 (small) as the default commercial-safe uMLIP backend via ASE adapter.
+- Alternatives considered: (a) PFP/Matlantis — blocked, proprietary. (b) CHGNet — Apache 2.0, viable but less mature for organic systems. (c) ANI — older, limited element coverage.
+- Scientific risk: Medium. MACE-MP-0 is trained on Materials Project bulk crystals, not optimized for organic/polymer systems. Quantitative agreement with PFP-based paper results is not expected. Qualitative trends (bond formation under bias, energy landscape) should be comparable.
+- Licensing/commercial impact: MACE code MIT, MACE-MP-0 weights MIT. Fully commercial-safe. ASE is LGPL-2.1 (import-only, commercial-safe). PyTorch is BSD-3.
+- Follow-up: Consider MACE-OFF23 for organic chemistry (ASL license — not commercial-safe as default). Consider fine-tuning MACE on polymer-relevant data.
+
+## 2026-06-12: Using MACE instead of paper's PFP backend
+- Context: The paper uses PFP (Preferred Potential / Matlantis) which is not available under a clear commercial license.
+- Paper anchor: Section 2-3, all simulations use PFP as the uMLIP.
+- Decision: Acknowledge that results will differ quantitatively from the paper due to different uMLIP backend. The TDBB workflow, equations, and selection logic are backend-independent per design. Qualitative trend matching is the Phase 3 acceptance criterion.
+- Alternatives considered: None that are both commercially safe and directly comparable to PFP.
+- Scientific risk: High for quantitative reproduction. Low for qualitative workflow validation.
+- Licensing/commercial impact: Enables open, redistributable default configuration.
+- Follow-up: If PFP access is confirmed by user, add as opt-in backend behind feature flag.

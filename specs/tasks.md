@@ -26,9 +26,12 @@
 - [x] Implement conversion tracking (Eq. 11-12) (`src/analysis/conversion.py`)
 - [x] Implement depth-resolved reaction density (Eq. 13) (`src/analysis/density.py`)
 
-## Phase 3: Scientific reproduction (TODO)
-- [ ] Validate commercial status of target backends (OpenMM, PyTorch)
-- [ ] Add real MLIP backend (OpenMM-Torch or ASE adapter)
-- [ ] Run paper-faithful config with real backend
-- [ ] Generate Figs. 2-6 from real simulation output
-- [ ] Document deviations from paper in `specs/decisions.md`
+## Phase 3: Scientific reproduction
+- [x] Validate commercial status of target backends → MACE-MP-0 (MIT), ASE (LGPL), PyTorch (BSD)
+- [x] Add ASE calculator adapter (`src/backends/ase_adapter.py`)
+- [x] Add MACE-MP-0 backend (`src/backends/mace_backend.py`)
+- [x] Run MACE+TDBB end-to-end (`scripts/run_mace.py`)
+- [x] Generate figures from real MLIP output
+- [x] Document backend choice and deviations in `specs/decisions.md`
+- [ ] Run paper-faithful scale (2000-step phases, larger systems) for trend matching
+- [ ] Add MACE-OFF or fine-tuned model for organic polymer accuracy

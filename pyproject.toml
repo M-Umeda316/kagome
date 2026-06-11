@@ -19,9 +19,16 @@ dev = [
 plot = [
     "matplotlib>=3.7",
 ]
+mace = [
+    "mace-torch>=0.3",
+    "ase>=3.22",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
