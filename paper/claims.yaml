@@ -1,0 +1,86 @@
+paper:
+  title: Ready-to-Use Polymerization Simulations Combining Universal Machine Learning Interatomic Potential with Time-Dependent Bond Boosting for Polymer and Interface Design
+  source: arXiv:2511.22874
+  authors: [Mori, Tonogai, Miyazaki, Hayashi, Takayanagi]
+  date: 2025-11-28
+
+equations:
+  - id: eq1
+    desc: Original bond-boost potential (baseline)
+    formula: V(r) = f1·(1 - exp(-f2·(r - r0)²))
+  - id: eq2
+    desc: Time-dependent bond formation potential
+    formula: V^f(r,t) = f1(t)·(1 - exp(-f2·(r - r0)²))
+    implemented_in: src/boost/tdbb.py::formation_potential
+  - id: eq3
+    desc: Time-dependent bond dissociation potential
+    formula: V^d(r,t) = f1(t)·exp(-f2·r²)
+    implemented_in: src/boost/tdbb.py::dissociation_potential
+  - id: eq4
+    desc: Target distance from vdW radii
+    formula: r0 = λ·Σ r_a^vdw
+    implemented_in: src/boost/tdbb.py::target_distance
+  - id: eq5
+    desc: Time-dependent boost amplitude with cap
+    formula: f1(t) = min(γ·t, f1_max)
+    implemented_in: src/boost/tdbb.py::boost_amplitude
+  - id: eq6
+    desc: Reactive atomic group definition
+    formula: G_X = {a | a ∈ X}
+    implemented_in: src/reactive/groups.py::ReactiveGroup
+  - id: eq7
+    desc: Candidate reaction group selection with distance bounds
+    formula: G_ijkl filtered by r_ab ∈ [r_min, r_max] for pairs in P
+    implemented_in: src/reactive/selection.py::find_candidates
+  - id: eq8
+    desc: Total bias potential over selected groups
+    formula: ΔV = Σ_groups Σ_pairs [fp·V^f + (1-fp)·V^d]
+    implemented_in: src/boost/tdbb.py::total_bias
+
+claims:
+  - id: method.tdbb.core
+    type: method
+    status: implemented
+    summary: Time-dependent bond boosting is the paper-critical method and must be reproduced faithfully.
+    evidence:
+      equations: [2, 3, 4, 5, 8]
+      figures: []
+    implementation_targets:
+      - src/boost/tdbb.py
+      - tests/unit/test_tdbb.py
+
+  - id: workflow.selection
+    type: workflow
+    status: implemented
+    summary: Reactive group definition and non-overlapping proximity-based candidate selection are required parts of the workflow.
+    evidence:
+      equations: [6, 7]
+      figures: [1]
+    implementation_targets:
+      - src/reactive/groups.py
+      - src/reactive/selection.py
+      - tests/unit/test_selection.py
+
+  - id: workflow.schedule
+    type: workflow
+    status: implemented
+    summary: The simulation alternates biased and unbiased segments using a fixed schedule.
+    evidence:
+      equations: []
+      figures: [1]
+    implementation_targets:
+      - src/workflows/polymerization.py
+      - configs/boost/paper_faithful.yaml
+
+  - id: eval.qualitative
+    type: evaluation
+    status: implemented
+    summary: Initial reproduction success can be qualitative-trend matching before exact quantitative agreement.
+    evidence:
+      equations: [9, 10, 11, 12, 13]
+      figures: [2, 3, 4, 5, 6]
+    implementation_targets:
+      - specs/acceptance-criteria.md
+      - scripts/reproduce_figures.py
+      - src/analysis/conversion.py
+      - src/analysis/density.py

@@ -1,0 +1,5 @@
+eval:
+  name: smoke
+  save_interval: 100
+  emit_manifest: true
+  save_candidate_history: true

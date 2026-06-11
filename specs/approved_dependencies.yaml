@@ -1,0 +1,16 @@
+software:
+  - name: openmm
+    status: review_required
+    required_evidence: upstream_license_url
+  - name: openmm-torch
+    status: approved
+    evidence: MIT
+  - name: pytorch
+    status: review_required
+    required_evidence: pinned_distribution_terms
+models:
+  - name: toy
+    status: approved
+  - name: pfp
+    status: blocked_pending_review
+    reason: commercial/public default status not yet approved for this repository
