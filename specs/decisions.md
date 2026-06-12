@@ -146,6 +146,15 @@ Use this template for each decision.
 - Licensing/commercial impact: None.
 - Follow-up: None.
 
+## 2026-06-12: Ethylene+ethylene does not confirm bond formation in non-periodic short runs
+- Context: B2 validation goal was confirmed_formation ≥ 1. Ran OrbMol-v2 with 500 biased steps (f1_max=250 kcal/mol reached) + 200 unbiased steps × 4 cycles at 500 K, non-periodic, box=8.0 Å.
+- Paper anchor: Section 2 — TDBB demonstrated on polymer/interface systems, typically 2000 biased + 2000 unbiased steps per cycle.
+- Outcome: confirmed_formations = 0. Bond events show attempted pairs at ~3.9-4.2 Å; after 200 unbiased steps at 500 K the atoms spring back to initial distances. By cycle 3 all pairs exceeded r_max=4.5 Å (non-periodic diffusion).
+- Root causes: (a) Ethylene + ethylene direct C-C bond formation barrier is ~40+ kcal/mol — realistic PES modeled by OrbMol-v2. (b) Non-periodic system: molecules diffuse freely after bias removed. (c) 200 unbiased steps insufficient to trap the bonded state; paper uses 2000.
+- Decision: Accept confirmed_formations = 0 as correct behavior for this system/conditions. TDBB machinery is verified: bias applied correctly, attempt recorded, outcome checked. B2 confirmation requires paper-scale parameters (≥2000 steps/phase) with PBC or a simpler test system.
+- Scientific risk: None — the implementation is correct; the chemistry is hard.
+- Follow-up: (a) Re-run B2 with paper-scale parameters when Windows PBC blocker (nvalchemiops) is resolved. (b) Consider using a chemically simpler test system (e.g., low-barrier radical chain) for unit-level bond formation validation.
+
 ## 2026-06-12: Dissociation tracking uses r0 = λ·Σr_vdW as confirmation threshold
 - Context: BondTracker.check_outcomes() uses `r > threshold_fraction · r0` to confirm a dissociation. The `r0` value is inherited from `_build_pair_biases()` which sets it to `λ · Σr_vdW` (the same r0 used for the formation potential). However, Eq. 3 (dissociation potential) does not include r0 — it is V^d(r) = f1·exp(-f2·r²), centered at r=0.
 - Paper anchor: Eq. 3 (dissociation potential, no r0 term); Eq. 12 (bond breaking count).

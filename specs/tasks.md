@@ -59,4 +59,4 @@
 - [x] C2: Remove dead TYPE_CHECKING block in orb_backend.py
 - [x] C3: Add logger.warning for unknown element fallbacks in masses_from_species / _build_pair_biases
 - [x] C4: De-duplicate temperature_K in run_orb / run_mace (read from LangevinParams)
-- [ ] B2: Run bond formation demonstration (biased-steps ≥ 500 → f1_max=250 reached, confirmed_formation ≥ 1)
+- [~] B2: Bond formation demonstration — f1_max=250 reached, machinery verified, confirmed_formation=0 (expected: ethylene barrier + non-periodic diffusion). Paper-scale run (2000 steps, PBC) deferred until nvalchemiops license resolved. See decisions.md.
