@@ -1,4 +1,4 @@
-"""Trajectory reader: loads JSONL trajectory files."""
+"""Trajectory and bond-event readers."""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.io.trajectory import TrajectoryFrame
+from src.reactive.bonds import BondEvent
 
 
 def read_trajectory(path: Path) -> tuple[dict[str, Any], list[TrajectoryFrame]]:
@@ -28,3 +29,23 @@ def read_trajectory(path: Path) -> tuple[dict[str, Any], list[TrajectoryFrame]]:
                 frames.append(TrajectoryFrame(**record))
 
     return header, frames
+
+
+def read_bond_events(path: Path) -> list[BondEvent]:
+    """Read a bonds.jsonl file written by BondTracker.save().
+
+    Returns a list of BondEvent records.  Returns an empty list if the file
+    does not exist (no bond events were recorded).
+    """
+    if not path.exists():
+        return []
+
+    events: list[BondEvent] = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            events.append(BondEvent(**record))
+    return events

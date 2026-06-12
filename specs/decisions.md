@@ -146,6 +146,15 @@ Use this template for each decision.
 - Licensing/commercial impact: None.
 - Follow-up: None.
 
+## 2026-06-12: Dissociation tracking uses r0 = λ·Σr_vdW as confirmation threshold
+- Context: BondTracker.check_outcomes() uses `r > threshold_fraction · r0` to confirm a dissociation. The `r0` value is inherited from `_build_pair_biases()` which sets it to `λ · Σr_vdW` (the same r0 used for the formation potential). However, Eq. 3 (dissociation potential) does not include r0 — it is V^d(r) = f1·exp(-f2·r²), centered at r=0.
+- Paper anchor: Eq. 3 (dissociation potential, no r0 term); Eq. 12 (bond breaking count).
+- Decision: Use r0 = λ·Σr_vdW as the confirmation threshold for dissociation. Rationale: this is the equilibrium bond length estimate already computed for the pair, so `r > 1.3·r0` is a reasonable proxy for "bond is broken."
+- Alternatives considered: (a) Use the equilibrium distance from the actual MD trajectory at the time of attempt — more accurate but requires storing the attempt distance. (b) Use covalent radii sum — not directly available in current VDW_RADII table. (c) Fixed absolute threshold (e.g. 3.0 Å) — less transferable.
+- Scientific risk: Medium. The threshold affects what counts as a confirmed dissociation. Current dissociation templates are unused in practice (all active reactions are formation), so this has no immediate impact. Requires tuning when dissociation reactions are introduced.
+- Licensing/commercial impact: None.
+- Follow-up: If dissociation tracking is activated, validate threshold against MLIP potential energy profiles.
+
 ## 2026-06-12: OrbMol-v2 as recommended backend for organic/polymer systems
 - Context: MACE-MP-0 is trained on Materials Project bulk crystals and carries medium scientific risk for organic polymer systems (documented above). The paper uses PFP/Matlantis (proprietary, blocked). A better-fit open alternative is needed.
 - Paper anchor: Section 2 — uMLIP must handle organic polymer chemistry (C, H, N, O).

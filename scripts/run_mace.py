@@ -14,11 +14,11 @@ from pathlib import Path
 
 import numpy as np
 
+from scripts._systems import build_ethylene_box, build_template_and_groups
 from src.backends.mace_backend import create_mace_calculator
 from src.boost.tdbb import TDBBParams
 from src.integrators.langevin import LangevinIntegrator, LangevinParams
 from src.reactive.bonds import BondTracker
-from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
 from src.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
@@ -30,91 +30,6 @@ logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def _np_min_dist(center: np.ndarray, mol_positions: np.ndarray) -> float:
-    """Minimum distance between a point and a set of positions."""
-    return float(np.min(np.linalg.norm(mol_positions - center, axis=1)))
-
-
-def build_ethylene_box(
-    n_molecules: int,
-    box_size: float,
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, list[str]]:
-    """Place n ethylene (C2H4) molecules randomly in a periodic box.
-
-    Each ethylene: C=C bond ~1.34 Å, 4 H atoms at ~1.08 Å from C.
-    """
-    from ase.build import molecule
-
-    ethylene = molecule('C2H4')
-    template_pos = ethylene.get_positions()
-    template_symbols = ethylene.get_chemical_symbols()
-
-    all_positions = []
-    all_species = []
-    min_sep = 3.0
-
-    for i in range(n_molecules):
-        for _attempt in range(200):
-            offset = rng.uniform(2.0, box_size - 2.0, size=3)
-            if all(_np_min_dist(offset, prev) >= min_sep for prev in all_positions):
-                break
-
-        angle = rng.uniform(0, 2 * np.pi, size=3)
-
-        c, s = np.cos(angle[2]), np.sin(angle[2])
-        rot = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-
-        centered = template_pos - template_pos.mean(axis=0)
-        rotated = centered @ rot.T
-        placed = rotated + offset
-
-        all_positions.append(placed)
-        all_species.extend(template_symbols)
-
-    positions = np.vstack(all_positions)
-    return positions, all_species
-
-
-def build_template_and_groups(
-    n_molecules: int,
-) -> tuple[ReactionTemplate, dict[str, ReactiveGroup]]:
-    """Define reactive groups for ethylene C=C bond activation.
-
-    Group A: first C of each C=C pair (carbon index 0 per molecule)
-    Group B: second C of each C=C pair (carbon index 1 per molecule)
-
-    The TDBB formation bias will try to bring C atoms from different
-    molecules closer, simulating chain growth initiation.
-    """
-    atoms_per_mol = 6  # C2H4: 2C + 4H
-
-    # C atoms that can form inter-molecular bonds
-    group_a_indices = [i * atoms_per_mol + 0 for i in range(n_molecules)]
-    group_b_indices = [i * atoms_per_mol + 1 for i in range(n_molecules)]
-
-    template = ReactionTemplate(
-        name='vinyl_polymerization',
-        groups=['C_donor', 'C_acceptor'],
-        pairs=[
-            PairSpec(
-                group_a='C_donor',
-                group_b='C_acceptor',
-                is_formation=True,
-                r_min=1.6,
-                r_max=4.5,
-            ),
-        ],
-    )
-
-    groups = {
-        'C_donor': ReactiveGroup('C_donor', group_a_indices),
-        'C_acceptor': ReactiveGroup('C_acceptor', group_b_indices),
-    }
-
-    return template, groups
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description='MACE TDBB polymerization')
     parser.add_argument('--output-dir', type=Path, default=Path('runs/mace'))
@@ -123,21 +38,23 @@ def main() -> None:
     parser.add_argument('--n-cycles', type=int, default=5)
     parser.add_argument('--biased-steps', type=int, default=100)
     parser.add_argument('--unbiased-steps', type=int, default=100)
+    parser.add_argument('--box-size', type=float, default=None)
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
 
     logger.info('Building %d-ethylene system...', args.n_molecules)
-    box_size = 8.0 + args.n_molecules * 1.5
+    box_size = args.box_size or (8.0 + args.n_molecules * 1.5)
     positions, species = build_ethylene_box(args.n_molecules, box_size, rng)
     cell = np.diag([box_size, box_size, box_size])
 
-    logger.info('System: %d atoms (%s), box=%.1f Å',
+    logger.info('System: %d atoms (%s), box=%.1f A',
                 len(species), ', '.join(sorted(set(species))), box_size)
 
     template, groups = build_template_and_groups(args.n_molecules)
 
+    langevin_params = LangevinParams(temperature_K=500.0, friction_per_fs=0.01)
     config = PolymerizationConfig(
         timestep_fs=0.25,
         biased_steps=args.biased_steps,
@@ -157,11 +74,7 @@ def main() -> None:
     logger.info('Loading MACE-MP-0 (%s)...', args.device)
     calc = create_mace_calculator(model='small', device=args.device)
 
-    langevin = LangevinIntegrator(LangevinParams(
-        temperature_K=500.0,
-        friction_per_fs=0.01,
-    ))
-
+    langevin = LangevinIntegrator(langevin_params)
     tracker = BondTracker(threshold_fraction=1.3)
 
     state = SimulationState(
@@ -172,7 +85,7 @@ def main() -> None:
         masses=masses_from_species(species),
     )
 
-    logger.info('Starting TDBB polymerization: %d cycles × (%d biased + %d unbiased)',
+    logger.info('Starting TDBB polymerization: %d cycles x (%d biased + %d unbiased)',
                 config.n_cycles, config.biased_steps, config.unbiased_steps)
 
     wf = PolymerizationWorkflow(
@@ -196,7 +109,7 @@ def main() -> None:
         'n_atoms': len(species),
         'box_size_A': box_size,
         'backend': calc.name,
-        'temperature_K': 500.0,
+        'temperature_K': langevin_params.temperature_K,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'cycles': len(logs) // 2,
@@ -219,7 +132,10 @@ def main() -> None:
 
     logger.info('Done. Outputs in %s', args.output_dir)
     print(f'\nTo generate figures:')
-    print(f'  python scripts/reproduce_figures.py --trajectory {args.output_dir / "trajectory.jsonl"} --output-dir {args.output_dir / "figures"}')
+    print(f'  python scripts/reproduce_figures.py '
+          f'--trajectory {args.output_dir / "trajectory.jsonl"} '
+          f'--bonds {args.output_dir / "bonds.jsonl"} '
+          f'--output-dir {args.output_dir / "figures"}')
 
 
 if __name__ == '__main__':

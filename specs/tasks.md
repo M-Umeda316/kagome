@@ -47,3 +47,16 @@
 - [x] Document OrbMol-v2 decision in `specs/decisions.md`
 - [x] Update `specs/dependency-license-matrix.md`
 - Note: PBC disabled (cell=None) — nvalchemiops triggers torch.compile on Windows (blocked_pending_review)
+
+## Phase 5: Robustness and analysis wiring (DONE)
+- [x] A1: Fix molecule placement overlap detection (atom-vs-atom, RuntimeError on failure)
+- [x] A1: Extract shared ethylene builders to `scripts/_systems.py`
+- [x] A2: Add instantaneous temperature to TrajectoryFrame and workflow output
+- [x] B1: Add `read_bond_events()` to `src/io/readers.py`
+- [x] B1: Wire α(t) conversion plot and temperature plot into reproduce_figures.py
+- [x] B3: Document dissociation r0 assumption in specs/decisions.md
+- [x] C1: Fix EV_TO_KCAL_MOL precision (23.0609 → 23.060548, NIST CODATA 2018)
+- [x] C2: Remove dead TYPE_CHECKING block in orb_backend.py
+- [x] C3: Add logger.warning for unknown element fallbacks in masses_from_species / _build_pair_biases
+- [x] C4: De-duplicate temperature_K in run_orb / run_mace (read from LangevinParams)
+- [ ] B2: Run bond formation demonstration (biased-steps ≥ 500 → f1_max=250 reached, confirmed_formation ≥ 1)

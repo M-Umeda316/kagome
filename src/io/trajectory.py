@@ -23,6 +23,7 @@ class TrajectoryFrame:
     positions: list[list[float]]
     n_candidates: int = 0
     n_selected: int = 0
+    temperature_K: float = 0.0
 
 
 class TrajectoryWriter:

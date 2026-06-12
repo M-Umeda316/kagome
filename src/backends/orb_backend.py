@@ -9,17 +9,14 @@ charge and spin must be set on ASE Atoms via atoms.info.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 
 from src.backends.base import Calculator
 
-if TYPE_CHECKING:
-    pass
-
-EV_TO_KCAL_MOL = 23.0609
+# 1 eV = 23.060548 kcal/mol (NIST CODATA 2018)
+EV_TO_KCAL_MOL = 23.060548
 
 
 def create_orb_calculator(

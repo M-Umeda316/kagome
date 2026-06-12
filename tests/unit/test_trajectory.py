@@ -7,11 +7,13 @@ from src.io.trajectory import TrajectoryFrame, TrajectoryWriter
 from src.io.readers import read_trajectory
 
 
-def _make_frame(step: int = 0, cycle: int = 0, phase: str = 'biased') -> TrajectoryFrame:
+def _make_frame(step: int = 0, cycle: int = 0, phase: str = 'biased',
+                temperature_K: float = 0.0) -> TrajectoryFrame:
     return TrajectoryFrame(
         step=step, time_fs=step * 0.25, phase=phase, cycle=cycle,
         energy_base=-10.0, energy_bias=5.0, energy_total=-5.0,
         positions=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        temperature_K=temperature_K,
     )
 
 
@@ -97,3 +99,31 @@ class TestReadTrajectory:
         header, frames = read_trajectory(path)
         assert header['n_atoms'] == 1
         assert len(frames) == 0
+
+    def test_temperature_roundtrip(self, tmp_path):
+        path = tmp_path / 'traj.jsonl'
+        writer = TrajectoryWriter(path, species=['C', 'C'], save_interval=1)
+        writer.write_frame(_make_frame(step=0, temperature_K=312.5))
+        writer.write_frame(_make_frame(step=1, temperature_K=487.3))
+        writer.close()
+
+        _, frames = read_trajectory(path)
+        assert frames[0].temperature_K == pytest.approx(312.5)
+        assert frames[1].temperature_K == pytest.approx(487.3)
+
+    def test_temperature_defaults_to_zero(self, tmp_path):
+        """Old trajectories without temperature_K field are read without error."""
+        import json
+        path = tmp_path / 'traj.jsonl'
+        header = {'_header': True, 'species': ['C'], 'n_atoms': 1, 'save_interval': 1}
+        frame = {
+            'step': 0, 'time_fs': 0.0, 'phase': 'biased', 'cycle': 0,
+            'energy_base': 0.0, 'energy_bias': 0.0, 'energy_total': 0.0,
+            'positions': [[0.0, 0.0, 0.0]],
+        }
+        path.write_text(
+            json.dumps(header) + '\n' + json.dumps(frame) + '\n',
+            encoding='utf-8',
+        )
+        _, frames = read_trajectory(path)
+        assert frames[0].temperature_K == 0.0

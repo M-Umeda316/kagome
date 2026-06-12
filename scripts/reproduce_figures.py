@@ -2,6 +2,7 @@
 
 Usage:
     python scripts/reproduce_figures.py --trajectory runs/smoke/trajectory.jsonl --output-dir runs/smoke/figures
+    python scripts/reproduce_figures.py --trajectory ... --bonds ... --output-dir ...
 
 Paper: arXiv:2511.22874, Figs. 2-6 require time-series of energy and conversion.
 """
@@ -22,7 +23,8 @@ except ImportError:
         'Install with: pip install pfpoly[plot]'
     )
 
-from src.io.readers import read_trajectory
+from src.analysis.conversion import conversion_timeseries
+from src.io.readers import read_bond_events, read_trajectory
 
 
 def plot_energy_vs_step(
@@ -46,7 +48,6 @@ def plot_energy_vs_step(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Figure 1: Total energy with phase coloring
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
 
     if np.any(biased_mask):
@@ -71,7 +72,6 @@ def plot_energy_vs_step(
     plt.close(fig)
     print(f'Saved energy_vs_step.png/.pdf to {output_dir}')
 
-    # Figure 2: Base energy only
     fig2, ax = plt.subplots(figsize=(10, 4))
     ax.plot(steps, e_base, linewidth=0.5, color='tab:green')
     ax.set_xlabel('Step')
@@ -84,9 +84,78 @@ def plot_energy_vs_step(
     print(f'Saved base_energy.png/.pdf to {output_dir}')
 
 
+def plot_temperature_vs_step(
+    trajectory_path: Path,
+    output_dir: Path,
+    target_temperature_K: float | None = None,
+) -> None:
+    """Plot instantaneous kinetic temperature vs. step (NVT validation)."""
+    _, frames = read_trajectory(trajectory_path)
+
+    temps = [f.temperature_K for f in frames]
+    if not any(t > 0.0 for t in temps):
+        print('No temperature data in trajectory — skipping temperature plot.')
+        return
+
+    steps = np.array([f.step for f in frames])
+    temp_arr = np.array(temps)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(steps, temp_arr, linewidth=0.5, color='tab:purple', label='T_inst')
+    if target_temperature_K is not None:
+        ax.axhline(target_temperature_K, color='k', linestyle='--',
+                   linewidth=0.8, label=f'T_target={target_temperature_K:.0f} K')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Temperature (K)')
+    ax.set_title('Instantaneous kinetic temperature')
+    ax.legend()
+    fig.tight_layout()
+    for fmt in ('png', 'pdf'):
+        fig.savefig(output_dir / f'temperature_vs_step.{fmt}', dpi=150)
+    plt.close(fig)
+    print(f'Saved temperature_vs_step.png/.pdf to {output_dir}')
+
+
+def plot_conversion_vs_step(
+    bonds_path: Path,
+    n_total_sites: int,
+    output_dir: Path,
+) -> None:
+    """Plot conversion α(t) from bonds.jsonl.  Eq. 11-12."""
+    events = read_bond_events(bonds_path)
+
+    if not events:
+        print(f'No bond events in {bonds_path} — skipping conversion plot.')
+        return
+
+    step_range, alpha = conversion_timeseries(events, n_total_sites)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(step_range, alpha * 100.0, linewidth=1.0, color='tab:brown')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Conversion α (%)')
+    ax.set_title('Degree of polymerization vs. simulation step (Eq. 11-12)')
+    ax.set_ylim(0, 105)
+    fig.tight_layout()
+    for fmt in ('png', 'pdf'):
+        fig.savefig(output_dir / f'conversion_vs_step.{fmt}', dpi=150)
+    plt.close(fig)
+    print(f'Saved conversion_vs_step.png/.pdf to {output_dir}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Reproduce figures from trajectory')
     parser.add_argument('--trajectory', type=Path, required=True)
+    parser.add_argument('--bonds', type=Path, default=None,
+                        help='bonds.jsonl from BondTracker (optional, for conversion plot)')
+    parser.add_argument('--n-total-sites', type=int, default=None,
+                        help='Total reactive sites for conversion (auto-detected from header if omitted)')
+    parser.add_argument('--target-temperature', type=float, default=None,
+                        help='Target temperature in K for reference line in temperature plot')
     parser.add_argument('--output-dir', type=Path, default=Path('runs/smoke/figures'))
     args = parser.parse_args()
 
@@ -95,6 +164,12 @@ def main() -> None:
         return
 
     plot_energy_vs_step(args.trajectory, args.output_dir)
+    plot_temperature_vs_step(args.trajectory, args.output_dir, args.target_temperature)
+
+    if args.bonds is not None:
+        header, _ = read_trajectory(args.trajectory)
+        n_total = args.n_total_sites or header.get('n_atoms', 0)
+        plot_conversion_vs_step(args.bonds, n_total, args.output_dir)
 
 
 if __name__ == '__main__':

@@ -24,6 +24,7 @@ from src.reactive.selection import (
     score_candidates,
     select_non_overlapping,
 )
+from src.units import FORCE_CONV, KB
 from src.workflows.manifest import RunManifest
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,32 @@ class PolymerizationConfig:
 
 
 def masses_from_species(species: list[str]) -> NDArray[np.floating]:
-    return np.array([ATOMIC_MASSES.get(s, 12.0) for s in species], dtype=np.float64)
+    masses = []
+    for s in species:
+        if s not in ATOMIC_MASSES:
+            logger.warning('Unknown element %r — using fallback mass 12.0 amu', s)
+        masses.append(ATOMIC_MASSES.get(s, 12.0))
+    return np.array(masses, dtype=np.float64)
+
+
+def _instant_temperature(
+    velocities: NDArray[np.floating],
+    masses: NDArray[np.floating] | None,
+) -> float:
+    """Instantaneous kinetic temperature from velocities.
+
+    KE[kcal/mol] = 0.5 * sum(m * v^2) / FORCE_CONV
+    T[K] = 2 * KE / (3 * N * KB)
+    """
+    n = velocities.shape[0]
+    if n == 0:
+        return 0.0
+    if masses is not None:
+        ke_amu = 0.5 * float(np.sum(masses[:, np.newaxis] * velocities ** 2))
+    else:
+        ke_amu = 0.5 * float(np.sum(velocities ** 2))
+    ke_kcal = ke_amu / FORCE_CONV
+    return 2.0 * ke_kcal / (3.0 * n * KB)
 
 
 class PolymerizationWorkflow:
@@ -214,6 +240,7 @@ class PolymerizationWorkflow:
                     positions=state.positions.tolist(),
                     n_candidates=len(candidates),
                     n_selected=len(selected),
+                    temperature_K=_instant_temperature(state.velocities, state.masses),
                 ))
 
         return CycleLog(
@@ -264,6 +291,7 @@ class PolymerizationWorkflow:
                     energy_bias=0.0,
                     energy_total=energy,
                     positions=state.positions.tolist(),
+                    temperature_K=_instant_temperature(state.velocities, state.masses),
                 ))
 
         if self.bond_tracker:
@@ -301,8 +329,13 @@ class PolymerizationWorkflow:
                 atom_a = cand.atom_indices[idx_a_pos]
                 atom_b = cand.atom_indices[idx_b_pos]
 
-                vdw_a = VDW_RADII.get(species[atom_a], 1.5)
-                vdw_b = VDW_RADII.get(species[atom_b], 1.5)
+                sp_a, sp_b = species[atom_a], species[atom_b]
+                if sp_a not in VDW_RADII:
+                    logger.warning('Unknown element %r — using fallback vdW radius 1.5 Å', sp_a)
+                if sp_b not in VDW_RADII:
+                    logger.warning('Unknown element %r — using fallback vdW radius 1.5 Å', sp_b)
+                vdw_a = VDW_RADII.get(sp_a, 1.5)
+                vdw_b = VDW_RADII.get(sp_b, 1.5)
                 r0 = target_distance(
                     np.array([vdw_a, vdw_b]),
                     self.config.tdbb.lambda_vdw,
