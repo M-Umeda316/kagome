@@ -35,3 +35,15 @@
 - [x] Document backend choice and deviations in `specs/decisions.md`
 - [ ] Run paper-faithful scale (2000-step phases, larger systems) for trend matching
 - [ ] Add MACE-OFF or fine-tuned model for organic polymer accuracy
+
+## Phase 4: OrbMol-v2 backend (DONE)
+- [x] Validate commercial status: orb-models (Apache-2.0), weights (Apache-2.0)
+- [x] Add OrbMol-v2 backend (`src/backends/orb_backend.py`)
+- [x] Add orb optional dependency in pyproject.toml
+- [x] Add backend unit test (`tests/unit/test_backends.py::TestOrbBackend`)
+- [x] Fix unit system (FORCE_CONV), integrator pre/post split, MIC, pair key normalization
+- [x] Run OrbMol-v2+TDBB end-to-end (`scripts/run_orb.py`)
+- [x] Generate figures from OrbMol-v2 output → biased/unbiased energy pattern confirmed
+- [x] Document OrbMol-v2 decision in `specs/decisions.md`
+- [x] Update `specs/dependency-license-matrix.md`
+- Note: PBC disabled (cell=None) — nvalchemiops triggers torch.compile on Windows (blocked_pending_review)

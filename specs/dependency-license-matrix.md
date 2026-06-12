@@ -11,6 +11,9 @@
 | OpenMM | engine | MIT + LGPL (GPU) | yes | optional, not required for MACE path |
 | OpenMM-Torch | plugin | MIT | yes | optional, not required for MACE path |
 | PFP / Matlantis-related backend | model/backend | blocked_pending_review | no | do not enable by default without explicit rights confirmation |
+| orb-models (code) | MLIP framework | Apache-2.0 | **yes** | OrbMol calculator; optional `[orb]` dependency |
+| OrbMol-v2 model | pretrained weights | Apache-2.0 | **yes** | trained on OMol25 + OPoly26 (polymer data); recommended for organic/polymer systems |
+| nvalchemiops | PME electrostatics | blocked_pending_review | no | NVIDIA; required only for periodic OrbMol-v2 with long-range Coulomb; license unconfirmed |
 | Toy backend | internal test backend | internal code | yes | required for open/public CI |
 | matplotlib | plotting (optional) | PSF (permissive) | yes | optional `[plot]` dependency, not required at runtime |
 

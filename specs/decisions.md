@@ -145,3 +145,12 @@ Use this template for each decision.
 - Scientific risk: None — pure bug fix.
 - Licensing/commercial impact: None.
 - Follow-up: None.
+
+## 2026-06-12: OrbMol-v2 as recommended backend for organic/polymer systems
+- Context: MACE-MP-0 is trained on Materials Project bulk crystals and carries medium scientific risk for organic polymer systems (documented above). The paper uses PFP/Matlantis (proprietary, blocked). A better-fit open alternative is needed.
+- Paper anchor: Section 2 — uMLIP must handle organic polymer chemistry (C, H, N, O).
+- Decision: Add OrbMol-v2 as an optional backend, recommended for organic/polymer runs. MACE-MP-0 remains the default for general-purpose use. OrbMol-v2 is trained on OMol25 + OPoly26 (polymer-specific DFT data, ωB97M-V/def2-TZVPD), directly relevant to this project.
+- Alternatives considered: (a) MACE-OFF23 — ASL license, not commercial-safe. (b) ANI-2x — limited element coverage. (c) Fine-tuning MACE — requires curated data and GPU, higher effort.
+- Scientific risk: Low-medium. OPoly26 training set includes polymer-relevant chemistry. Long-range Coulomb via PME adds physics absent in MACE-MP-0. Quantitative agreement with PFP still not expected, but qualitative trends should improve.
+- Licensing/commercial impact: orb-models code Apache-2.0, OrbMol-v2 weights Apache-2.0. Fully commercial-safe. Note: nvalchemiops (for periodic PME) is blocked_pending_review; non-periodic runs or runs without long-range Coulomb do not require it.
+- Follow-up: (a) Test nvalchemiops license for periodic system support. (b) Benchmark OrbMol-v2 vs MACE-MP-0 on ethylene system. (c) Windows compatibility is not guaranteed by upstream — verify before making it default anywhere.

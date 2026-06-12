@@ -23,6 +23,10 @@ mace = [
     "mace-torch>=0.3",
     "ase>=3.22",
 ]
+orb = [
+    "orb-models>=0.7",
+    "ase>=3.22",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

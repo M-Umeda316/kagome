@@ -67,3 +67,27 @@ class TestMACEBackend:
         # C-C at 1.5 Å should have repulsive forces
         np.testing.assert_allclose(forces[0], -forces[1], atol=1e-6)
         assert 'mace' in calc.name
+
+
+class TestOrbBackend:
+
+    @pytest.fixture
+    def _skip_no_orb(self):
+        pytest.importorskip('orb_models')
+
+    @pytest.mark.usefixtures('_skip_no_orb')
+    @pytest.mark.slow
+    def test_orb_compute(self):
+        from src.backends.orb_backend import create_orb_calculator
+
+        calc = create_orb_calculator(device='cpu')
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+        ])
+        energy, forces = calc.compute(positions, ['C', 'C'])
+
+        assert isinstance(energy, float)
+        assert forces.shape == (2, 3)
+        np.testing.assert_allclose(forces[0], -forces[1], atol=1e-4)
+        assert 'orb' in calc.name
