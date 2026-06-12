@@ -30,6 +30,11 @@ logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 logger = logging.getLogger(__name__)
 
 
+def _np_min_dist(center: np.ndarray, mol_positions: np.ndarray) -> float:
+    """Minimum distance between a point and a set of positions."""
+    return float(np.min(np.linalg.norm(mol_positions - center, axis=1)))
+
+
 def build_ethylene_box(
     n_molecules: int,
     box_size: float,
@@ -40,21 +45,23 @@ def build_ethylene_box(
     Each ethylene: C=C bond ~1.34 Å, 4 H atoms at ~1.08 Å from C.
     """
     from ase.build import molecule
-    from ase import Atoms
 
     ethylene = molecule('C2H4')
     template_pos = ethylene.get_positions()
     template_symbols = ethylene.get_chemical_symbols()
-    atoms_per_mol = len(template_symbols)
 
     all_positions = []
     all_species = []
+    min_sep = 3.0
 
     for i in range(n_molecules):
-        offset = rng.uniform(2.0, box_size - 2.0, size=3)
+        for _attempt in range(200):
+            offset = rng.uniform(2.0, box_size - 2.0, size=3)
+            if all(_np_min_dist(offset, prev) >= min_sep for prev in all_positions):
+                break
+
         angle = rng.uniform(0, 2 * np.pi, size=3)
 
-        # Simple rotation around z-axis
         c, s = np.cos(angle[2]), np.sin(angle[2])
         rot = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 

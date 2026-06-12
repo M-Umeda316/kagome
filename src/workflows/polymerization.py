@@ -93,6 +93,7 @@ class PolymerizationWorkflow:
         self.integrator = integrator or VelocityVerletIntegrator()
         self.bond_tracker = bond_tracker
         self.logs: list[CycleLog] = []
+        self._processed_formations: int = 0
 
     def run(
         self,
@@ -150,19 +151,30 @@ class PolymerizationWorkflow:
         rng: np.random.Generator,
         writer: TrajectoryWriter | None,
     ) -> CycleLog:
-        candidates = find_candidates(self.template, self.groups, state.positions)
-        scored = score_candidates(candidates, self.template, state.positions)
+        candidates = find_candidates(
+            self.template, self.groups, state.positions, state.cell,
+        )
+        scored = score_candidates(candidates, self.template, state.positions, state.cell)
         selected = select_non_overlapping(scored)
 
         active_pairs = self._build_pair_biases(selected, state.species)
 
         if self.bond_tracker:
             self.bond_tracker.record_attempts(
-                active_pairs, state.positions, state.step, cycle,
+                active_pairs, state.positions, state.step, cycle, state.cell,
             )
 
         boost = BoostState()
-        total_bias_energy = 0.0
+        dt = self.config.timestep_fs
+        last_bias_energy = 0.0
+
+        base_energy, base_forces = self.calculator.compute(
+            state.positions, state.species, state.cell,
+        )
+        bias_energy, bias_forces = total_bias(
+            active_pairs, state.positions, boost, self.config.tdbb, state.cell,
+        )
+        current_forces = base_forces + bias_forces
 
         for step_in_phase in range(self.config.biased_steps):
             boost.advance(
@@ -171,26 +183,29 @@ class PolymerizationWorkflow:
                 self.config.tdbb.f1_max_dissociation,
             )
 
+            self.integrator.pre_force(
+                state.positions, state.velocities, current_forces,
+                state.masses, dt, rng,
+            )
+
             base_energy, base_forces = self.calculator.compute(
                 state.positions, state.species, state.cell,
             )
             bias_energy, bias_forces = total_bias(
-                active_pairs, state.positions, boost, self.config.tdbb,
+                active_pairs, state.positions, boost, self.config.tdbb, state.cell,
             )
+            current_forces = base_forces + bias_forces
+            last_bias_energy = bias_energy
 
-            total_forces = base_forces + bias_forces
-            total_bias_energy = bias_energy
-
-            self.integrator.step(
-                state.positions, state.velocities, total_forces,
-                state.masses, self.config.timestep_fs, rng,
+            self.integrator.post_force(
+                state.velocities, current_forces, state.masses, dt,
             )
             state.step += 1
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
                     step=state.step,
-                    time_fs=state.step * self.config.timestep_fs,
+                    time_fs=state.step * dt,
                     phase='biased',
                     cycle=cycle,
                     energy_base=base_energy,
@@ -206,7 +221,7 @@ class PolymerizationWorkflow:
             steps=self.config.biased_steps,
             n_candidates=len(candidates),
             n_selected=len(selected),
-            bias_energy=total_bias_energy,
+            bias_energy=last_bias_energy,
         )
 
     def _run_unbiased_phase(
@@ -216,21 +231,33 @@ class PolymerizationWorkflow:
         rng: np.random.Generator,
         writer: TrajectoryWriter | None,
     ) -> CycleLog:
+        dt = self.config.timestep_fs
+
+        energy, forces = self.calculator.compute(
+            state.positions, state.species, state.cell,
+        )
+        current_forces = forces
+
         for step_in_phase in range(self.config.unbiased_steps):
+            self.integrator.pre_force(
+                state.positions, state.velocities, current_forces,
+                state.masses, dt, rng,
+            )
+
             energy, forces = self.calculator.compute(
                 state.positions, state.species, state.cell,
             )
+            current_forces = forces
 
-            self.integrator.step(
-                state.positions, state.velocities, forces,
-                state.masses, self.config.timestep_fs, rng,
+            self.integrator.post_force(
+                state.velocities, current_forces, state.masses, dt,
             )
             state.step += 1
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
                     step=state.step,
-                    time_fs=state.step * self.config.timestep_fs,
+                    time_fs=state.step * dt,
                     phase='unbiased',
                     cycle=cycle,
                     energy_base=energy,
@@ -240,7 +267,7 @@ class PolymerizationWorkflow:
                 ))
 
         if self.bond_tracker:
-            self.bond_tracker.check_outcomes(state.positions, state.step)
+            self.bond_tracker.check_outcomes(state.positions, state.step, state.cell)
 
         return CycleLog(
             cycle=cycle, phase='unbiased',
@@ -250,12 +277,14 @@ class PolymerizationWorkflow:
     def _update_groups_after_cycle(self, state: SimulationState) -> None:
         if not self.bond_tracker:
             return
-        for ev in self.bond_tracker.confirmed_formations():
+        formations = self.bond_tracker.confirmed_formations()
+        for ev in formations[self._processed_formations:]:
             for group in self.groups.values():
                 if ev.atom_a in group.atom_indices:
                     group.remove_atom(ev.atom_a)
                 if ev.atom_b in group.atom_indices:
                     group.remove_atom(ev.atom_b)
+        self._processed_formations = len(formations)
 
     def _build_pair_biases(
         self,

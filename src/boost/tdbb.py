@@ -5,10 +5,12 @@ Equations 2-5, 8.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
+
+from src.geometry import minimum_image
 
 
 @dataclass
@@ -121,6 +123,7 @@ def total_bias(
     positions: NDArray[np.floating],
     state: BoostState,
     params: TDBBParams,
+    cell: NDArray[np.floating] | None = None,
 ) -> tuple[float, NDArray[np.floating]]:
     """Compute total bias energy and forces for all active pairs.
 
@@ -133,7 +136,9 @@ def total_bias(
     energy = 0.0
 
     for pair in pairs:
-        r_vec = positions[pair.idx_b] - positions[pair.idx_a]
+        r_vec = minimum_image(
+            positions[pair.idx_b] - positions[pair.idx_a], cell,
+        )
         r = np.linalg.norm(r_vec)
         if r < 1e-12:
             continue

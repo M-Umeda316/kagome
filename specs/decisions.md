@@ -109,3 +109,39 @@ Use this template for each decision.
 - Scientific risk: High for quantitative reproduction. Low for qualitative workflow validation.
 - Licensing/commercial impact: Enables open, redistributable default configuration.
 - Follow-up: If PFP access is confirmed by user, add as opt-in backend behind feature flag.
+
+## 2026-06-12: MD unit system — LAMMPS 'real' style with explicit conversion
+- Context: Integrators were computing accel = F/m without unit conversion. Forces are in kcal/(mol·Å), masses in amu, time in fs. The missing factor (≈4.184e-4) caused ~2390× overestimation of force-driven acceleration, making dynamics non-physical when combining force-driven and thermostat-driven motion.
+- Paper anchor: Section 2 — MD simulations with timestep 0.25 fs, physical masses, NVT ensemble.
+- Decision: Introduce `src/units.py` with FORCE_CONV = 4.184e-4 [Å/fs² per kcal/(mol·Å·amu)]. All integrators multiply F/m by FORCE_CONV. Langevin c2 thermal noise scale includes FORCE_CONV. Kinetic energy conversion: KE[kcal/mol] = 0.5·m·v² / FORCE_CONV.
+- Alternatives considered: (a) Convert forces to eV/Å at the backend boundary — rejected, pfpoly's internal unit is kcal/mol. (b) Dimensionless reduced units — rejected, real-unit MD required for paper reproduction.
+- Scientific risk: None — this is a bug fix, not an approximation. Previous MACE E2E runs produced non-physical trajectories and must be re-run.
+- Licensing/commercial impact: None.
+- Follow-up: None.
+
+## 2026-06-12: Integrator split into pre_force / post_force
+- Context: The single-step integrator used the same forces for both half-kicks in velocity Verlet, giving first-order velocity accuracy. Splitting into pre_force (before force computation) and post_force (after) enables proper second-order velocity Verlet with one force evaluation per step.
+- Paper anchor: Standard MD methodology; Section 2 implies production-quality NVT integration.
+- Decision: Integrator Protocol provides pre_force() and post_force() methods. VelocityVerlet: pre=half-kick+drift, post=half-kick. Langevin BAOAB: pre=B-A-O-A, post=B. Workflow computes forces between the two calls.
+- Alternatives considered: (a) Force-computation callback passed to integrator — rejected, mixes calculator concerns into integrator. (b) Store old/new forces in integrator state — rejected, adds hidden state.
+- Scientific risk: None — strictly more correct than previous implementation.
+- Licensing/commercial impact: None.
+- Follow-up: None.
+
+## 2026-06-12: Minimum image convention for bias and selection distances
+- Context: TDBB bias forces, candidate selection, and bond tracking computed distances from raw coordinates, ignoring periodic boundaries. This is incorrect when atoms cross cell boundaries.
+- Paper anchor: Section 2 — periodic boundary conditions used in all simulations.
+- Decision: Add `src/geometry.py` with `minimum_image()` for orthorhombic cells. Thread `cell` parameter through `total_bias()`, `find_candidates()`, `score_candidates()`, and `BondTracker` methods. Cell=None (non-periodic) is the default, preserving backward compatibility.
+- Alternatives considered: General triclinic MIC — deferred, all current systems use orthorhombic cells.
+- Scientific risk: Low. Orthorhombic MIC is exact for the current box geometry.
+- Licensing/commercial impact: None.
+- Follow-up: Add triclinic MIC if needed for non-cubic cells.
+
+## 2026-06-12: Selection pair key normalization bug fix
+- Context: `find_candidates()` used `(idx_a, idx_b)` as the pair_specs key, but the recursive enumeration only checked `(prev_depth, depth)` where prev_depth < depth. If group_a appeared after group_b in the template's groups list, the key would be (high, low) and the constraint would be silently skipped.
+- Paper anchor: Eq. 7 — all pair distance constraints must be enforced.
+- Decision: Normalize the key to `(min(idx_a, idx_b), max(idx_a, idx_b))`. Added regression tests for reversed group order.
+- Alternatives considered: Storing both orderings — rejected, normalization is simpler and sufficient.
+- Scientific risk: None — pure bug fix.
+- Licensing/commercial impact: None.
+- Follow-up: None.

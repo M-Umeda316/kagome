@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from src.geometry import minimum_image
 from src.reactive.groups import ReactiveGroup, ReactionTemplate, PairSpec
 
 
@@ -25,14 +26,17 @@ def _distance(
     positions: NDArray[np.floating],
     i: int,
     j: int,
+    cell: NDArray[np.floating] | None = None,
 ) -> float:
-    return float(np.linalg.norm(positions[j] - positions[i]))
+    r_vec = minimum_image(positions[j] - positions[i], cell)
+    return float(np.linalg.norm(r_vec))
 
 
 def find_candidates(
     template: ReactionTemplate,
     groups: dict[str, ReactiveGroup],
     positions: NDArray[np.floating],
+    cell: NDArray[np.floating] | None = None,
 ) -> list[Candidate]:
     """Enumerate candidate tuples satisfying distance bounds.  Eq. 7.
 
@@ -46,12 +50,12 @@ def find_candidates(
     for ps in template.pairs:
         idx_a = label_list.index(ps.group_a)
         idx_b = label_list.index(ps.group_b)
-        pair_specs[(idx_a, idx_b)] = ps
+        pair_specs[(min(idx_a, idx_b), max(idx_a, idx_b))] = ps
 
     candidates: list[Candidate] = []
     _enumerate_recursive(
         group_atoms, label_list, pair_specs, positions, candidates,
-        depth=0, chosen=[], chosen_distances={},
+        depth=0, chosen=[], chosen_distances={}, cell=cell,
     )
     return candidates
 
@@ -65,6 +69,7 @@ def _enumerate_recursive(
     depth: int,
     chosen: list[int],
     chosen_distances: dict[tuple[str, str], float],
+    cell: NDArray[np.floating] | None = None,
 ) -> None:
     if depth == len(group_atoms):
         out.append(Candidate(
@@ -82,7 +87,7 @@ def _enumerate_recursive(
             if key not in pair_specs:
                 continue
             ps = pair_specs[key]
-            d = _distance(positions, chosen[prev_depth], atom_idx)
+            d = _distance(positions, chosen[prev_depth], atom_idx, cell)
             if d < ps.r_min or d > ps.r_max:
                 ok = False
                 break
@@ -95,7 +100,7 @@ def _enumerate_recursive(
         merged = {**chosen_distances, **new_distances}
         _enumerate_recursive(
             group_atoms, label_list, pair_specs, positions, out,
-            depth + 1, chosen, merged,
+            depth + 1, chosen, merged, cell=cell,
         )
         chosen.pop()
 
@@ -104,6 +109,7 @@ def score_candidates(
     candidates: list[Candidate],
     template: ReactionTemplate,
     positions: NDArray[np.floating],
+    cell: NDArray[np.floating] | None = None,
 ) -> list[Candidate]:
     """Score each candidate: d = sum of all pair distances.  Sort ascending."""
     label_list = template.groups
@@ -112,7 +118,7 @@ def score_candidates(
         for ps in template.pairs:
             idx_a = label_list.index(ps.group_a)
             idx_b = label_list.index(ps.group_b)
-            d = _distance(positions, c.atom_indices[idx_a], c.atom_indices[idx_b])
+            d = _distance(positions, c.atom_indices[idx_a], c.atom_indices[idx_b], cell)
             total += d
         c.score = total
 

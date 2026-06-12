@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.boost.tdbb import PairBias
+from src.geometry import minimum_image
 
 
 @dataclass
@@ -40,10 +41,14 @@ class BondTracker:
         positions: NDArray[np.floating],
         step: int,
         cycle: int,
+        cell: NDArray[np.floating] | None = None,
     ) -> None:
         self._pending.clear()
         for pair in pairs:
-            r = float(np.linalg.norm(positions[pair.idx_b] - positions[pair.idx_a]))
+            r_vec = minimum_image(
+                positions[pair.idx_b] - positions[pair.idx_a], cell,
+            )
+            r = float(np.linalg.norm(r_vec))
             etype = 'attempted_formation' if pair.is_formation else 'attempted_dissociation'
             self._events.append(BondEvent(
                 step=step, cycle=cycle,
@@ -56,10 +61,14 @@ class BondTracker:
         self,
         positions: NDArray[np.floating],
         step: int,
+        cell: NDArray[np.floating] | None = None,
     ) -> list[BondEvent]:
         confirmed: list[BondEvent] = []
         for pair, cycle in self._pending:
-            r = float(np.linalg.norm(positions[pair.idx_b] - positions[pair.idx_a]))
+            r_vec = minimum_image(
+                positions[pair.idx_b] - positions[pair.idx_a], cell,
+            )
+            r = float(np.linalg.norm(r_vec))
             if pair.is_formation:
                 threshold = self._threshold_fraction * pair.r0
                 if r <= threshold:

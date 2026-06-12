@@ -167,3 +167,42 @@ class TestFourGroupTemplate:
         cands = find_candidates(template, groups, positions)
         assert len(cands) == 1
         assert cands[0].atom_indices == (0, 1, 2, 3)
+
+    def test_reversed_group_order_in_pair(self):
+        """PairSpec with group_b listed before group_a in template.groups
+        must still enforce distance constraints."""
+        template = ReactionTemplate(
+            name='reversed',
+            groups=['X', 'Y'],
+            pairs=[PairSpec(group_a='Y', group_b='X', is_formation=True,
+                            r_min=0.5, r_max=3.0)],
+        )
+        groups = {
+            'X': ReactiveGroup('X', [0]),
+            'Y': ReactiveGroup('Y', [1]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],  # far apart — should be excluded by r_max=3.0
+        ])
+        cands = find_candidates(template, groups, positions)
+        assert len(cands) == 0
+
+    def test_reversed_group_order_accepts_valid(self):
+        """Reversed group order should accept pairs within range."""
+        template = ReactionTemplate(
+            name='reversed',
+            groups=['X', 'Y'],
+            pairs=[PairSpec(group_a='Y', group_b='X', is_formation=True,
+                            r_min=0.5, r_max=3.0)],
+        )
+        groups = {
+            'X': ReactiveGroup('X', [0]),
+            'Y': ReactiveGroup('Y', [1]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],  # within range
+        ])
+        cands = find_candidates(template, groups, positions)
+        assert len(cands) == 1
