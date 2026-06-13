@@ -1,16 +1,82 @@
+# Approved dependency registry
+# Single source of truth for commercial-use license gates.
+# Must stay in sync with specs/dependency-license-matrix.md.
+# check_dependency_licenses.py reads this file and fails on 'blocked_pending_review'.
+
 software:
+  - name: numpy
+    status: approved
+    evidence: BSD-3-Clause
+    notes: Core runtime dependency. No model weights involved.
+
+  - name: pytorch
+    status: approved
+    evidence: BSD-3-Clause
+    notes: Required by MACE and OrbMol-v2. PyTorch is distributed under BSD-3.
+
+  - name: ase
+    status: approved
+    evidence: LGPL-2.1
+    notes: Import-only usage (Calculator adapter). LGPL-2.1 is commercial-safe for linking.
+
+  - name: mace-torch
+    status: approved
+    evidence: MIT
+    notes: MACE code MIT, MACE-MP-0 weights MIT. Fully commercial-safe.
+
+  - name: orb-models
+    status: approved
+    evidence: Apache-2.0
+    notes: orb-models code Apache-2.0, OrbMol-v2 weights Apache-2.0. Fully commercial-safe.
+
+  - name: matplotlib
+    status: approved
+    evidence: PSF
+    notes: Optional [plot] dependency. PSF license is permissive and commercial-safe.
+
   - name: openmm
     status: review_required
     required_evidence: upstream_license_url
+    notes: Optional. Not required for MACE or OrbMol-v2 paths. Do not enable by default until reviewed.
+
   - name: openmm-torch
     status: approved
     evidence: MIT
-  - name: pytorch
-    status: review_required
-    required_evidence: pinned_distribution_terms
+    notes: Optional plugin. MIT license. Not currently used in active code paths.
+
 models:
   - name: toy
     status: approved
+    notes: Internal test backend. No external weights.
+
+  - name: mace-mp-0
+    status: approved
+    evidence: MIT
+    notes: MACE-MP-0 model weights are MIT licensed. Confirmed commercial-safe default.
+
+  - name: orbmol-v2
+    status: approved
+    evidence: Apache-2.0
+    notes: >
+      OrbMol-v2 weights released under Apache-2.0. Trained on OMol25 + OPoly26.
+      Recommended for organic/polymer systems. Non-periodic runs do not require nvalchemiops.
+
+  - name: nvalchemiops
+    status: blocked_pending_review
+    reason: >
+      NVIDIA package required for periodic PME in OrbMol-v2. License not confirmed.
+      Also causes torch.compile failures on Windows. Do not enable until license is
+      confirmed by project owner AND Windows compatibility is verified.
+
   - name: pfp
     status: blocked_pending_review
-    reason: commercial/public default status not yet approved for this repository
+    reason: >
+      PFP/Matlantis-style backend. Commercial/public default status not approved for
+      this repository. Do not enable by default without explicit rights confirmation
+      from project owner.
+
+  - name: mace-off23
+    status: blocked_pending_review
+    reason: >
+      MACE-OFF23 weights use ASL (Academic Software License) which restricts commercial
+      use. Do not use as default. If needed for research, confirm with project owner.

@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.backends.base import Calculator
+from src.geometry import minimum_image
 
 
 class ToyCalculator(Calculator):
@@ -35,7 +36,7 @@ class ToyCalculator(Calculator):
 
         for i in range(n):
             for j in range(i + 1, n):
-                r_vec = positions[j] - positions[i]
+                r_vec = minimum_image(positions[j] - positions[i], cell)
                 r = np.linalg.norm(r_vec)
                 if r < 1e-12:
                     continue

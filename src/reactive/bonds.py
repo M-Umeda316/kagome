@@ -30,7 +30,7 @@ class BondEvent:
 class BondTracker:
     """Tracks bond formation and dissociation events across cycles."""
 
-    def __init__(self, threshold_fraction: float = 1.2) -> None:
+    def __init__(self, threshold_fraction: float = 1.0) -> None:
         self._threshold_fraction = threshold_fraction
         self._events: list[BondEvent] = []
         self._pending: list[tuple[PairBias, int]] = []

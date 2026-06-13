@@ -27,6 +27,12 @@ orb = [
     "orb-models>=0.7",
     "ase>=3.22",
 ]
+fit = [
+    "scipy>=1.10",
+]
+rdkit = [
+    "rdkit>=2023.3",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

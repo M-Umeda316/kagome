@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from src.geometry import wrap_positions
 from src.units import FORCE_CONV, KB
 
 
@@ -36,6 +37,7 @@ class LangevinIntegrator:
         masses: NDArray[np.floating] | None,
         dt: float,
         rng: np.random.Generator,
+        cell: NDArray[np.floating] | None = None,
     ) -> None:
         gamma = self.params.friction_per_fs
         kT = KB * self.params.temperature_K
@@ -58,6 +60,7 @@ class LangevinIntegrator:
         velocities[:] = c1 * velocities + c2 * noise
         # A: half-drift
         positions += 0.5 * dt * velocities
+        wrap_positions(positions, cell)
 
     def post_force(
         self,

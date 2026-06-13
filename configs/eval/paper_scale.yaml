@@ -1,0 +1,11 @@
+eval:
+  name: paper_scale
+  # Paper-faithful schedule: Section 3 Methods, arXiv:2511.22874
+  # biased 2000 steps (500 fs) + unbiased 2000 steps (500 fs) per cycle
+  # Full paper scale requires GPU; CPU estimate ~2-6h for 10 cycles.
+  save_interval: 100
+  emit_manifest: true
+  save_candidate_history: true
+  notes: >
+    Use --biased-steps 2000 --unbiased-steps 2000 with run_mace_pbc.py for paper-faithful runs.
+    On CPU, start with n_cycles=3 to verify trends before committing to a full 10-cycle run.

@@ -1,7 +1,8 @@
 """Conversion tracking from bond events.
 
-Paper: arXiv:2511.22874, Eq. 11-12.
-α(t) = N_reacted(t) / N_total_reactive_sites
+Paper: arXiv:2511.22874.
+- Raw conversion: α = N_reacted / N_total_reactive_sites
+- Eq. 11 (arXiv HTML numbering): α(t) = 1 - exp(-kp_eff * t)  [exponential fit]
 """
 from __future__ import annotations
 
@@ -50,3 +51,55 @@ def conversion_timeseries(
         alpha[i] = conversion(cumulative, n_total_sites)
 
     return step_range, alpha
+
+
+def fit_conversion_exponential(
+    steps: NDArray[np.integer],
+    alpha: NDArray[np.floating],
+    timestep_fs: float = 0.25,
+) -> tuple[float, float]:
+    """Fit α(t) = 1 - exp(-kp_eff * t) and return (kp_eff, r_squared).
+
+    Eq. 11 (arXiv HTML): α(t) = 1 - exp(-kp_eff * t)
+
+    Args:
+        steps:       step indices (integer), shape (N,)
+        alpha:       conversion values in [0, 1], shape (N,)
+        timestep_fs: MD timestep in fs (converts steps -> physical time)
+
+    Returns:
+        kp_eff:    effective polymerization rate constant (1/fs)
+        r_squared: coefficient of determination for the fit quality
+    """
+    try:
+        from scipy.optimize import curve_fit
+    except ImportError as e:
+        raise ImportError(
+            'scipy is required for exponential fitting. '
+            'Install with: pip install pfpoly[fit]'
+        ) from e
+
+    t = steps.astype(np.float64) * timestep_fs  # convert to physical time (fs)
+
+    # Guard: need at least some non-zero alpha and non-trivial data
+    if alpha.max() < 1e-9 or len(t) < 3:
+        return 0.0, 0.0
+
+    # Clip alpha to avoid log(0) in curve_fit internals
+    alpha_clipped = np.clip(alpha, 0.0, 1.0 - 1e-9)
+
+    def model(t_arr: NDArray, kp: float) -> NDArray:
+        return 1.0 - np.exp(-kp * t_arr)
+
+    try:
+        popt, _ = curve_fit(model, t, alpha_clipped, p0=[1e-4], bounds=(0, np.inf), maxfev=5000)
+        kp_eff = float(popt[0])
+    except RuntimeError:
+        return 0.0, 0.0
+
+    residuals = alpha_clipped - model(t, kp_eff)
+    ss_res = float(np.sum(residuals ** 2))
+    ss_tot = float(np.sum((alpha_clipped - alpha_clipped.mean()) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0.0 else 0.0
+
+    return kp_eff, r_squared

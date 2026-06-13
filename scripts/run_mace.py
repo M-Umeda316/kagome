@@ -17,6 +17,7 @@ import numpy as np
 from scripts._systems import build_ethylene_box, build_template_and_groups
 from src.backends.mace_backend import create_mace_calculator
 from src.boost.tdbb import TDBBParams
+from src.integrators.init_velocities import maxwell_boltzmann_velocities
 from src.integrators.langevin import LangevinIntegrator, LangevinParams
 from src.reactive.bonds import BondTracker
 from src.workflows.polymerization import (
@@ -75,14 +76,17 @@ def main() -> None:
     calc = create_mace_calculator(model='small', device=args.device)
 
     langevin = LangevinIntegrator(langevin_params)
-    tracker = BondTracker(threshold_fraction=1.3)
+    tracker = BondTracker()
+
+    masses = masses_from_species(species)
+    velocities = maxwell_boltzmann_velocities(masses, 500.0, rng)
 
     state = SimulationState(
         positions=positions,
-        velocities=np.zeros_like(positions),
+        velocities=velocities,
         species=species,
         cell=cell,
-        masses=masses_from_species(species),
+        masses=masses,
     )
 
     logger.info('Starting TDBB polymerization: %d cycles x (%d biased + %d unbiased)',

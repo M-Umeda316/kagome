@@ -7,6 +7,69 @@ from src.integrators.langevin import LangevinIntegrator, LangevinParams
 from src.units import FORCE_CONV, KB
 
 
+class TestWrapPositions:
+    """Position wrapping via integrators (T-D)."""
+
+    def test_verlet_wraps_with_cell(self):
+        rng = np.random.default_rng(42)
+        integrator = VelocityVerletIntegrator()
+        cell = np.diag([10.0, 10.0, 10.0])
+
+        # Atom at 9.5 with velocity 1.0 A/fs over dt=1.0 -> new pos = 10.5 -> should wrap to 0.5
+        pos = np.array([[9.5, 0.0, 0.0]])
+        vel = np.array([[1.0, 0.0, 0.0]])
+        forces = np.zeros((1, 3))
+        integrator.pre_force(pos, vel, forces, None, dt=1.0, rng=rng, cell=cell)
+
+        assert 0.0 <= pos[0, 0] < 10.0, f'Expected wrapped position, got {pos[0, 0]}'
+
+    def test_verlet_no_wrap_without_cell(self):
+        rng = np.random.default_rng(42)
+        integrator = VelocityVerletIntegrator()
+
+        pos = np.array([[9.5, 0.0, 0.0]])
+        vel = np.array([[1.0, 0.0, 0.0]])
+        forces = np.zeros((1, 3))
+        integrator.pre_force(pos, vel, forces, None, dt=1.0, rng=rng, cell=None)
+
+        assert pos[0, 0] > 10.0, 'Without cell, position should not be wrapped'
+
+    def test_langevin_wraps_with_cell(self):
+        params = LangevinParams(temperature_K=300.0, friction_per_fs=0.001)
+        integrator = LangevinIntegrator(params)
+        rng = np.random.default_rng(42)
+        cell = np.diag([5.0, 5.0, 5.0])
+
+        # Run 100 steps from zero velocities — all positions must stay inside [0, 5)
+        pos = np.array([[4.9, 0.0, 0.0], [0.1, 0.0, 0.0]])
+        vel = np.zeros((2, 3))
+        forces = np.zeros((2, 3))
+        masses = np.array([12.0, 12.0])
+
+        for _ in range(100):
+            integrator.pre_force(pos, vel, forces, masses, dt=0.25, rng=rng, cell=cell)
+            integrator.post_force(vel, forces, masses, dt=0.25)
+
+        assert np.all(pos[:, 0] >= 0.0) and np.all(pos[:, 0] < 5.0)
+
+    def test_all_positions_in_cell_after_many_steps(self):
+        rng = np.random.default_rng(7)
+        integrator = VelocityVerletIntegrator()
+        box = 8.0
+        cell = np.diag([box, box, box])
+
+        n = 20
+        pos = rng.uniform(0, box, (n, 3))
+        vel = rng.standard_normal((n, 3)) * 0.1
+        forces = np.zeros((n, 3))
+
+        for _ in range(500):
+            integrator.pre_force(pos, vel, forces, None, dt=0.25, rng=rng, cell=cell)
+            integrator.post_force(vel, forces, None, dt=0.25)
+
+        assert np.all(pos >= 0.0) and np.all(pos < box)
+
+
 class TestVelocityVerlet:
 
     def test_free_particle(self):

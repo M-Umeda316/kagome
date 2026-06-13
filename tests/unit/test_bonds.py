@@ -81,6 +81,14 @@ class TestBondTracker:
         lines = path.read_text(encoding='utf-8').strip().split('\n')
         assert len(lines) == 1
 
+    def test_default_threshold_is_paper_faithful(self):
+        # Paper: "60% of the sum of their van der Waals radii" = r0 = lambda * sum(vdW)
+        # threshold_fraction=1.0 means threshold = 1.0 * r0 = r0 = 0.6 * sum(vdW)
+        tracker = BondTracker()
+        assert tracker._threshold_fraction == pytest.approx(1.0), (
+            'Default threshold_fraction must be 1.0 (paper: r < 0.6*sum_vdW = r0)'
+        )
+
     def test_multiple_cycles(self):
         tracker = BondTracker(threshold_fraction=1.2)
         pair = self._make_formation_pair(r0=2.0)

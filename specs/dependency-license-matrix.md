@@ -16,6 +16,7 @@
 | nvalchemiops | PME electrostatics | blocked_pending_review | no | NVIDIA; required only for periodic OrbMol-v2 with long-range Coulomb; license unconfirmed |
 | Toy backend | internal test backend | internal code | yes | required for open/public CI |
 | matplotlib | plotting (optional) | PSF (permissive) | yes | optional `[plot]` dependency, not required at runtime |
+| RDKit | cheminformatics | BSD-3-Clause | **yes** | SMILES → 3D via EmbedMolecule + MMFF; used in `[rdkit]` extra for vinyl/AIBN system builder |
 
 ## Policy
 - Software license and model-weight license must both be acceptable.

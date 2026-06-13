@@ -7,7 +7,7 @@ import pytest
 from src.backends.toy import ToyCalculator
 from src.integrators.langevin import LangevinIntegrator, LangevinParams
 from src.io.readers import read_trajectory
-from src.reactive.bonds import BondTracker
+from src.reactive.bonds import BondEvent, BondTracker
 from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
 from src.workflows.polymerization import (
     PolymerizationConfig,
@@ -189,3 +189,93 @@ class TestPolymerizationWorkflow:
         assert len(tracker.events) >= 1
         bonds_path = tmp_path / 'bonds.jsonl'
         assert bonds_path.exists()
+
+
+class TestChainPropagation:
+    """Tests for propagation_map / chain-growth logic in PolymerizationWorkflow."""
+
+    def _make_propagation_setup(self, propagation_map=None):
+        # 3 atoms: 0=radical_C, 1=vinyl_alpha_C, 2=beta_C
+        template = ReactionTemplate(
+            name='radical_vinyl',
+            groups=['radical_C', 'vinyl_alpha_C'],
+            pairs=[PairSpec('radical_C', 'vinyl_alpha_C', is_formation=True, r_min=0.5, r_max=5.0)],
+        )
+        groups = {
+            'radical_C': ReactiveGroup('radical_C', [0]),
+            'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', [1]),
+        }
+        config = PolymerizationConfig(biased_steps=5, unbiased_steps=5, n_cycles=1, seed=7)
+        calc = ToyCalculator()
+        tracker = BondTracker()
+        wf = PolymerizationWorkflow(
+            config, calc, template, groups,
+            bond_tracker=tracker,
+            propagation_map=propagation_map,
+            propagation_target_group='radical_C',
+        )
+        state = SimulationState(
+            positions=np.zeros((3, 3)),
+            velocities=np.zeros((3, 3)),
+            species=['C', 'C', 'C'],
+        )
+        return wf, tracker, groups, state
+
+    def test_beta_added_to_radical_group_after_formation(self):
+        """After confirmed formation (radical+alpha), beta-C joins radical_C."""
+        wf, tracker, groups, state = self._make_propagation_setup(propagation_map={1: 2})
+        tracker._events.append(BondEvent(
+            step=5, cycle=0, atom_a=0, atom_b=1,
+            event_type='confirmed_formation', distance=1.5, r0=2.0,
+        ))
+        wf._update_groups_after_cycle(state)
+        assert 2 in groups['radical_C'].atom_indices
+
+    def test_reacted_atoms_removed(self):
+        """atom_a (radical) and atom_b (alpha) are removed from their groups."""
+        wf, tracker, groups, state = self._make_propagation_setup(propagation_map={1: 2})
+        tracker._events.append(BondEvent(
+            step=5, cycle=0, atom_a=0, atom_b=1,
+            event_type='confirmed_formation', distance=1.5, r0=2.0,
+        ))
+        wf._update_groups_after_cycle(state)
+        assert 0 not in groups['radical_C'].atom_indices
+        assert 1 not in groups['vinyl_alpha_C'].atom_indices
+
+    def test_no_propagation_map_leaves_groups_unchanged_except_removal(self):
+        """Without propagation_map, only removal happens (no beta-C added)."""
+        wf, tracker, groups, state = self._make_propagation_setup(propagation_map=None)
+        tracker._events.append(BondEvent(
+            step=5, cycle=0, atom_a=0, atom_b=1,
+            event_type='confirmed_formation', distance=1.5, r0=2.0,
+        ))
+        wf._update_groups_after_cycle(state)
+        # radical_C should be empty (0 was removed, 2 was never added)
+        assert groups['radical_C'].atom_indices == []
+        assert groups['vinyl_alpha_C'].atom_indices == []
+
+    def test_beta_not_added_twice(self):
+        """If formation fires twice for same alpha-C, beta-C is added only once."""
+        wf, tracker, groups, state = self._make_propagation_setup(propagation_map={1: 2})
+        ev = BondEvent(
+            step=5, cycle=0, atom_a=0, atom_b=1,
+            event_type='confirmed_formation', distance=1.5, r0=2.0,
+        )
+        tracker._events.append(ev)
+        tracker._events.append(ev)
+        wf._update_groups_after_cycle(state)
+        assert groups['radical_C'].atom_indices.count(2) == 1
+
+    def test_processed_formations_advances(self):
+        """_processed_formations is updated so events are not replayed."""
+        wf, tracker, groups, state = self._make_propagation_setup(propagation_map={1: 2})
+        tracker._events.append(BondEvent(
+            step=5, cycle=0, atom_a=0, atom_b=1,
+            event_type='confirmed_formation', distance=1.5, r0=2.0,
+        ))
+        assert wf._processed_formations == 0
+        wf._update_groups_after_cycle(state)
+        assert wf._processed_formations == 1
+        # Second call should not re-process the same event
+        wf._update_groups_after_cycle(state)
+        assert wf._processed_formations == 1

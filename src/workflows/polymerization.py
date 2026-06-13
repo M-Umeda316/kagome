@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 
 from src.backends.base import Calculator
 from src.boost.tdbb import BoostState, PairBias, TDBBParams, target_distance, total_bias
+from src.integrators.mc_barostat import MCBarostat
 from src.integrators.verlet import Integrator, VelocityVerletIntegrator
 from src.io.trajectory import TrajectoryFrame, TrajectoryWriter
 from src.reactive.bonds import BondTracker
@@ -100,6 +101,14 @@ def _instant_temperature(
     return 2.0 * ke_kcal / (3.0 * n * KB)
 
 
+def _integrator_temperature(integrator: object) -> float:
+    """Extract target temperature from a Langevin integrator, or return 300 K."""
+    from src.integrators.langevin import LangevinIntegrator
+    if isinstance(integrator, LangevinIntegrator):
+        return integrator.params.temperature_K
+    return 300.0
+
+
 class PolymerizationWorkflow:
     """Alternating biased/unbiased MD loop for polymerization."""
 
@@ -111,6 +120,9 @@ class PolymerizationWorkflow:
         groups: dict[str, ReactiveGroup],
         integrator: Integrator | None = None,
         bond_tracker: BondTracker | None = None,
+        barostat: MCBarostat | None = None,
+        propagation_map: dict[int, int] | None = None,
+        propagation_target_group: str = 'radical_C',
     ) -> None:
         self.config = config
         self.calculator = calculator
@@ -118,6 +130,9 @@ class PolymerizationWorkflow:
         self.groups = groups
         self.integrator = integrator or VelocityVerletIntegrator()
         self.bond_tracker = bond_tracker
+        self.barostat = barostat
+        self.propagation_map = propagation_map or {}
+        self.propagation_target_group = propagation_target_group
         self.logs: list[CycleLog] = []
         self._processed_formations: int = 0
 
@@ -136,6 +151,8 @@ class PolymerizationWorkflow:
             )
             manifest.save(output_dir / 'manifest.json')
 
+        n_reactive_sites = sum(len(g.atom_indices) for g in self.groups.values())
+
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
             writer = TrajectoryWriter(
@@ -143,6 +160,7 @@ class PolymerizationWorkflow:
                 species=state.species,
                 save_interval=self.config.save_interval,
                 metadata={'config_path': config_path, 'seed': self.config.seed},
+                n_reactive_sites=n_reactive_sites,
             )
 
         rng = np.random.default_rng(self.config.seed)
@@ -211,7 +229,7 @@ class PolymerizationWorkflow:
 
             self.integrator.pre_force(
                 state.positions, state.velocities, current_forces,
-                state.masses, dt, rng,
+                state.masses, dt, rng, state.cell,
             )
 
             base_energy, base_forces = self.calculator.compute(
@@ -227,6 +245,22 @@ class PolymerizationWorkflow:
                 state.velocities, current_forces, state.masses, dt,
             )
             state.step += 1
+
+            if (self.barostat is not None
+                    and state.cell is not None
+                    and self.barostat.should_attempt(step_in_phase)):
+                accepted, new_base_e, new_base_f = self.barostat.try_step(
+                    state.positions, state.species, state.cell,
+                    base_energy, self.calculator, rng,
+                    _integrator_temperature(self.integrator),
+                )
+                if accepted and new_base_f is not None:
+                    base_energy, base_forces = new_base_e, new_base_f
+                    bias_energy, bias_forces = total_bias(
+                        active_pairs, state.positions, boost, self.config.tdbb, state.cell,
+                    )
+                    current_forces = base_forces + bias_forces
+                    last_bias_energy = bias_energy
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -268,7 +302,7 @@ class PolymerizationWorkflow:
         for step_in_phase in range(self.config.unbiased_steps):
             self.integrator.pre_force(
                 state.positions, state.velocities, current_forces,
-                state.masses, dt, rng,
+                state.masses, dt, rng, state.cell,
             )
 
             energy, forces = self.calculator.compute(
@@ -280,6 +314,17 @@ class PolymerizationWorkflow:
                 state.velocities, current_forces, state.masses, dt,
             )
             state.step += 1
+
+            if (self.barostat is not None
+                    and state.cell is not None
+                    and self.barostat.should_attempt(step_in_phase)):
+                accepted, new_e, new_f = self.barostat.try_step(
+                    state.positions, state.species, state.cell,
+                    energy, self.calculator, rng,
+                    _integrator_temperature(self.integrator),
+                )
+                if accepted and new_f is not None:
+                    energy, current_forces = new_e, new_f
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -312,6 +357,17 @@ class PolymerizationWorkflow:
                     group.remove_atom(ev.atom_a)
                 if ev.atom_b in group.atom_indices:
                     group.remove_atom(ev.atom_b)
+            # Chain propagation: beta-C of reacted monomer becomes new radical site.
+            # ev.atom_b = vinyl_alpha_C; propagation_map[alpha] = beta.
+            if self.propagation_map and ev.atom_b in self.propagation_map:
+                beta_idx = self.propagation_map[ev.atom_b]
+                target = self.groups.get(self.propagation_target_group)
+                if target is not None and beta_idx not in target.atom_indices:
+                    target.atom_indices.append(beta_idx)
+                    logger.info(
+                        'Chain propagation: atom %d (beta-C) → %s',
+                        beta_idx, self.propagation_target_group,
+                    )
         self._processed_formations = len(formations)
 
     def _build_pair_biases(

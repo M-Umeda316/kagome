@@ -37,6 +37,39 @@ equations:
     formula: ΔV = Σ_groups Σ_pairs [fp·V^f + (1-fp)·V^d]
     implemented_in: src/boost/tdbb.py::total_bias
 
+  # Eq. 9-13 confirmed from arXiv HTML (2026-06-13). Exact numbering needs PDF verification.
+  - id: eq9
+    desc: Polymerization rate equation (kinetics, post-hoc analysis only — not in sim loop)
+    formula: Rp = -d[M]/dt = kp·[M]·[P*]
+    implemented_in: null
+    notes: Used to compare simulation results to kinetics theory. Not directly computed in workflow.
+
+  - id: eq10
+    desc: Simplified polymerization rate (proportionality form)
+    formula: Rp ∝ [M]·[I]
+    implemented_in: null
+    notes: Used for Carothers-equation comparison and sensitivity analysis (Fig. S4).
+
+  - id: eq11
+    desc: Exponential fitting to conversion curve
+    formula: alpha(t) = 1 - exp(-kp_eff * t)
+    implemented_in: null
+    notes: >
+      Post-hoc curve fitting to alpha(t) data. kp_eff is the apparent propagation rate constant.
+      The raw conversion fraction alpha = N_reacted / N_total is computed from bond events
+      (see src/analysis/conversion.py); eq11 is the analytical fit applied during figure analysis.
+      WARNING: src/analysis/conversion.py docstring incorrectly cites 'Eq. 11-12' for the
+      raw counting formula — the paper's Eq. 11 is actually the fitting formula, not the count.
+      Needs PDF re-verification for correct equation numbering.
+
+  - id: eq12
+    desc: Depth-resolved reaction density profile
+    formula: rho_rxn(z) = N_rxn(z) / (A * dz * N_frames)
+    implemented_in: src/analysis/density.py::reaction_density_profile
+    notes: >
+      Confirmed from HTML. Matches current implementation.
+      WARNING: the docstring in density.py cites this as 'Eq. 13'. Numbering needs PDF check.
+
 claims:
   - id: method.tdbb.core
     type: method

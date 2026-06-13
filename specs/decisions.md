@@ -20,14 +20,15 @@ Use this template for each decision.
 - Licensing/commercial impact: None.
 - Follow-up: Verify against paper supplementary materials if available.
 
-## 2026-06-11: Units convention for gamma
-- Context: Eq. 5 defines f1(t) = γt. With f1 in kcal/mol and t in steps, gamma has units kcal/(mol·step).
-- Paper anchor: Eq. 5, Table of hyperparameters (γ = 1.0).
-- Decision: gamma is in kcal/(mol·step). With gamma=1.0 and f1_max=250 kcal/mol, the ramp saturates at step 250 of a 2000-step biased segment.
-- Alternatives considered: gamma in kcal/(mol·fs), which would saturate at 250 fs = 1000 steps. The difference is quantitative, not qualitative.
-- Scientific risk: Medium. Affects the effective boost ramp rate. Configurable, so can be adjusted.
+## 2026-06-11 (updated 2026-06-13): Units convention for gamma
+- Context: Eq. 5 defines f1(t) = γt. With f1 in kcal/mol, the unit of gamma depends on whether t is in steps or physical time (fs).
+- Paper anchor: Eq. 5, Section 3 Methods (γ = 1.0).
+- Decision (PENDING CONFIRMATION): gamma currently treated as kcal/(mol·step) in code. With gamma=1.0 and f1_max=250 kcal/mol, the ramp saturates at step 250 (62.5 fs) of a 2000-step biased segment.
+- New evidence (2026-06-13, arXiv HTML): arXiv HTML version of the paper implies t in Eq. 5 is physical time (fs), which would make gamma in kcal/(mol·fs). Under that interpretation, saturation occurs at 250 fs = 1000 steps. Both options produce saturation well within the 2000-step biased phase; the qualitative behavior is the same.
+- Alternatives considered: (a) kcal/(mol·step) — current implementation, saturation at step 250. (b) kcal/(mol·fs) — saturation at 1000 steps (250 fs). If (b) is correct, `boost_amplitude` must use `t * timestep_fs` instead of `t`. This change falls under Ask-first trigger 6 (unit system change with scientific impact).
+- Scientific risk: Medium. Current implementation uses 4x faster ramp than (b). Both reach f1_max within biased phase so steady-state dynamics are identical; only the approach-to-saturation differs.
 - Licensing/commercial impact: None.
-- Follow-up: Check if paper specifies gamma units explicitly.
+- Follow-up: ⚠️ MUST confirm gamma unit from the PDF (Section 3 Methods or supplementary table) BEFORE any code change. Do not change boost_amplitude without owner confirmation (Ask-first trigger).
 
 ## 2026-06-11: numpy as sole core dependency
 - Context: The TDBB equations and selection logic are purely numerical.
@@ -73,6 +74,51 @@ Use this template for each decision.
 - Scientific risk: Low. Default remains Verlet for backward compatibility; users opt in to Langevin.
 - Licensing/commercial impact: None.
 - Follow-up: None.
+
+## 2026-06-13: T-G1 vinyl radical polymerization system design
+- Context: Implementing the first realistic chemical system for TDBB. The paper uses vinyl monomers (methyl acrylate etc.) with AIBN initiator; current code only has ethylene without initiator.
+- Paper anchor: Section 3 Methods — radical polymerization systems; Fig. 4-5 (methyl acrylate conversion curves); AIBN initiator described in system preparation.
+- Decision: (a) Model AIBN by pre-placing isobutyronitrile radicals (IBN•) as closed-shell CC(C)C#N with the central C designated as the reactive radical site. AIBN thermal decomposition is not simulated — consistent with common practice in MD studies. (b) Monomer: methyl acrylate (SMILES: C=CC(=O)OC) as the simplest paper-relevant vinyl system. (c) 3D coordinates via RDKit SMILES embedding + MMFF optimization (BSD license, commercial-safe). (d) Chain propagation: after formation (radical_C + vinyl_alpha_C), the vinyl_beta_C is added to radical_C group; implemented via propagation_map dict[int,int] in PolymerizationWorkflow. (e) r_min=1.6, r_max=5.0 Å for candidate selection (same as ethylene template, paper values not stated per-system).
+- Alternatives considered: (a) Simulate AIBN decomposition — adds dissociation complexity, deferred to Phase 10. (b) Use ASE molecule builder — doesn't support arbitrary SMILES; ethylene is the only vinyl monomer available. (c) No chain propagation — α(t) would stop at 1/n_initiators, far from paper trends.
+- Scientific risk: Medium. IBN closed-shell geometry approximation introduces ~1H error on radical C. RDKit geometry is pre-optimized but not relaxed by MACE-MP-0 — short initial relaxation is recommended. Quantitative rate agreement with PFP-based paper results is not expected.
+- Licensing/commercial impact: RDKit (BSD-3 clause, commercial-safe) added as optional dependency. See specs/dependency-license-matrix.md.
+- Follow-up: Extend to other monomers (methacrylate, styrene) by passing different SMILES. Nylon-6,6 requires T-G2 (owner approval).
+
+## 2026-06-13: NPT Monte Carlo barostat (T-B)
+- Context: Paper states "NPT ensemble" for all simulations. No barostat type, target pressure, or coupling constants are specified in the arXiv HTML or Methods section.
+- Paper anchor: "refinement using the PFP uMLIP under the NPT ensemble" (Section 2).
+- Decision: Implement isotropic Monte Carlo barostat (MCBarostat). Frequency=25 steps (OpenMM default). Target pressure=1 atm = 1.4596e-5 kcal/(mol·Å³) (standard atmospheric pressure — implicit assumption, not stated in paper). Max volume change fraction=0.01 per attempt. Acceptance criterion: standard NPT Metropolis (N_atoms included in Jacobian term). Active in both biased and unbiased phases.
+- Alternatives considered: (a) Berendsen — simpler but not a correct NPT ensemble. (b) Parrinello-Rahman — correct but complex to implement and prone to instability during equilibration. (c) MC barostat — correct NPT ensemble, matches OpenMM's default for Langevin+NPT. Selected as most likely to match the paper's implicit implementation.
+- Scientific risk: Medium. Target pressure 1 atm is assumed, not stated. If the paper uses a different pressure or pressure coupling, quantitative volumes will differ. Qualitative workflow behavior (bond formation, α(t) trends) should be unaffected.
+- Licensing/commercial impact: None (internal implementation).
+- Follow-up: Confirm target pressure from paper PDF or supplementary materials if available. The barostat step interval (frequency=25) should be tunable.
+
+## 2026-06-13: Maxwell-Boltzmann velocity initialization added (T-C)
+- Context: All run scripts previously initialized velocities to zero (np.zeros). Standard MD practice and NPT equilibration assumption require Maxwell-Boltzmann initialization at the target temperature.
+- Paper anchor: Standard MD methodology; paper uses NPT equilibration which presupposes physically initialized velocities. No explicit statement about velocity initialization in arXiv HTML.
+- Decision: Add `maxwell_boltzmann_velocities()` in `src/integrators/init_velocities.py`. Unit: σ = sqrt(KB·T·FORCE_CONV/m) [Å/fs]. Center-of-mass drift removed by default. Applied to all Langevin-based run scripts (run_mace_pbc.py, run_mace.py, run_orb.py). NVE (run_toy_bond_demo.py) keeps zero initialization since there is no thermostat.
+- Alternatives considered: Rescaling after zero init (velocity rescaling) — rejected, MB is standard.
+- Scientific risk: None — strictly more physically correct than zero initialization.
+- Licensing/commercial impact: None (numpy stdlib only).
+- Follow-up: None.
+
+## 2026-06-13: Position wrapping (PBC fold-back) implemented in integrators (T-D)
+- Context: VelocityVerletIntegrator and LangevinIntegrator updated positions without wrapping back into the primary cell. Over long simulations in PBC, coordinates could drift arbitrarily outside [0, box).
+- Paper anchor: PBC used in all simulations (Section 2).
+- Decision: Add `wrap_positions()` to `src/geometry.py` (in-place modulo operation for orthorhombic cell). Apply after each drift step in `pre_force()` for both integrators. Thread `cell` as an optional keyword argument through `pre_force()` signatures and `PolymerizationWorkflow._run_biased_phase()`/`_run_unbiased_phase()`. Cell=None is a no-op for backward compatibility.
+- Alternatives considered: Wrapping in the workflow rather than integrators — rejected, wrap immediately after drift is physically correct.
+- Scientific risk: None — strictly more correct for PBC runs.
+- Licensing/commercial impact: None.
+- Follow-up: None.
+
+## 2026-06-13: Bond confirmation threshold corrected to paper-faithful value
+- Context: BondTracker default threshold_fraction was 1.2 (effective threshold = 1.2×r0 = 0.72×ΣvdW). All run scripts used 1.3 (effective = 0.78×ΣvdW). The paper explicitly states bonding criterion as "60% of the sum of their van der Waals radii" = r0 = 0.6×ΣvdW.
+- Paper anchor: Section 2, bond confirmation criterion: "60% of the sum of their van der Waals radii."
+- Decision: Change default threshold_fraction to 1.0 in BondTracker.__init__(). Remove explicit threshold_fraction=1.3 from all run scripts (use default). The confirmed threshold is now r <= r0 = lambda*sum(vdW), matching the paper exactly.
+- Alternatives considered: Keep 1.2/1.3 as lenient approximation — rejected, paper is explicit about this value.
+- Scientific risk: Low. toy_bond_demo result (r=1.825 Å, r0=2.04 Å) remains confirmed_formation=1 under new threshold (1.825 < 2.04). For MLIP-based runs this makes confirmation stricter.
+- Licensing/commercial impact: None.
+- Follow-up: None. Tests that explicitly pass threshold_fraction=1.2 remain valid as custom-threshold tests.
 
 ## 2026-06-12: Event-based bond tracking over distance-threshold inference
 - Context: Need to track which bonds form/break for conversion analysis (Eq. 11-12).
@@ -172,3 +218,31 @@ Use this template for each decision.
 - Scientific risk: Low-medium. OPoly26 training set includes polymer-relevant chemistry. Long-range Coulomb via PME adds physics absent in MACE-MP-0. Quantitative agreement with PFP still not expected, but qualitative trends should improve.
 - Licensing/commercial impact: orb-models code Apache-2.0, OrbMol-v2 weights Apache-2.0. Fully commercial-safe. Note: nvalchemiops (for periodic PME) is blocked_pending_review; non-periodic runs or runs without long-range Coulomb do not require it.
 - Follow-up: (a) Test nvalchemiops license for periodic system support. (b) Benchmark OrbMol-v2 vs MACE-MP-0 on ethylene system. (c) Windows compatibility is not guaranteed by upstream — verify before making it default anywhere.
+
+## 2026-06-13: T8.1 toy chemistry system for bond formation demonstration
+- Context: All prior MLIP-based runs (MACE-MP-0, OrbMol-v2) yielded confirmed_formations=0. The TDBB machinery (bias, attempt, confirm) was verified to be correct, but C-C bond formation in ethylene has a ~40+ kcal/mol barrier, and non-periodic systems allow diffusion. A lower-barrier system is needed to demonstrate end-to-end bond formation machinery.
+- Paper anchor: Implicit — the paper demonstrates TDBB produces bond formation. The toy system proves the machinery works before applying it to hard chemistry.
+- Decision: Use a 2-atom system (C–C) with ToyCalculator(epsilon=10 kcal/mol, sigma=2.04 A). The LJ well minimum sits at sigma = r0_CC = lambda_vdw*(vdwC+vdwC) = 0.6*3.4 = 2.04 A, matching the TDBB target distance. epsilon=10 kcal/mol >> kT(500K)=0.99 kcal/mol, so atoms stay trapped in the well during the unbiased phase. BondTracker confirms formation if r <= 1.3*r0 = 2.65 A.
+- Result: confirmed_formations=1 at step=600 with r=1.825 A. T8.1 PASSED. Script: scripts/run_toy_bond_demo.py, runs/toy_bond_demo/.
+- Alternatives considered: (a) MACE+PBC with paper-scale steps — correct chemistry but ethylene barrier is hard and requires long simulation; reserved for T8.2. (b) Radical chain initiation with MACE — more realistic but complex; no commercial-safe low-barrier benchmark available. (c) Lower epsilon toy — rejected: atoms escape LJ well during unbiased phase.
+- Scientific risk: None for demonstrating machinery. The toy backend does not represent real polymer chemistry.
+- Licensing/commercial impact: None (toy backend is internal code).
+- Follow-up: Real-chemistry bond formation via MACE+PBC is T8.2.
+
+## 2026-06-13: 2-group reaction template for vinyl polymerization (simplification of Eq. 6-7)
+- Context: Eq. 6-7 defines a general framework with groups I, J, K, L and pair set P. The current implementation in scripts/_systems.py uses a 2-group template (C_donor, C_acceptor) with 1 pair for vinyl polymerization.
+- Paper anchor: Eq. 6-7, Table of reaction systems (Section 3 and paper examples).
+- Decision: 2-group template is correct for vinyl/radical polymerization. Confirmed from arXiv HTML: vinyl radical polymerization uses Gi (radical carbon) and Gj (alkene carbon), pair {(i,j)} only. The 4-group template (Gi, Gj, Gk, Gl with pairs (i,j),(i,k),(j,l)) is specifically needed for epoxy curing on CuO surface, NOT for vinyl polymerization.
+- Alternatives considered: Implementing the full 4-group template for vinyl — rejected as the chemistry requires only 1 bond-forming pair.
+- Scientific risk: None for vinyl/radical systems. If nylon-6,6 or epoxy systems are added, the template builder must be extended. The selection machinery (src/reactive/selection.py) already supports N groups and arbitrary pair sets; only the test system builder in scripts/_systems.py is system-specific.
+- Licensing/commercial impact: None.
+- Follow-up: When adding nylon-6,6 or epoxy systems, add a corresponding build_*_template() function in scripts/_systems.py. The 4-group epoxy template requires Gi (epoxy O), Gj (1-deg amine N), Gk (2-deg amine N), Gl (surface OH) with P={(i,j),(i,k),(j,l)}.
+
+## 2026-06-13: Equation numbering discrepancy in analysis modules (src/analysis/)
+- Context: During T6.1 (arXiv HTML verification), confirmed that the equation numbering used in src/analysis/conversion.py ("Eq. 11-12") and src/analysis/density.py ("Eq. 13") may not match the actual paper. From the HTML: Eq. 11 = alpha(t) = 1 - exp(-kp_eff*t) (fitting formula), Eq. 12 = depth-resolved density. The raw conversion fraction alpha = N_reacted/N_total appears to be either unnumbered or given a different number.
+- Paper anchor: Eq. 11-12 (per HTML numbering; PDF needed for confirmation).
+- Decision: Do not change docstrings or code until the PDF confirms equation numbers. The functional implementations are correct regardless of numbering. Flag the discrepancy in claims.yaml and paper/notes.md.
+- Alternatives considered: Renaming based on HTML — rejected because HTML rendering may be incomplete for math-heavy sections.
+- Scientific risk: None for computation. Risk is in documentation confusion only.
+- Licensing/commercial impact: None.
+- Follow-up: Verify equation numbers from PDF and update docstrings in src/analysis/conversion.py and src/analysis/density.py accordingly.

@@ -35,6 +35,7 @@ class TrajectoryWriter:
         species: list[str],
         save_interval: int = 100,
         metadata: dict[str, Any] | None = None,
+        n_reactive_sites: int | None = None,
     ) -> None:
         self._path = path
         self._save_interval = save_interval
@@ -42,12 +43,15 @@ class TrajectoryWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(path, 'w', encoding='utf-8')
 
-        header = {
+        header: dict[str, Any] = {
             '_header': True,
             'species': species,
             'n_atoms': len(species),
             'save_interval': save_interval,
         }
+        if n_reactive_sites is not None:
+            # Correct denominator for alpha(t) = N_reacted / N_reactive_sites
+            header['n_reactive_sites'] = n_reactive_sites
         if metadata:
             header['metadata'] = metadata
         self._file.write(json.dumps(header) + '\n')

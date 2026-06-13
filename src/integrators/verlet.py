@@ -6,6 +6,7 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
+from src.geometry import wrap_positions
 from src.units import FORCE_CONV
 
 
@@ -18,6 +19,7 @@ class Integrator(Protocol):
         masses: NDArray[np.floating] | None,
         dt: float,
         rng: np.random.Generator,
+        cell: NDArray[np.floating] | None = None,
     ) -> None:
         """Half-kick + drift.  Call BEFORE force evaluation at new positions."""
         ...
@@ -36,7 +38,7 @@ class Integrator(Protocol):
 class VelocityVerletIntegrator:
     """Standard velocity Verlet (leapfrog split).
 
-    pre_force:  v += 0.5·dt·a(old),  x += dt·v
+    pre_force:  v += 0.5·dt·a(old),  x += dt·v,  wrap(x)
     post_force: v += 0.5·dt·a(new)
     """
 
@@ -48,10 +50,12 @@ class VelocityVerletIntegrator:
         masses: NDArray[np.floating] | None,
         dt: float,
         rng: np.random.Generator,
+        cell: NDArray[np.floating] | None = None,
     ) -> None:
         accel = self._accel(forces, masses)
         velocities += 0.5 * dt * accel
         positions += dt * velocities
+        wrap_positions(positions, cell)
 
     def post_force(
         self,

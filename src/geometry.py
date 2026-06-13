@@ -19,3 +19,18 @@ def minimum_image(
         return r_vec
     box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
     return r_vec - box * np.round(r_vec / box)
+
+
+def wrap_positions(
+    positions: NDArray[np.floating],
+    cell: NDArray[np.floating] | None,
+) -> None:
+    """Wrap atomic positions into the primary orthorhombic cell (in-place).
+
+    positions: (N, 3) array of coordinates (Å), modified in-place
+    cell:      (3, 3) lattice matrix (only diagonal used) or None (no-op)
+    """
+    if cell is None:
+        return
+    box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
+    positions[:] = positions % box

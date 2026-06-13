@@ -14,8 +14,8 @@ from src.backends.base import Calculator
 if TYPE_CHECKING:
     from ase.calculators.calculator import Calculator as ASECalc
 
-# eV -> kcal/mol, eV/Å -> kcal/(mol·Å)
-EV_TO_KCAL_MOL = 23.0609
+# eV -> kcal/mol, eV/Å -> kcal/(mol·Å)  — NIST CODATA 2018
+EV_TO_KCAL_MOL = 23.060548
 
 
 class ASECalculatorAdapter(Calculator):
