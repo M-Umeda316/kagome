@@ -197,3 +197,131 @@ class TestBuildVinylAIBNSystem:
         # Just verify the array is well-formed.
         assert pos.shape[1] == 3
         assert not np.any(np.isnan(pos))
+
+
+class TestNylon66Helpers:
+    """Tests for nylon-6,6 RDKit-based helpers."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    def test_find_terminal_amine_n(self):
+        from scripts._systems import _find_terminal_amine_n
+        indices = _find_terminal_amine_n('NCCCCCCN')
+        assert len(indices) == 2
+
+    def test_find_amine_h(self):
+        from scripts._systems import _find_amine_h, _find_terminal_amine_n
+        n_indices = _find_terminal_amine_n('NCCCCCCN')
+        for n_idx in n_indices:
+            h_idx = _find_amine_h('NCCCCCCN', n_idx)
+            assert h_idx != n_idx
+
+    def test_find_carboxyl_c_and_oh(self):
+        from scripts._systems import _find_carboxyl_c_and_oh
+        pairs = _find_carboxyl_c_and_oh('OC(=O)CCCCC(=O)O')
+        assert len(pairs) == 2
+        for c_idx, oh_idx in pairs:
+            assert c_idx != oh_idx
+
+    def test_carboxyl_oh_has_hydrogen(self):
+        from rdkit import Chem
+        from scripts._systems import _find_carboxyl_c_and_oh
+        smiles = 'OC(=O)CCCCC(=O)O'
+        mol = Chem.MolFromSmiles(smiles)
+        mol = Chem.AddHs(mol)
+        pairs = _find_carboxyl_c_and_oh(smiles)
+        for _, oh_idx in pairs:
+            atom = mol.GetAtomWithIdx(oh_idx)
+            assert atom.GetSymbol() == 'O'
+            h_count = sum(1 for n in atom.GetNeighbors() if n.GetSymbol() == 'H')
+            assert h_count >= 1
+
+    def test_rdkit_3d_diamine_species(self):
+        from scripts._systems import _rdkit_3d
+        positions, species = _rdkit_3d('NCCCCCCN')
+        assert species.count('N') == 2
+        assert species.count('C') == 6
+        assert positions.shape == (len(species), 3)
+
+    def test_rdkit_3d_diacid_species(self):
+        from scripts._systems import _rdkit_3d
+        positions, species = _rdkit_3d('OC(=O)CCCCC(=O)O')
+        assert species.count('O') == 4
+        assert species.count('C') == 6
+        assert positions.shape == (len(species), 3)
+
+
+class TestBuildNylon66System:
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    def test_atom_count(self):
+        from scripts._systems import build_nylon66_system, _rdkit_3d
+        rng = np.random.default_rng(0)
+        n_di, n_ac = 2, 2
+        pos, species, _, _ = build_nylon66_system(
+            n_diamines=n_di, n_diacids=n_ac, box_size=20.0, rng=rng,
+        )
+        n_per_di = len(_rdkit_3d('NCCCCCCN')[1])
+        n_per_ac = len(_rdkit_3d('OC(=O)CCCCC(=O)O')[1])
+        expected = n_di * n_per_di + n_ac * n_per_ac
+        assert pos.shape == (expected, 3)
+        assert len(species) == expected
+
+    def test_group_sizes(self):
+        from scripts._systems import build_nylon66_system
+        rng = np.random.default_rng(1)
+        n_di, n_ac = 3, 3
+        _, _, _, groups = build_nylon66_system(
+            n_diamines=n_di, n_diacids=n_ac, box_size=25.0, rng=rng,
+        )
+        assert len(groups['amine_N'].atom_indices) == n_di * 2
+        assert len(groups['carboxyl_C'].atom_indices) == n_ac * 2
+        assert len(groups['amine_H'].atom_indices) == n_di * 2
+        assert len(groups['carboxyl_OH'].atom_indices) == n_ac * 2
+
+    def test_template_has_4_groups(self):
+        from scripts._systems import build_nylon66_system
+        rng = np.random.default_rng(2)
+        _, _, template, _ = build_nylon66_system(
+            n_diamines=2, n_diacids=2, box_size=20.0, rng=rng,
+        )
+        assert len(template.groups) == 4
+        assert template.groups == ['amine_N', 'carboxyl_C', 'amine_H', 'carboxyl_OH']
+
+    def test_template_has_4_pairs(self):
+        from scripts._systems import build_nylon66_system
+        rng = np.random.default_rng(3)
+        _, _, template, _ = build_nylon66_system(
+            n_diamines=2, n_diacids=2, box_size=20.0, rng=rng,
+        )
+        assert len(template.pairs) == 4
+        formation_pairs = [p for p in template.pairs if p.is_formation]
+        dissociation_pairs = [p for p in template.pairs if not p.is_formation]
+        assert len(formation_pairs) == 2
+        assert len(dissociation_pairs) == 2
+
+    def test_amine_h_bonded_to_amine_n(self):
+        """Each amine_H must be a neighbor of some amine_N in the system."""
+        from rdkit import Chem
+        from scripts._systems import build_nylon66_system, _rdkit_3d
+        rng = np.random.default_rng(4)
+        _, species, _, groups = build_nylon66_system(
+            n_diamines=2, n_diacids=2, box_size=20.0, rng=rng,
+        )
+        for h_idx in groups['amine_H'].atom_indices:
+            assert species[h_idx] == 'H'
+        for n_idx in groups['amine_N'].atom_indices:
+            assert species[n_idx] == 'N'
+
+    def test_no_nan_positions(self):
+        from scripts._systems import build_nylon66_system
+        rng = np.random.default_rng(5)
+        pos, _, _, _ = build_nylon66_system(
+            n_diamines=2, n_diacids=2, box_size=20.0, rng=rng,
+        )
+        assert not np.any(np.isnan(pos))

@@ -46,7 +46,7 @@ def main() -> None:
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
     parser.add_argument('--box-size', type=float, default=10.0)
-    parser.add_argument('--temperature', type=float, default=500.0)
+    parser.add_argument('--temperature', type=float, default=333.0)
     parser.add_argument('--pressure', type=float, default=1.0,
                         help='Target pressure (atm). Default 1.0 atm (assumed, not stated in paper).')
     parser.add_argument('--no-barostat', action='store_true',
@@ -67,10 +67,7 @@ def main() -> None:
 
     template, groups = build_template_and_groups(args.n_molecules)
 
-    langevin_params = LangevinParams(
-        temperature_K=args.temperature,
-        friction_per_fs=0.01,
-    )
+    langevin_params = LangevinParams(temperature_K=args.temperature)
     config = PolymerizationConfig(
         timestep_fs=0.25,
         biased_steps=args.biased_steps,

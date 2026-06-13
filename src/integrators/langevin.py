@@ -16,7 +16,7 @@ from src.units import FORCE_CONV, KB
 @dataclass
 class LangevinParams:
     temperature_K: float = 300.0
-    friction_per_fs: float = 0.01
+    friction_per_fs: float = 0.001
 
 
 class LangevinIntegrator:

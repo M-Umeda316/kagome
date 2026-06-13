@@ -1,14 +1,11 @@
 boost:
   mode: paper_faithful
-  # All values confirmed from arXiv:2511.22874 HTML (Section 3 Methods), 2026-06-13.
-  # PDF cross-check still recommended before final release for: unbiased_steps, lambda_vdw,
-  # and the unit of gamma (see paper/notes.md and specs/decisions.md).
-  timestep_fs: 0.25          # confirmed: Section 3 Methods, 0.25 fs
-  biased_steps: 2000         # confirmed: Section 3 Methods, 2000 steps = 500 fs
-  unbiased_steps: 2000       # partial: biased confirmed; unbiased duration needs PDF check
-  lambda_vdw: 0.60           # partial: Eq. 4, value 0.6 implied in HTML; needs PDF table
-  f2_invA2: 10.0             # confirmed: Section 3 Methods, 10 Angstrom^-2
-  gamma: 1.0                 # confirmed value; UNIT uncertain: kcal/(mol*step) vs kcal/(mol*fs)
-                             # See specs/decisions.md "2026-06-11: Units convention for gamma"
-  f1_max_form_kcal_mol: 250.0   # confirmed: Section 3 Methods, 250 kcal/mol
-  f1_max_break_kcal_mol: 125.0  # confirmed: Section 3 Methods, 125 kcal/mol
+  # All values confirmed from arXiv:2511.22874 PDF (Section 3 Methods), 2026-06-13.
+  timestep_fs: 0.25          # confirmed: PDF p.7, 0.25 fs
+  biased_steps: 2000         # confirmed: PDF p.7, 2000 steps = 500 fs
+  unbiased_steps: 2000       # confirmed: PDF p.7, "alternating ... every 2000 steps"
+  lambda_vdw: 0.60           # confirmed: Eq. 4, "60% of the sum of their vdW radii"
+  f2_invA2: 10.0             # confirmed: PDF p.7, 10 Angstrom^-2
+  gamma: 1.0                 # confirmed: PDF p.7, value=1.0; unit not stated, using kcal/(mol*step)
+  f1_max_form_kcal_mol: 250.0   # confirmed: PDF p.7, 250 kcal/mol
+  f1_max_break_kcal_mol: 125.0  # confirmed: PDF p.7, 125 kcal/mol

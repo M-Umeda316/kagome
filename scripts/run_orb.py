@@ -57,7 +57,7 @@ def main() -> None:
 
     template, groups = build_template_and_groups(args.n_molecules)
 
-    langevin_params = LangevinParams(temperature_K=500.0, friction_per_fs=0.01)
+    langevin_params = LangevinParams(temperature_K=333.0)
     config = PolymerizationConfig(
         timestep_fs=0.25,
         biased_steps=args.biased_steps,
@@ -81,7 +81,7 @@ def main() -> None:
     tracker = BondTracker()
 
     masses = masses_from_species(species)
-    velocities = maxwell_boltzmann_velocities(masses, 500.0, rng)
+    velocities = maxwell_boltzmann_velocities(masses, 333.0, rng)
 
     state = SimulationState(
         positions=positions,

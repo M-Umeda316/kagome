@@ -1,17 +1,14 @@
-"""Radical vinyl polymerization with methyl acrylate + AIBN initiator.
+"""Nylon-6,6 step-growth polycondensation via TDBB.
 
-System:  n_monomers methyl acrylate (C=CC(=O)OC) +
-         n_initiators isobutyronitrile radical model (CC(C)C#N)
+System:  n_diamines hexamethylenediamine + n_diacids adipic acid
 Backend: OrbMol-v2 (default) or MACE-MP-0 via --backend mace
-Ensemble: NPT (Langevin + MC barostat) or NVT with --no-barostat
+Ensemble: NPT (Langevin + MC barostat) at 300 K, 1 atm
 
-Design:  specs/decisions.md — "T-G1: vinyl radical polymerization system"
-Paper:   arXiv:2511.22874, Section 3, Table S1
+Paper anchor: arXiv:2511.22874, PDF p.22, Table S2, Fig. S2, Fig. 4.
 
 Usage:
-    python scripts/run_vinyl_aibn.py --seed 7 --output-dir runs/vinyl_aibn
-    python scripts/run_vinyl_aibn.py --seed 7 --backend mace --output-dir runs/vinyl_aibn_mace
-    python scripts/run_vinyl_aibn.py --seed 7 --no-barostat --output-dir runs/vinyl_aibn_nvt
+    python scripts/run_nylon66.py --seed 7 --output-dir runs/nylon66
+    python scripts/run_nylon66.py --seed 7 --backend mace --output-dir runs/nylon66_mace
 """
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
 import numpy as np
 
-from scripts._systems import build_vinyl_aibn_system
+from scripts._systems import build_nylon66_system
 from src.backends.base import Calculator
 from src.boost.tdbb import TDBBParams
 from src.integrators.init_velocities import maxwell_boltzmann_velocities
@@ -54,24 +51,21 @@ def _create_backend(backend: str, device: str, model: str) -> Calculator:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Radical vinyl polymerization: methyl acrylate + AIBN'
+        description='Nylon-6,6 step-growth polycondensation (TDBB)'
     )
     parser.add_argument('--seed', type=int, default=7)
-    parser.add_argument('--output-dir', type=Path, default=Path('runs/vinyl_aibn'))
-    parser.add_argument('--n-monomers', type=int, default=8)
-    parser.add_argument('--n-initiators', type=int, default=2)
+    parser.add_argument('--output-dir', type=Path, default=Path('runs/nylon66'))
+    parser.add_argument('--n-diamines', type=int, default=10)
+    parser.add_argument('--n-diacids', type=int, default=10)
     parser.add_argument('--n-cycles', type=int, default=3)
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
-    parser.add_argument('--box-size', type=float, default=14.0)
-    parser.add_argument('--temperature', type=float, default=333.0)
-    parser.add_argument('--pressure', type=float, default=1.0,
-                        help='Target pressure (atm). Default 1.0 (assumed, not stated in paper).')
-    parser.add_argument('--no-barostat', action='store_true',
-                        help='Disable NPT barostat and run NVT instead.')
+    parser.add_argument('--box-size', type=float, default=25.0)
+    parser.add_argument('--temperature', type=float, default=300.0)
+    parser.add_argument('--pressure', type=float, default=1.0)
+    parser.add_argument('--no-barostat', action='store_true')
     parser.add_argument('--backend', type=str, default='orb',
-                        choices=['orb', 'mace'],
-                        help='MLIP backend (default: orb = OrbMol-v2)')
+                        choices=['orb', 'mace'])
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
@@ -80,22 +74,23 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
 
     logger.info(
-        'Building vinyl/AIBN system: %d monomers + %d initiators in %.1f Å box...',
-        args.n_monomers, args.n_initiators, args.box_size,
+        'Building nylon-6,6 system: %d diamines + %d diacids in %.1f Å box...',
+        args.n_diamines, args.n_diacids, args.box_size,
     )
-    positions, species, template, groups, propagation_map = build_vinyl_aibn_system(
-        n_monomers=args.n_monomers,
-        n_initiators=args.n_initiators,
+    positions, species, template, groups = build_nylon66_system(
+        n_diamines=args.n_diamines,
+        n_diacids=args.n_diacids,
         box_size=args.box_size,
         rng=rng,
     )
     logger.info(
-        'System: %d atoms total  (%d radical_C, %d vinyl_alpha_C sites)',
+        'System: %d atoms total  (%d amine_N, %d carboxyl_C, %d amine_H, %d carboxyl_OH)',
         len(species),
-        len(groups['radical_C'].atom_indices),
-        len(groups['vinyl_alpha_C'].atom_indices),
+        len(groups['amine_N'].atom_indices),
+        len(groups['carboxyl_C'].atom_indices),
+        len(groups['amine_H'].atom_indices),
+        len(groups['carboxyl_OH'].atom_indices),
     )
-    logger.info('Propagation map: %d entries', len(propagation_map))
 
     cell = np.diag([args.box_size, args.box_size, args.box_size])
 
@@ -150,8 +145,6 @@ def main() -> None:
         integrator=integrator,
         bond_tracker=tracker,
         barostat=barostat,
-        propagation_map=propagation_map,
-        propagation_target_group='radical_C',
     )
     logs = wf.run(
         state,
@@ -163,22 +156,25 @@ def main() -> None:
     n_dissoc = len(tracker.confirmed_dissociations())
     logger.info('Confirmed formations: %d, dissociations: %d', n_form, n_dissoc)
 
-    n_reactive_sites = len(groups['radical_C'].atom_indices) + len(groups['vinyl_alpha_C'].atom_indices)
+    n_reactive_sites = (
+        len(groups['amine_N'].atom_indices)
+        + len(groups['carboxyl_C'].atom_indices)
+    )
     summary = {
         'total_steps': state.step,
-        'n_monomers': args.n_monomers,
-        'n_initiators': args.n_initiators,
+        'n_diamines': args.n_diamines,
+        'n_diacids': args.n_diacids,
         'n_atoms': len(species),
         'box_size_A': args.box_size,
         'cell_periodic': True,
         'backend': calc.name,
-        'temperature_K': langevin_params.temperature_K,
+        'temperature_K': args.temperature,
         'biased_steps': args.biased_steps,
         'unbiased_steps': args.unbiased_steps,
         'n_cycles': args.n_cycles,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
-        'propagation_events': n_form,  # each formation triggers one propagation
+        'n_reactive_sites': n_reactive_sites,
         'logs': [
             {
                 'cycle': log.cycle,
@@ -197,13 +193,12 @@ def main() -> None:
     out_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
     logger.info('Done. Results in %s', args.output_dir)
 
-    n_reactive = args.n_monomers * 2 + args.n_initiators
     print('\nTo generate figures:')
     print(
         f'  python scripts/reproduce_figures.py '
         f'--trajectory {args.output_dir}/trajectory.jsonl '
         f'--bonds {args.output_dir}/bonds.jsonl '
-        f'--n-reactive-sites {n_reactive} '
+        f'--n-reactive-sites {n_reactive_sites} '
         f'--target-temperature {args.temperature} '
         f'--output-dir {args.output_dir}/figures'
     )

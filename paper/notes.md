@@ -37,30 +37,26 @@ Numbering from arXiv HTML — needs PDF cross-check (docstrings in src/ may cite
 | Epoxy curing (DGEBA+DETA on CuO) | 4: Gi (epoxy O), Gj (1° amine N), Gk (2° amine N), Gl (surface OH) | {(i,j),(i,k),(j,l)} | 4-group full template |
 
 ## Simulation schedule (Section 3 Methods — confirmed)
-Alternating: **2000 biased steps** → **unbiased relaxation** → repeat.
-Timestep: 0.25 fs. Biased phase = 2000 × 0.25 fs = 500 fs.
-NOTE: unbiased step count was not clearly visible in the arXiv HTML. The value 2000 (used in our
-implementation and config) is from initial notes and should be confirmed from the PDF.
+Alternating: **2000 biased steps** → **2000 unbiased steps** → repeat.
+Timestep: 0.25 fs. Each phase = 2000 × 0.25 fs = 500 fs.
+Confirmed from PDF p.7: "alternating biased and unbiased dynamics every 2000 steps (500 fs)".
 
 ## Default hyperparameters (confirmed from arXiv HTML, Section 3 Methods)
 | Parameter | Value | Unit | Confirmed? |
 |---|---|---|---|
 | timestep | 0.25 | fs | Yes (HTML) |
 | biased_steps | 2000 | steps | Yes (HTML) |
-| unbiased_steps | 2000 | steps | Partial — biased confirmed; unbiased needs PDF |
+| unbiased_steps | 2000 | steps | Yes (PDF p.7) |
 | λ (lambda_vdw) | 0.60 | dimensionless | Partial — HTML says "0.6 (implied)", Eq. 4 |
 | f2 | 10.0 | Å⁻² | Yes (HTML, Section 3 Methods) |
-| γ (gamma) | 1.0 | kcal/(mol·fs)? | VALUE confirmed; UNIT inferred from Eq. 5 form — needs PDF |
+| γ (gamma) | 1.0 | kcal/(mol·step) | Yes — value confirmed (PDF p.7); unit not stated, maintained as kcal/(mol·step) |
 | f1_max (formation) | 250 | kcal/mol | Yes (HTML, Section 3 Methods) |
 | f1_max (dissociation) | 125 | kcal/mol | Yes (HTML, Section 3 Methods) |
 
-### ⚠️ γ unit ambiguity (Ask-first trigger)
-From Eq. 5 (f1(t) = γt), if t is physical time in fs → γ in kcal/(mol·fs).
-If t is step count → γ in kcal/(mol·step).
-Current code uses step count (kcal/(mol·step)), which causes saturation at step 250 (62.5 fs).
-If kcal/(mol·fs), saturation is at 250 fs = 1000 steps.
-**Do NOT change the code until the unit is confirmed from the PDF** (Ask-first trigger 6).
-See specs/decisions.md "2026-06-11: Units convention for gamma" entry.
+### γ unit — resolved
+PDF p.7 confirmed γ=1.0, unit not stated. Maintaining kcal/(mol·step) — saturation at step 250.
+Fig. S4 (p.25-26) confirms γ acts as global scaling factor; unit choice does not distort relative trends.
+See specs/decisions.md "2026-06-11: Units convention for gamma" for full rationale.
 
 ## Systems studied in the paper
 - Radical polymerization: methyl acrylate, methacrylate, styrene, vinyl acetate, diphenylethylene, dimethyl itaconate

@@ -5,10 +5,12 @@ import numpy as np
 
 from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
 
-# ── vinyl / AIBN system ──────────────────────────────────────────────────────
+# ── SMILES constants ─────────────────────────────────────────────────────────
 
 _MONOMER_SMILES = 'C=CC(=O)OC'   # methyl acrylate
 _INITIATOR_SMILES = 'CC(C)C#N'   # isobutyronitrile (closed-shell IBN radical model)
+_DIAMINE_SMILES = 'NCCCCCCN'     # hexamethylenediamine
+_DIACID_SMILES = 'OC(=O)CCCCC(=O)O'  # adipic acid
 
 
 def build_ethylene_box(
@@ -306,3 +308,149 @@ def build_vinyl_aibn_system(
     }
 
     return positions, species, template, groups, propagation_map
+
+
+# ── nylon-6,6 step-growth system ────────────────────────────────────────────
+
+def _find_terminal_amine_n(smiles: str) -> list[int]:
+    """Return local indices of terminal primary amine N in the molecule."""
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    indices = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != 'N':
+            continue
+        h_count = sum(1 for n in atom.GetNeighbors() if n.GetSymbol() == 'H')
+        if h_count >= 2:
+            indices.append(atom.GetIdx())
+    return indices
+
+
+def _find_amine_h(smiles: str, n_idx: int) -> int:
+    """Return local index of one H bonded to amine N at n_idx."""
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    atom = mol.GetAtomWithIdx(n_idx)
+    for nbr in atom.GetNeighbors():
+        if nbr.GetSymbol() == 'H':
+            return nbr.GetIdx()
+    raise ValueError(f'No H bonded to N at index {n_idx} in {smiles!r}')
+
+
+def _find_carboxyl_c_and_oh(smiles: str) -> list[tuple[int, int]]:
+    """Return [(carboxyl_C_idx, hydroxyl_O_idx), ...] for each -C(=O)OH."""
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    results = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != 'C':
+            continue
+        o_double = None
+        o_single = None
+        for nbr in atom.GetNeighbors():
+            if nbr.GetSymbol() != 'O':
+                continue
+            bond = mol.GetBondBetweenAtoms(atom.GetIdx(), nbr.GetIdx())
+            if bond.GetBondTypeAsDouble() == 2.0:
+                o_double = nbr.GetIdx()
+            elif bond.GetBondTypeAsDouble() == 1.0:
+                h_on_o = sum(1 for n in nbr.GetNeighbors() if n.GetSymbol() == 'H')
+                if h_on_o >= 1:
+                    o_single = nbr.GetIdx()
+        if o_double is not None and o_single is not None:
+            results.append((atom.GetIdx(), o_single))
+    return results
+
+
+def build_nylon66_system(
+    n_diamines: int,
+    n_diacids: int,
+    box_size: float,
+    rng: np.random.Generator,
+    diamine_smiles: str = _DIAMINE_SMILES,
+    diacid_smiles: str = _DIACID_SMILES,
+    min_sep: float = 2.5,
+    rdkit_seed: int = 42,
+) -> tuple[np.ndarray, list[str], ReactionTemplate, dict[str, ReactiveGroup]]:
+    """Build a nylon-6,6 step-growth polycondensation system.
+
+    4-group template matching Table S2 of arXiv:2511.22874.
+    Groups: amine_N (i), carboxyl_C (j), amine_H (k), carboxyl_OH (l)
+
+    Returns (positions, species, template, groups).
+
+    Paper anchor: PDF p.22, Table S2, Fig. S2.
+    """
+    diamine_pos, diamine_sp = _rdkit_3d(diamine_smiles, seed=rdkit_seed)
+    diacid_pos, diacid_sp = _rdkit_3d(diacid_smiles, seed=rdkit_seed + 1)
+
+    local_amine_ns = _find_terminal_amine_n(diamine_smiles)
+    local_carboxyl_pairs = _find_carboxyl_c_and_oh(diacid_smiles)
+
+    n_per_diamine = len(diamine_sp)
+    n_per_diacid = len(diacid_sp)
+
+    fragments = (
+        [(diamine_pos, diamine_sp)] * n_diamines
+        + [(diacid_pos, diacid_sp)] * n_diacids
+    )
+    positions, species = _place_fragments_in_box(
+        fragments, box_size, rng, min_sep=min_sep,
+    )
+
+    diamine_offset = 0
+    diacid_offset = n_diamines * n_per_diamine
+
+    amine_N_indices: list[int] = []
+    amine_H_indices: list[int] = []
+    for i in range(n_diamines):
+        base = diamine_offset + i * n_per_diamine
+        for n_idx in local_amine_ns:
+            amine_N_indices.append(base + n_idx)
+            h_idx = _find_amine_h(diamine_smiles, n_idx)
+            amine_H_indices.append(base + h_idx)
+
+    carboxyl_C_indices: list[int] = []
+    carboxyl_OH_indices: list[int] = []
+    for j in range(n_diacids):
+        base = diacid_offset + j * n_per_diacid
+        for c_idx, oh_idx in local_carboxyl_pairs:
+            carboxyl_C_indices.append(base + c_idx)
+            carboxyl_OH_indices.append(base + oh_idx)
+
+    template = ReactionTemplate(
+        name='nylon66_condensation',
+        groups=['amine_N', 'carboxyl_C', 'amine_H', 'carboxyl_OH'],
+        pairs=[
+            PairSpec(
+                group_a='amine_N', group_b='carboxyl_C',
+                is_formation=True, r_min=3.0, r_max=6.0,
+            ),
+            PairSpec(
+                group_a='amine_N', group_b='amine_H',
+                is_formation=False, r_min=0.0, r_max=3.0,
+            ),
+            PairSpec(
+                group_a='carboxyl_C', group_b='carboxyl_OH',
+                is_formation=False, r_min=0.0, r_max=3.0,
+            ),
+            PairSpec(
+                group_a='amine_H', group_b='carboxyl_OH',
+                is_formation=True, r_min=0.0, r_max=100.0,
+            ),
+        ],
+    )
+    groups = {
+        'amine_N':      ReactiveGroup('amine_N',      amine_N_indices),
+        'carboxyl_C':   ReactiveGroup('carboxyl_C',   carboxyl_C_indices),
+        'amine_H':      ReactiveGroup('amine_H',      amine_H_indices),
+        'carboxyl_OH':  ReactiveGroup('carboxyl_OH',  carboxyl_OH_indices),
+    }
+
+    return positions, species, template, groups

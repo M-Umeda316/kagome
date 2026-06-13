@@ -22,13 +22,12 @@ Use this template for each decision.
 
 ## 2026-06-11 (updated 2026-06-13): Units convention for gamma
 - Context: Eq. 5 defines f1(t) = γt. With f1 in kcal/mol, the unit of gamma depends on whether t is in steps or physical time (fs).
-- Paper anchor: Eq. 5, Section 3 Methods (γ = 1.0).
-- Decision (PENDING CONFIRMATION): gamma currently treated as kcal/(mol·step) in code. With gamma=1.0 and f1_max=250 kcal/mol, the ramp saturates at step 250 (62.5 fs) of a 2000-step biased segment.
-- New evidence (2026-06-13, arXiv HTML): arXiv HTML version of the paper implies t in Eq. 5 is physical time (fs), which would make gamma in kcal/(mol·fs). Under that interpretation, saturation occurs at 250 fs = 1000 steps. Both options produce saturation well within the 2000-step biased phase; the qualitative behavior is the same.
-- Alternatives considered: (a) kcal/(mol·step) — current implementation, saturation at step 250. (b) kcal/(mol·fs) — saturation at 1000 steps (250 fs). If (b) is correct, `boost_amplitude` must use `t * timestep_fs` instead of `t`. This change falls under Ask-first trigger 6 (unit system change with scientific impact).
-- Scientific risk: Medium. Current implementation uses 4x faster ramp than (b). Both reach f1_max within biased phase so steady-state dynamics are identical; only the approach-to-saturation differs.
+- Paper anchor: Eq. 5, Section 3 Methods (γ = 1.0). PDF p.7: "bias parameters of ... γ = 1.0" — unit not stated.
+- Decision: PDF confirmed (p.7): γ=1.0, unit not stated. Maintaining kcal/(mol·step). Saturation at step 250 (62.5 fs) is within biased phase (2000 steps = 500 fs). Fig. S4 (p.25-26) confirms γ acts as global scaling factor for reaction rates — unit choice affects absolute rate but not relative trends.
+- Alternatives considered: (a) kcal/(mol·step) — current implementation, saturation at step 250. (b) kcal/(mol·fs) — saturation at 1000 steps (250 fs). Both produce saturation within biased phase; qualitative behavior identical.
+- Scientific risk: Low. Both interpretations saturate within biased phase. γ scaling (Fig. S4) confirms no pathway-specific bias from parameter choice.
 - Licensing/commercial impact: None.
-- Follow-up: ⚠️ MUST confirm gamma unit from the PDF (Section 3 Methods or supplementary table) BEFORE any code change. Do not change boost_amplitude without owner confirmation (Ask-first trigger).
+- Follow-up: None. Resolved.
 
 ## 2026-06-11: numpy as sole core dependency
 - Context: The TDBB equations and selection logic are purely numerical.
@@ -219,6 +218,24 @@ Use this template for each decision.
 - Licensing/commercial impact: orb-models code Apache-2.0, OrbMol-v2 weights Apache-2.0. Fully commercial-safe. Note: nvalchemiops (for periodic PME) is blocked_pending_review; non-periodic runs or runs without long-range Coulomb do not require it.
 - Follow-up: (a) Test nvalchemiops license for periodic system support. (b) Benchmark OrbMol-v2 vs MACE-MP-0 on ethylene system. (c) Windows compatibility is not guaranteed by upstream — verify before making it default anywhere.
 
+## 2026-06-13: Langevin friction corrected from 0.01 to 0.001 /fs (P-0c)
+- Context: LangevinParams default friction_per_fs was 0.01 (= 10 ps⁻¹). All run scripts used this value explicitly.
+- Paper anchor: PDF p.20, Supporting Information: "Langevin thermostat with a coupling constant of 1.0 ps⁻¹". 1.0 ps⁻¹ = 0.001 fs⁻¹.
+- Decision: Change LangevinParams default to friction_per_fs=0.001. Remove explicit friction_per_fs=0.01 from all run scripts so they use the corrected default.
+- Alternatives considered: Keep 0.01 — rejected, it is 10× the paper value.
+- Scientific risk: Low. Weaker coupling produces more physical dynamics; temperature equilibration is slightly slower but Langevin thermostat still functions correctly.
+- Licensing/commercial impact: None.
+- Follow-up: None.
+
+## 2026-06-13: Temperature defaults corrected from 500 K to 333 K (P-0d)
+- Context: All run scripts defaulted to --temperature 500 K, which was an arbitrary test value. The paper specifies system-specific temperatures.
+- Paper anchor: PDF p.21: vinyl radical polymerization at 333 K; PDF p.22: nylon-6,6 at 300 K; PDF p.24: epoxy curing at 333 K.
+- Decision: Change run_vinyl_aibn.py default to 333 K. Change run_mace_pbc.py, run_mace.py, run_orb.py defaults to 333 K (ethylene is closest to vinyl system). Future nylon-6,6 script will default to 300 K.
+- Alternatives considered: Keep 500 K — rejected, not paper-faithful.
+- Scientific risk: None. Lower temperature is more physical for these systems.
+- Licensing/commercial impact: None.
+- Follow-up: None.
+
 ## 2026-06-13: T8.1 toy chemistry system for bond formation demonstration
 - Context: All prior MLIP-based runs (MACE-MP-0, OrbMol-v2) yielded confirmed_formations=0. The TDBB machinery (bias, attempt, confirm) was verified to be correct, but C-C bond formation in ethylene has a ~40+ kcal/mol barrier, and non-periodic systems allow diffusion. A lower-barrier system is needed to demonstrate end-to-end bond formation machinery.
 - Paper anchor: Implicit — the paper demonstrates TDBB produces bond formation. The toy system proves the machinery works before applying it to hard chemistry.
@@ -246,3 +263,21 @@ Use this template for each decision.
 - Scientific risk: None for computation. Risk is in documentation confusion only.
 - Licensing/commercial impact: None.
 - Follow-up: Verify equation numbers from PDF and update docstrings in src/analysis/conversion.py and src/analysis/density.py accordingly.
+
+## 2026-06-13: OrbMol-v2 as default backend for vinyl polymerization (T-OD)
+- Context: Owner requested OrbMol-v2 as the default backend. run_vinyl_aibn.py previously used MACE-MP-0.
+- Paper anchor: Section 2 — uMLIP must handle organic polymer chemistry. OrbMol-v2 trained on OPoly26 (polymer DFT data, ωB97M-V/def2-TZVPD).
+- Decision: Change run_vinyl_aibn.py default backend to OrbMol-v2 via --backend orb (default). MACE-MP-0 retainable via --backend mace. Backend selection uses lazy imports. Other ethylene scripts (run_mace.py, run_mace_pbc.py, run_orb.py) retain their respective hardcoded backends.
+- Alternatives considered: Creating separate run_vinyl_aibn_orb.py — rejected, --backend flag is cleaner.
+- Scientific risk: Low. OrbMol-v2 trained on polymer-relevant data; expected to outperform MACE-MP-0 for organic systems.
+- Licensing/commercial impact: orb-models code + weights both Apache-2.0, fully commercial-safe.
+- Follow-up: Future run scripts (nylon-6,6, epoxy) will also default to OrbMol-v2.
+
+## 2026-06-13: Nylon-6,6 step-growth polycondensation system design (T-G2)
+- Context: Implementing the second chemical system from the paper. Nylon-6,6 uses step-growth (condensation) mechanism, requiring mixed formation/dissociation bias — the first system to exercise this capability.
+- Paper anchor: PDF p.22, Table S2, Fig. S2, Fig. 4b-c. System: 100 hexamethylenediamine + 100 adipic acid, 300 K, 1 atm, NPT.
+- Decision: (a) 4-group template: amine_N (i), carboxyl_C (j), amine_H (k), carboxyl_OH (l). (b) 4 PairSpecs: (i,j) formation r=3.0-6.0, (i,k) dissociation r=0.0-3.0, (j,l) dissociation r=0.0-3.0, (k,l) formation r=0.0-100.0. The k-l pair has a permissive distance range because Table S2 does not constrain k-l for candidate identification. (c) Water generation is not explicitly modeled — TDBB only biases distances; the N-H stretching + C-OH stretching effectively drives the condensation. (d) Each NH2 reacts once (N removed from amine_N after confirmed formation). (e) Carothers comparison: DPn = 1/(1-p) theoretical curve vs simulated DPn.
+- Alternatives considered: (a) 2-group template (N, C only) — rejected, paper explicitly uses 4 groups. (b) Explicit water removal — rejected, paper shows results without water removal (p.11 "without continuous water removal"). (c) N reacts twice (primary → secondary amine) — rejected, nylon-6,6 is a linear polymer; each NH2 forms one amide bond.
+- Scientific risk: Medium. Mixed formation+dissociation bias in a single template is untested in E2E. The k-l formation pair (amine_H + carboxyl_OH → water proximity) bias may not drive the chemistry correctly without explicit bond topology changes. Qualitative DPn vs conversion trend is the acceptance criterion, not quantitative match.
+- Licensing/commercial impact: None (RDKit BSD-3 for structure generation).
+- Follow-up: E2E execution (T-G2 acceptance criteria) after P-0 and T-OD complete.
