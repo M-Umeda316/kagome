@@ -63,7 +63,7 @@ def main() -> None:
     parser.add_argument('--n-cycles', type=int, default=3)
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
-    parser.add_argument('--box-size', type=float, default=14.0)
+    parser.add_argument('--box-size', type=float, default=16.0)
     parser.add_argument('--temperature', type=float, default=333.0)
     parser.add_argument('--pressure', type=float, default=1.0,
                         help='Target pressure (atm). Default 1.0 (assumed, not stated in paper).')

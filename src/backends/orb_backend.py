@@ -5,6 +5,9 @@ See specs/dependency-license-matrix.md.
 
 OrbMol-v2 uses a conservative regressor: forces = -dE/dr (grad_forces).
 charge and spin must be set on ASE Atoms via atoms.info.
+
+Windows note: nvalchemiops PME triggers torch._inductor C++ compilation
+which requires cl.exe.  TORCHDYNAMO_DISABLE=1 bypasses this.
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ def create_orb_calculator(
     spin: spin multiplicity (2S+1).
     """
     os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+    os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
 
     try:
         from orb_models.forcefield import pretrained

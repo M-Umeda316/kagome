@@ -281,3 +281,21 @@ Use this template for each decision.
 - Scientific risk: Medium. Mixed formation+dissociation bias in a single template is untested in E2E. The k-l formation pair (amine_H + carboxyl_OH → water proximity) bias may not drive the chemistry correctly without explicit bond topology changes. Qualitative DPn vs conversion trend is the acceptance criterion, not quantitative match.
 - Licensing/commercial impact: None (RDKit BSD-3 for structure generation).
 - Follow-up: E2E execution (T-G2 acceptance criteria) after P-0 and T-OD complete.
+
+## 2026-06-13: Candidate selection distance range corrected to Table S1 values (T-G1a)
+- Context: Vinyl polymerization template used r_min=1.6, r_max=4.5 Å. E2E runs found 0 candidates because reactive atoms were > 4.5 Å apart at initial density.
+- Paper anchor: PDF p.22, Table S1: Initiation and Propagation both use i-j r_min=3.0, r_max=6.0 Å.
+- Decision: Update both ethylene and vinyl+AIBN templates to r_min=3.0, r_max=6.0 Å. Also increased default box_size from 14.0 to 16.0 Å (14.0 cannot fit 8+2 molecules with min_sep=2.5).
+- Alternatives considered: Keep 1.6-4.5 — rejected, fails to find any candidates at paper-relevant densities.
+- Scientific risk: None — strictly more faithful to the paper.
+- Licensing/commercial impact: None.
+- Follow-up: None.
+
+## 2026-06-13: OrbMol-v2 PBC requires TORCHDYNAMO_DISABLE on Windows
+- Context: OrbMol-v2 with PBC triggers Coulomb PME → nvalchemiops → torch._inductor which requires cl.exe (MSVC C++ compiler), not available on this system.
+- Paper anchor: N/A (platform-specific workaround).
+- Decision: Set TORCHDYNAMO_DISABLE=1 in orb_backend.py via os.environ.setdefault. This disables torch.compile for all OrbMol-v2 computations. Performance impact is acceptable for current CPU-based runs.
+- Alternatives considered: (a) Install MSVC Build Tools — heavy dependency, not required by upstream docs. (b) Use MACE-MP-0 only for PBC — loses OrbMol-v2's polymer-optimized potential.
+- Scientific risk: None. TORCHDYNAMO_DISABLE only affects JIT compilation, not numerical results.
+- Licensing/commercial impact: None.
+- Follow-up: Remove TORCHDYNAMO_DISABLE if upstream fixes nvalchemiops Windows support or cl.exe becomes available.

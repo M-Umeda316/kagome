@@ -80,8 +80,8 @@ def build_template_and_groups(
                 group_a='C_donor',
                 group_b='C_acceptor',
                 is_formation=True,
-                r_min=1.6,
-                r_max=4.5,
+                r_min=3.0,
+                r_max=6.0,
             ),
         ],
     )
@@ -297,8 +297,8 @@ def build_vinyl_aibn_system(
                 group_a='radical_C',
                 group_b='vinyl_alpha_C',
                 is_formation=True,
-                r_min=1.6,
-                r_max=4.5,
+                r_min=3.0,
+                r_max=6.0,
             ),
         ],
     )
