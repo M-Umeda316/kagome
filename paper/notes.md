@@ -64,6 +64,21 @@ See specs/decisions.md "2026-06-11: Units convention for gamma" for full rationa
 - Nylon-6,6: hexamethylenediamine + adipic acid (step-growth, Carothers comparison)
 - Epoxy curing: DGEBA + DETA hardener on hydroxylated CuO surface (interface design)
 
+## System compositions (Supporting Information, confirmed PDF S-3..S-5)
+| System | Composition | Density | Ensemble | T |
+|---|---|---|---|---|
+| Vinyl radical | **200 monomer + 10 AIBN** (20:1) | **0.5 g/mL** initial | NPT, 1 atm | 333 K |
+| Nylon-6,6 | 100 diamine + 100 diacid (equimolar) | 0.5 g/mL initial | NPT, 1 atm | 300 K |
+| Epoxy/CuO | 100 DGEBA + 50 DETA on CuO(001) 8×8×6 slab | 0.2→1.0 g/cm³ (wall-compressed) | NVT | 333 K |
+
+- All systems: 3 independent runs, results averaged. Solvent-free unless noted (e.g. styrene/toluene).
+- **Key mechanism (PDF p.7, S-7): "polymerization is governed by near-contact events"** — the
+  formation bias (f2=10 Å⁻², r0≈2 Å) only acts strongly within ~r0±0.5 Å. Candidates are listed at
+  3–6 Å (Table S1) but bond formation occurs when thermal motion brings a listed pair to near-contact.
+  This REQUIRES paper-scale density (0.5 g/mL) and many molecules (~200) so near-contact events are
+  frequent. Small/dilute systems (≪200 mol, density <0.5) produce few or zero confirmed formations
+  even with correct parameters. See specs/decisions.md "2026-06-13: T-G1a root-cause".
+
 ## Figures to reproduce
 - Fig. 2-6: qualitative trend matching (see specs/acceptance-criteria.md)
 - Fig. S4: sensitivity analysis showing gamma as global scaling factor (not system-specific)

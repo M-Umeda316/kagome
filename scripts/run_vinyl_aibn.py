@@ -63,7 +63,11 @@ def main() -> None:
     parser.add_argument('--n-cycles', type=int, default=3)
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
-    parser.add_argument('--box-size', type=float, default=16.0)
+    parser.add_argument('--box-size', type=float, default=None,
+                        help='Box edge (Å). If omitted, computed from --density.')
+    parser.add_argument('--density', type=float, default=0.5,
+                        help='Initial density (g/mL). Paper SI S-3 uses 0.5 for vinyl. '
+                             'Used only when --box-size is omitted.')
     parser.add_argument('--temperature', type=float, default=333.0)
     parser.add_argument('--pressure', type=float, default=1.0,
                         help='Target pressure (atm). Default 1.0 (assumed, not stated in paper).')
@@ -78,6 +82,21 @@ def main() -> None:
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
+
+    if args.box_size is None:
+        from scripts._systems import (
+            _INITIATOR_SMILES,
+            _MONOMER_SMILES,
+            box_from_density,
+        )
+        args.box_size = box_from_density(
+            {_MONOMER_SMILES: args.n_monomers, _INITIATOR_SMILES: args.n_initiators},
+            args.density,
+        )
+        logger.info(
+            'Box edge from density %.2f g/mL: %.2f Å (paper SI S-3)',
+            args.density, args.box_size,
+        )
 
     logger.info(
         'Building vinyl/AIBN system: %d monomers + %d initiators in %.1f Å box...',

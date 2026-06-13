@@ -299,3 +299,18 @@ Use this template for each decision.
 - Scientific risk: None. TORCHDYNAMO_DISABLE only affects JIT compilation, not numerical results.
 - Licensing/commercial impact: None.
 - Follow-up: Remove TORCHDYNAMO_DISABLE if upstream fixes nvalchemiops Windows support or cl.exe becomes available.
+
+## 2026-06-13: T-G1a root-cause — zero confirmed formations is a system-scale problem, not a parameter bug
+- Context: vinyl+AIBN E2E produced 0 confirmed bond formations even at paper step counts (3 cycles x 2000 biased + 2000 unbiased). The earlier "insufficient steps" hypothesis was DISPROVEN — 4x more steps still gave 0.
+- Diagnosis: The formation bias V^f = f1(1 - exp(-f2(r-r0)^2)) with f2=10 A^-2 (paper-confirmed, PDF p.7) and r0~2.04 A (C-C) yields a force significant only within ~r0 +/- 0.5 A. Measured |F|: r=2.5 A -> 277, r=3.0 A -> 0.48, r=4.5 A -> ~0 kcal/mol/A. Candidates are LISTED at 3-6 A (Table S1) but the bias does not pull them in from there.
+- Paper anchor (decisive): PDF p.7 and S-7 state polymerization is governed by near-contact events, and f2 in 5-20 gives robust behaviour. The bias CAPTURES pairs that thermal motion brings to near-contact (~2-2.5 A); it does not drag distant pairs together. This requires (a) paper density 0.5 g/mL and (b) many molecules so near-contact events are frequent.
+- Decision: Do NOT change TDBB parameters (they are paper-correct). Instead reproduce paper system scale/density: hold density at 0.5 g/mL via box_from_density() and scale molecule counts up, running on GPU.
+- Licensing/commercial impact: None.
+- Follow-up: Validate confirmed formations appear at paper density on the 40+2 (and later 200+10) systems.
+
+## 2026-06-13: grid-guided initial placement at paper density
+- Context: At 0.5 g/mL the prior global rejection-sampling placer (_place_fragments_in_box) stalled at ~35/42 molecules and raised RuntimeError. Packing IS feasible (per-molecule volume ~286 A^3 -> ~6.6 A spacing) but global random rejection is inefficient at liquid density.
+- Decision: Seed each molecule near a distinct grid cell centre (ncells = ceil(N^(1/3)) per dim), then apply random rotation + attempt-shrinking jitter and accept the first pose with all inter-molecular atom separations >= min_sep (2.5 A). Deterministic via the run seed.
+- Paper anchor: SI S-3..S-4 specifies only the target density (0.5 g/mL); the packing method is unspecified. The grid is an initial-configuration device only and does not bias the subsequent biased/unbiased dynamics.
+- Licensing/commercial impact: None.
+- Follow-up: If 200+10 packing is still tight, lower initial density and rely on the NPT barostat to compress toward equilibrium.

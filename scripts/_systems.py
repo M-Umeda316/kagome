@@ -12,6 +12,35 @@ _INITIATOR_SMILES = 'CC(C)C#N'   # isobutyronitrile (closed-shell IBN radical mo
 _DIAMINE_SMILES = 'NCCCCCCN'     # hexamethylenediamine
 _DIACID_SMILES = 'OC(=O)CCCCC(=O)O'  # adipic acid
 
+_AVOGADRO = 6.02214076e23  # mol^-1
+
+
+def box_from_density(
+    counts: dict[str, int],
+    density_g_per_ml: float = 0.5,
+) -> float:
+    """Cubic box edge length (Å) for given molecule counts at a target density.
+
+    Paper anchor: Supporting Information S-3..S-4 — vinyl and nylon initial
+    configurations are generated at 0.5 g/mL. The formation bias is governed by
+    near-contact events (PDF p.7, S-7), so reproducing the paper density is a
+    prerequisite for confirmed bond formation. See specs/decisions.md
+    "2026-06-13: T-G1a root-cause".
+    """
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors
+
+    total_mw = 0.0  # g/mol
+    for smiles, n in counts.items():
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f'Invalid SMILES for density calc: {smiles!r}')
+        total_mw += Descriptors.MolWt(mol) * n
+    mass_g = total_mw / _AVOGADRO
+    vol_cm3 = mass_g / density_g_per_ml
+    vol_a3 = vol_cm3 * 1.0e24  # 1 cm^3 = 1e24 A^3
+    return float(vol_a3 ** (1.0 / 3.0))
+
 
 def build_ethylene_box(
     n_molecules: int,
@@ -189,20 +218,44 @@ def _place_fragments_in_box(
 ) -> tuple[np.ndarray, list[str]]:
     """Place a list of (positions, species) molecules in a periodic box.
 
-    Applies a random 3-D rotation + random translation per molecule.
+    Uses grid-guided placement: each molecule is seeded near a distinct grid
+    cell centre, then given a random 3-D rotation + small jitter and accepted on
+    the first non-overlapping pose. Localising the search this way makes
+    placement reliable at paper density (0.5 g/mL), where global rejection
+    sampling stalls. The grid is purely an initial-configuration device and does
+    not bias the subsequent dynamics. See specs/decisions.md
+    "2026-06-13: grid-guided initial placement at paper density".
+
     Raises RuntimeError if any molecule cannot be placed without overlap.
     """
     placed: list[np.ndarray] = []
     all_species: list[str] = []
 
+    n_mols = len(fragments)
+    # Grid with at least n_mols cells; shuffle cell order for randomness.
+    ncells = int(np.ceil(n_mols ** (1.0 / 3.0)))
+    cell = box_size / ncells
+    cell_centers = np.array(
+        [
+            ((i + 0.5) * cell, (j + 0.5) * cell, (k + 0.5) * cell)
+            for i in range(ncells)
+            for j in range(ncells)
+            for k in range(ncells)
+        ]
+    )
+    rng.shuffle(cell_centers)
+
     for mol_idx, (template_pos, mol_species) in enumerate(fragments):
         centered = template_pos - template_pos.mean(axis=0)
+        base = cell_centers[mol_idx]
         for _attempt in range(max_attempts):
             axis = rng.standard_normal(3)
             if np.linalg.norm(axis) < 1e-10:
                 axis = np.array([0.0, 0.0, 1.0])
             R = _rotation_matrix(axis, rng.uniform(0.0, 2.0 * np.pi))
-            offset = rng.uniform(2.0, box_size - 2.0, 3)
+            # Jitter shrinks with attempt count so later tries hug the cell centre.
+            jitter = rng.uniform(-0.5, 0.5, 3) * cell * (1.0 - _attempt / max_attempts)
+            offset = np.clip(base + jitter, 2.0, box_size - 2.0)
             candidate = centered @ R.T + offset
 
             ok = True
@@ -219,7 +272,7 @@ def _place_fragments_in_box(
             raise RuntimeError(
                 f'Could not place molecule {mol_idx + 1}/{len(fragments)} '
                 f'in box_size={box_size:.1f} A after {max_attempts} attempts. '
-                f'Try increasing --box-size.'
+                f'Try increasing --box-size or lowering --density.'
             )
 
     return np.vstack(placed), all_species
