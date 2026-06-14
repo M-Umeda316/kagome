@@ -39,6 +39,10 @@ def create_orb_calculator(
     """
     os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
     os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
+    # Reduce CUDA allocator fragmentation on long runs where the neighbour-graph
+    # size varies per step (else reserved VRAM creeps up until the run hangs).
+    # Only effective if set before torch is first imported.
+    os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
     try:
         from orb_models.forcefield import pretrained
@@ -115,5 +119,16 @@ class OrbCalculatorAdapter(Calculator):
 
         energy = energy_ev * EV_TO_KCAL_MOL
         forces = forces_ev * EV_TO_KCAL_MOL
+
+        # Release the per-call autograd workspace back to the allocator. The
+        # neighbour-graph size varies per step, so without this the CUDA caching
+        # allocator fragments and reserved VRAM creeps up until a long paper-scale
+        # run exhausts memory and hangs (observed at 2520 atoms). batch/result are
+        # dropped first so their tensors are freeable. See specs/decisions.md
+        # 2026-06-15 VRAM record.
+        if self._device == 'cuda':
+            del batch, result
+            import torch
+            torch.cuda.empty_cache()
 
         return energy, forces

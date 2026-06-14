@@ -22,6 +22,12 @@ import os
 from pathlib import Path
 
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+# Long paper-scale runs creep up in VRAM because the OrbMol-v2 neighbour graph
+# size varies per step (atoms move), fragmenting the CUDA caching allocator until
+# it exhausts memory and the run hangs. Expandable segments defragment this at no
+# per-step cost. Must be set before torch is imported (orb import happens lazily
+# in _create_backend). See specs/decisions.md 2026-06-15 VRAM record.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import numpy as np
 
