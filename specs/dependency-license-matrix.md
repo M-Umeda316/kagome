@@ -8,8 +8,13 @@
 | MACE-MH/OMAT models | pretrained weights | ASL (restricted) | no | do not use as default |
 | ASE | atomistic toolkit | LGPL-2.1 | yes (import-only) | used as Calculator adapter layer |
 | PyTorch | ML runtime | BSD-3-Clause | **yes** | required by MACE |
-| OpenMM | engine | MIT + LGPL (GPU) | yes | optional, not required for MACE path |
+| OpenMM | engine | MIT (core/CPU) + LGPL (CUDA/OpenCL) | **yes** | classical structure-prep engine; import-only, LGPL GPU plugins dynamically linked |
 | OpenMM-Torch | plugin | MIT | yes | optional, not required for MACE path |
+| openff-toolkit | FF application / topology | MIT | **yes** | builds OpenFF Topology + applies Sage; classical prep only |
+| openff-interchange | OpenMM System export | MIT | **yes** | Interchange → OpenMM System for classical prep |
+| openff-forcefields (Sage 2.x) | classical FF parameters | CC-BY-4.0 | **yes (attribution req.)** | small-molecule FF for monomer/initiator prep; cite OpenFF in distributed outputs |
+| openff-nagl (code) | GNN partial charges | MIT | **yes** | AM1-BCC surrogate; avoids AmberTools(GPL)/OpenEye for charge assignment |
+| openff-nagl-models | charge model weights | CC-BY-4.0 | **yes (attribution req.)** | trained NAGL weights; cite OpenFF. Fallback: RDKit Gasteiger (BSD) |
 | PFP / Matlantis-related backend | model/backend | blocked_pending_review | no | do not enable by default without explicit rights confirmation |
 | orb-models (code) | MLIP framework | Apache-2.0 | **yes** | OrbMol calculator; optional `[orb]` dependency |
 | OrbMol-v2 model | pretrained weights | Apache-2.0 | **yes** | trained on OMol25 + OPoly26 (polymer data); recommended for organic/polymer systems |
@@ -22,3 +27,5 @@
 - Software license and model-weight license must both be acceptable.
 - SaaS access permission is not the same as model redistribution permission.
 - If evidence is incomplete, block the component by default.
+- CC-BY-4.0 components (openff-forcefields, openff-nagl-models) are commercial-safe but require attribution: distributed results that depend on them must cite the Open Force Field Initiative.
+- License evidence verified 2026-06-14 from upstream LICENSE files: openff-toolkit/interchange/nagl = MIT; openff-forcefields + openff-nagl-models = CC-BY-4.0; OpenMM core = MIT, CUDA/OpenCL = LGPL.

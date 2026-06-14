@@ -35,14 +35,37 @@ software:
     notes: Optional [plot] dependency. PSF license is permissive and commercial-safe.
 
   - name: openmm
-    status: review_required
-    required_evidence: upstream_license_url
-    notes: Optional. Not required for MACE or OrbMol-v2 paths. Do not enable by default until reviewed.
+    status: approved
+    evidence: MIT (core/CPU) + LGPL (CUDA/OpenCL)
+    notes: >
+      Classical structure-preparation engine (decoupled from ML TDBB production).
+      Core/CPU platforms MIT; CUDA/OpenCL platforms LGPL, used via dynamic linking
+      (import-only), commercial-safe. Verified upstream LICENSE 2026-06-14.
 
   - name: openmm-torch
     status: approved
     evidence: MIT
     notes: Optional plugin. MIT license. Not currently used in active code paths.
+
+  - name: openff-toolkit
+    status: approved
+    evidence: MIT
+    notes: >
+      Builds OpenFF Topology and applies the Sage force field for classical prep.
+      MIT (verified upstream LICENSE 2026-06-14). Charges via openff-nagl to avoid
+      AmberTools(GPL)/OpenEye.
+
+  - name: openff-interchange
+    status: approved
+    evidence: MIT
+    notes: Exports an OpenMM System from an OpenFF Interchange. MIT (verified 2026-06-14).
+
+  - name: openff-nagl
+    status: approved
+    evidence: MIT
+    notes: >
+      GNN partial-charge model (AM1-BCC surrogate). Code MIT (verified 2026-06-14).
+      Weights tracked separately (openff-nagl-models). Fallback: RDKit Gasteiger.
 
 models:
   - name: toy
@@ -80,3 +103,18 @@ models:
     reason: >
       MACE-OFF23 weights use ASL (Academic Software License) which restricts commercial
       use. Do not use as default. If needed for research, confirm with project owner.
+
+  - name: openff-forcefields
+    status: approved
+    evidence: CC-BY-4.0
+    notes: >
+      Sage 2.x small-molecule force-field parameters for classical structure prep.
+      CC-BY-4.0 (verified 2026-06-14): commercial-safe WITH attribution — cite the
+      Open Force Field Initiative in distributed results.
+
+  - name: openff-nagl-models
+    status: approved
+    evidence: CC-BY-4.0
+    notes: >
+      Trained NAGL partial-charge weights. CC-BY-4.0 (verified 2026-06-14):
+      commercial-safe WITH attribution. Fallback to RDKit Gasteiger if unavailable.

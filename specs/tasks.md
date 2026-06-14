@@ -60,3 +60,19 @@
 - [x] C3: Add logger.warning for unknown element fallbacks in masses_from_species / _build_pair_biases
 - [x] C4: De-duplicate temperature_K in run_orb / run_mace (read from LangevinParams)
 - [~] B2: Bond formation demonstration — f1_max=250 reached, machinery verified, confirmed_formation=0 (expected: ethylene barrier + non-periodic diffusion). Paper-scale run (2000 steps, PBC) deferred until nvalchemiops license resolved. See decisions.md.
+
+## Phase 6: Classical structure preparation (OpenMM/OpenFF) — decouple prep from ML production
+Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densification at the slowest density, making paper200 infeasible on the 16 GB GPU (throughput, not VRAM). Move structure prep to a cheap classical FF; reserve OrbMol-v2 for TDBB production. See specs/decisions.md "2026-06-14: Decouple initial-structure preparation".
+- [x] P0a: License-verify + register openmm, openff-toolkit/interchange/forcefields/nagl(+models) in dependency-license-matrix.md and approved_dependencies.yaml
+- [x] P0b: Record decisions D-1 (0.5 g/mL fixed prep), D-2 (nagl charges + Gasteiger fallback), D-3 (simple protocol), D-4 (self-contained OpenMM prep) in decisions.md
+- [x] P0c: Correct the paper200 record (launched run did not complete; no artifacts)
+- [ ] P1a: Refactor `_systems._rdkit_mol(smiles, seed)` shared by `_rdkit_3d` and prep (atom-order guarantee)
+- [ ] P1b: Scaffold `src/prep/openmm_equilibrate.py` + `ClassicalPrepConfig`; centralize Å↔nm / kcal↔kJ conversions
+- [ ] P2a: Build OpenFF Topology in builder order → Sage + charges → OpenMM System
+- [ ] P2b: Protocol: minimize → compress 0.25→0.5 g/mL → NVT thermalize → return (positions, cell)
+- [ ] P2c: Wire `--prep {none,openmm}` (+ protocol/density/charge flags) into run_vinyl_aibn.py
+- [ ] P3a: Unit tests (atom-order/species match, unit round-trip, tiny-system smoke, compression target)
+- [ ] P3b: Integration on 40+2 (completes, T stable, wall-clock vs all-ML)
+- [ ] P4a: Run 40+2 E2E with classical prep; save artifacts
+- [ ] P4b: Run paper200 (200+10) classical prep → ML production; check formations>=1, T≈333 K, VRAM/wall-clock; figures; update figure-comparison.md
+- [ ] P5: Demote ML compress_box to fallback for paper-scale; docs; final commit

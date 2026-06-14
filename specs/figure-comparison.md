@@ -5,8 +5,37 @@
 再現 run:
 - `runs/toy_bond_demo/`  (T8.1: toy LJ system, confirmed_formations=1)
 - `runs/mace_pbc_paper/` (T8.2: MACE-MP-0 + PBC, 4 ethylene molecules, 3 cycles)
+- `runs/vinyl_aibn_gpu40/` (T-G1a paper-scale: OrbMol-v2, 40 monomer + 2 AIBN = 504 atoms, density 0.35 g/mL, NPT 333 K, 3 cycles × 2000+2000 = 12,000 steps, seed 42, RTX 4060 Ti)
 
 ---
+
+## 2026-06-14 追記: gpu40 論文スケール検証結果
+
+| 項目 | 結果 | 判定 |
+|---|---|---|
+| E2E 完走（12,000 steps） | ✅ exit 0, summary/trajectory/bonds/figures 出力 | 達成 |
+| 候補検出・選択・bias 印加 | ✅ 各 biased で 2/4/5 候補、2 選択、bias_E=500 kcal/mol | 達成（machinery 正常） |
+| confirmed_formations >= 1 | ❌ formations=0, dissociations=0, propagation=0 | **未達** |
+| 温度安定（333 K 付近） | ❌ mean 527 K, std 182 K, max 1364 K（step 51 で 1364 K に急騰） | **未達** |
+| 温度の時間収束 | △ 2000step毎: 850→607→516→438→392→360 K（最終 cycle で漸近） | 部分 |
+
+**根本原因（decisions.md 2026-06-14 参照）**: スクリプトに **エネルギー最小化・平衡化が無く**、格子配置の初期構造の近接衝突 → 初期温度爆発 → 候補ペアが結合距離(~2-2.5 Å)に収束せず → formations=0。論文（PDF p.20）は production 前に NPT 平衡化を実施。本ワークフローは未実装。
+
+### 2026-06-14 追記2: 平衡化実装後の再検証（minimize + equil）
+
+pre-TDBB 段階（FIRE 最小化 + 2000 step NPT 平衡化）を実装し gpu40 を再実行（`runs/vinyl_aibn_gpu40/`、baseline は `runs/vinyl_aibn_gpu40_no_equil/`）。
+
+| 指標 | no-equil | minimize+equil | 判定 |
+|---|---|---|---|
+| 全体温度 mean/std/max | 527 / 182 / 1364 K | **310 / 40 / 373 K** | **解消** |
+| biased phase 平均温度 | 586 K | **316 K** | 設定333Kに一致 |
+| unbiased phase 平均温度 | 469 K | **330 K** | 設定333Kに一致 |
+| 初期温度スパイク | 1364 K | 373 K（最大） | **解消** |
+| confirmed_formations | 0 | **0（変化なし）** | 未達 |
+
+**結論**: 平衡化実装は**温度不安定バグを解消**（real fix, 保持）。しかし formations=0 は不変で、これは温度問題ではなく **bias 捕捉範囲(~2.5 Å) と候補リスト範囲(3-6 Å, Table S1) の不一致＋系規模**が原因（V^f の井戸幅 ~0.32 Å、4-6 Å では力ほぼ0）。TDBB パラメータは論文確定値のため変更しない。
+
+**次アクション**: formations>0 には論文規模（200 monomer + 10 AIBN）かつ複数サイクルが必要（大規模 GPU、オーナー承認待ち、Ask-first トリガー 2/7）。bias 井戸の拡幅は TDBB の科学的意味を変えるため論文再読＋承認なしには行わない（トリガー 3）。
 
 ## 図一覧と対応
 
