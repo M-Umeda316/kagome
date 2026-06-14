@@ -177,6 +177,16 @@ def equilibrate_structure(
     target_edge_A = _target_edge_A(species, molecule_specs, cfg)
 
     topology, unique = _build_openff_topology(species, molecule_specs, cfg)
+
+    # The box must be set on the topology BEFORE create_interchange so the System
+    # is built periodic (PME + cutoffs); otherwise to_openmm() yields a
+    # non-periodic (NoCutoff) System and densification is meaningless.
+    from openff.units import unit as offunit
+
+    topology.box_vectors = (
+        np.eye(3) * start_edge_A * NM_PER_ANGSTROM
+    ) * offunit.nanometer
+
     system = _make_system(topology, unique, cfg)
 
     integrator = openmm.LangevinMiddleIntegrator(
@@ -190,7 +200,7 @@ def equilibrate_structure(
 
     pos_nm = positions_A * NM_PER_ANGSTROM
     _set_cubic_box(context, system, start_edge_A * NM_PER_ANGSTROM)
-    context.setPositions(pos_nm)
+    context.setPositions(pos_nm * ommunit.nanometer)
     context.setVelocitiesToTemperature(
         cfg.temperature_K * ommunit.kelvin, cfg.seed,
     )
@@ -245,11 +255,12 @@ def _target_edge_A(species, specs, cfg) -> float:
 def _set_cubic_box(context, system, edge_nm: float) -> None:
     """Set an isotropic cubic periodic box on both the system and context."""
     import openmm
+    from openmm import unit as ommunit
 
     vectors = (
-        openmm.Vec3(edge_nm, 0.0, 0.0),
-        openmm.Vec3(0.0, edge_nm, 0.0),
-        openmm.Vec3(0.0, 0.0, edge_nm),
+        openmm.Vec3(edge_nm, 0.0, 0.0) * ommunit.nanometer,
+        openmm.Vec3(0.0, edge_nm, 0.0) * ommunit.nanometer,
+        openmm.Vec3(0.0, 0.0, edge_nm) * ommunit.nanometer,
     )
     system.setDefaultPeriodicBoxVectors(*vectors)
     context.setPeriodicBoxVectors(*vectors)
@@ -286,6 +297,6 @@ def _compress(context, system, start_edge_A, target_edge_A, cfg) -> None:
         pos_nm *= ratio
         cur_edge_A *= ratio
         _set_cubic_box(context, system, cur_edge_A * NM_PER_ANGSTROM)
-        context.setPositions(pos_nm)
+        context.setPositions(pos_nm * ommunit.nanometer)
         context.getIntegrator().step(cfg.compress_relax_steps)
     logger.info('Classical prep: compression complete (edge %.2f Å).', cur_edge_A)

@@ -68,9 +68,10 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 - [x] P0c: Correct the paper200 record (launched run did not complete; no artifacts)
 - [x] P1a: Refactor `_systems._rdkit_mol(smiles, seed)` shared by `_rdkit_3d` and prep (atom-order guarantee)
 - [x] P1b: Scaffold `src/prep/` (structure_io + openmm_equilibrate config/body) + `--load-structure` handoff in run_vinyl_aibn.py; Å↔nm / kcal↔kJ constants in src/units.py; tests/unit/test_prep.py (12 cases). OpenMM/OpenFF body lands but is validated in P2.
-- [ ] P2a: Build OpenFF Topology in builder order → Sage + charges → OpenMM System
-- [ ] P2b: Protocol: minimize → compress 0.25→0.5 g/mL → NVT thermalize → return (positions, cell)
-- [ ] P2c: Wire `--prep {none,openmm}` (+ protocol/density/charge flags) into run_vinyl_aibn.py
+- [x] P2a: Build OpenFF Topology in builder order → Sage + charges → OpenMM System (validated in WSL)
+- [x] P2b: Protocol: minimize → compress 0.25→0.5 g/mL → NVT thermalize → return (positions, cell); box_vectors set pre-interchange for PBC
+- [x] P2c: scripts/prep_structure.py entry point (runs in WSL prep env) + run_vinyl_aibn.py `--load-structure` handoff
+- [x] P2d: ENV PIVOT — OpenFF unusable on native Windows (MKL gemm DLL fault); prep runs in WSL conda env `pfpoly-prep`, production stays on Windows `pfpoly-gpu`, handoff via PreparedStructure JSON on /mnt/c. Validated 40+2 end-to-end. See decisions.md 2026-06-14 "Classical prep runs in WSL".
 - [ ] P3a: Unit tests (atom-order/species match, unit round-trip, tiny-system smoke, compression target)
 - [ ] P3b: Integration on 40+2 (completes, T stable, wall-clock vs all-ML)
 - [ ] P4a: Run 40+2 E2E with classical prep; save artifacts
