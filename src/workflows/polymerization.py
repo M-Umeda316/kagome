@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from src.backends.base import Calculator
 from src.boost.tdbb import BoostState, PairBias, TDBBParams, target_distance, total_bias
 from src.integrators.mc_barostat import MCBarostat
+from src.integrators.minimize import FireParams, fire_minimize
 from src.integrators.verlet import Integrator, VelocityVerletIntegrator
 from src.io.trajectory import TrajectoryFrame, TrajectoryWriter
 from src.reactive.bonds import BondTracker
@@ -70,6 +71,13 @@ class PolymerizationConfig:
     tdbb: TDBBParams = field(default_factory=TDBBParams)
     seed: int = 7
     save_interval: int = 0
+    # Pre-TDBB relaxation (paper anchor: PDF p.20 — equilibration precedes
+    # reactive production).  Disabled by default to preserve legacy behaviour;
+    # run scripts opt in.
+    minimize: bool = False
+    minimize_fmax: float = 1.0
+    minimize_max_steps: int = 500
+    equil_steps: int = 0
 
 
 def masses_from_species(species: list[str]) -> NDArray[np.floating]:
@@ -166,6 +174,11 @@ class PolymerizationWorkflow:
         rng = np.random.default_rng(self.config.seed)
 
         try:
+            if self.config.minimize:
+                self._minimize(state)
+            if self.config.equil_steps > 0:
+                self._run_equilibration_phase(state, rng, writer)
+
             for cycle in range(self.config.n_cycles):
                 log_biased = self._run_biased_phase(state, cycle, rng, writer)
                 self.logs.append(log_biased)
@@ -187,6 +200,85 @@ class PolymerizationWorkflow:
                 self.bond_tracker.save(output_dir / 'bonds.jsonl')
 
         return self.logs
+
+    def _minimize(self, state: SimulationState) -> None:
+        """Relax close contacts in the initial structure before dynamics.
+
+        Paper anchor: PDF p.20 — production reactive MD follows equilibration.
+        Grid-packed structures carry intermolecular clashes whose large forces
+        would spike the temperature; FIRE minimization removes them first.
+        """
+        logger.info(
+            'Pre-TDBB energy minimization (FIRE, fmax=%.2f, max_steps=%d)...',
+            self.config.minimize_fmax, self.config.minimize_max_steps,
+        )
+        result = fire_minimize(
+            state.positions, state.species, state.cell, self.calculator,
+            FireParams(
+                fmax_kcal_mol_A=self.config.minimize_fmax,
+                max_steps=self.config.minimize_max_steps,
+            ),
+        )
+        state.positions[:] = result.positions
+
+    def _run_equilibration_phase(
+        self,
+        state: SimulationState,
+        rng: np.random.Generator,
+        writer: TrajectoryWriter | None,
+    ) -> None:
+        """Unbiased NPT/NVT equilibration before the first TDBB cycle.
+
+        Paper anchor: PDF p.20 — "Equilibration simulations were performed in
+        the NPT ensemble ... Production simulations using reactive acceleration
+        MD were then carried out".  No bias and no bond tracking; frames are
+        labelled phase='equilibration', cycle=-1.
+        """
+        dt = self.config.timestep_fs
+        energy, forces = self.calculator.compute(
+            state.positions, state.species, state.cell,
+        )
+        current_forces = forces
+
+        for step_in_phase in range(self.config.equil_steps):
+            self.integrator.pre_force(
+                state.positions, state.velocities, current_forces,
+                state.masses, dt, rng, state.cell,
+            )
+            energy, forces = self.calculator.compute(
+                state.positions, state.species, state.cell,
+            )
+            current_forces = forces
+            self.integrator.post_force(
+                state.velocities, current_forces, state.masses, dt,
+            )
+            state.step += 1
+
+            if (self.barostat is not None
+                    and state.cell is not None
+                    and self.barostat.should_attempt(step_in_phase)):
+                accepted, new_e, new_f = self.barostat.try_step(
+                    state.positions, state.species, state.cell,
+                    energy, self.calculator, rng,
+                    _integrator_temperature(self.integrator),
+                )
+                if accepted and new_f is not None:
+                    energy, current_forces = new_e, new_f
+
+            if writer and writer.should_write(step_in_phase):
+                writer.write_frame(TrajectoryFrame(
+                    step=state.step,
+                    time_fs=state.step * dt,
+                    phase='equilibration',
+                    cycle=-1,
+                    energy_base=energy,
+                    energy_bias=0.0,
+                    energy_total=energy,
+                    positions=state.positions.tolist(),
+                    temperature_K=_instant_temperature(state.velocities, state.masses),
+                ))
+
+        logger.info('Equilibration: %d steps complete', self.config.equil_steps)
 
     def _run_biased_phase(
         self,

@@ -232,8 +232,16 @@ def _place_fragments_in_box(
     all_species: list[str] = []
 
     n_mols = len(fragments)
-    # Grid with at least n_mols cells; shuffle cell order for randomness.
-    ncells = int(np.ceil(n_mols ** (1.0 / 3.0)))
+    # Grid sized for ~70% cell occupancy (headroom factor 0.7) so each molecule's
+    # assigned cell is likely to have empty neighbours. The earlier ncells =
+    # ceil(N^(1/3)) gave only ~N cells: at high counts (e.g. 210 molecules -> 216
+    # cells, 97% occupancy) late molecules become boxed in by filled neighbours
+    # and placement fails despite the density being physically feasible. The 0.7
+    # factor leaves ncells unchanged for small systems (e.g. 42 -> 4) and only
+    # adds cells where crowding would otherwise stall the search. Placement is a
+    # non-physical initial device and does not bias the dynamics (see
+    # specs/decisions.md 2026-06-13 grid-placement record).
+    ncells = int(np.ceil((n_mols / 0.7) ** (1.0 / 3.0)))
     cell = box_size / ncells
     cell_centers = np.array(
         [

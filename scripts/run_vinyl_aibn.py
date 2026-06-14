@@ -79,44 +79,98 @@ def main() -> None:
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
+    parser.add_argument('--minimize', dest='minimize', action='store_true', default=True,
+                        help='FIRE energy minimization before TDBB (default: on). '
+                             'Relaxes initial close contacts (paper anchor PDF p.20).')
+    parser.add_argument('--no-minimize', dest='minimize', action='store_false',
+                        help='Skip pre-TDBB energy minimization.')
+    parser.add_argument('--minimize-fmax', type=float, default=1.0,
+                        help='FIRE convergence threshold (kcal/mol/Å). Default 1.0.')
+    parser.add_argument('--equil-steps', type=int, default=2000,
+                        help='Unbiased NPT equilibration steps before TDBB '
+                             '(paper anchor PDF p.20; length not specified, default 2000 '
+                             '= 500 fs matching a TDBB block). 0 disables.')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
 
-    if args.box_size is None:
-        from scripts._systems import (
-            _INITIATOR_SMILES,
-            _MONOMER_SMILES,
-            box_from_density,
-        )
-        args.box_size = box_from_density(
-            {_MONOMER_SMILES: args.n_monomers, _INITIATOR_SMILES: args.n_initiators},
-            args.density,
-        )
+    from scripts._systems import (
+        _INITIATOR_SMILES,
+        _MONOMER_SMILES,
+        box_from_density,
+    )
+    counts = {_MONOMER_SMILES: args.n_monomers, _INITIATOR_SMILES: args.n_initiators}
+
+    if args.box_size is not None:
+        target_edge = args.box_size
+    else:
+        target_edge = box_from_density(counts, args.density)
         logger.info(
             'Box edge from density %.2f g/mL: %.2f Å (paper SI S-3)',
-            args.density, args.box_size,
+            args.density, target_edge,
+        )
+
+    # Backend is created before the system so it can drive FIRE densification.
+    calc = _create_backend(args.backend, args.device, args.model)
+    logger.info('Backend: %s', calc.name)
+
+    def _build(edge: float, gen: np.random.Generator):
+        return build_vinyl_aibn_system(
+            n_monomers=args.n_monomers,
+            n_initiators=args.n_initiators,
+            box_size=edge,
+            rng=gen,
         )
 
     logger.info(
-        'Building vinyl/AIBN system: %d monomers + %d initiators in %.1f Å box...',
-        args.n_monomers, args.n_initiators, args.box_size,
+        'Building vinyl/AIBN system: %d monomers + %d initiators, target box %.1f Å...',
+        args.n_monomers, args.n_initiators, target_edge,
     )
-    positions, species, template, groups, propagation_map = build_vinyl_aibn_system(
-        n_monomers=args.n_monomers,
-        n_initiators=args.n_initiators,
-        box_size=args.box_size,
-        rng=rng,
-    )
+    try:
+        # Direct placement at the target box (small systems take this path,
+        # bit-for-bit identical to prior behaviour).
+        positions, species, template, groups, propagation_map = _build(target_edge, rng)
+        cell = np.diag([target_edge, target_edge, target_edge])
+    except RuntimeError:
+        # Greedy placer stalls at high molecule counts even when the density is
+        # physically feasible.  Place dilute, then FIRE-compress to the target
+        # (see specs/decisions.md 2026-06-14 densification record).
+        logger.warning(
+            'Direct placement at %.2f Å failed — placing dilute then compressing.',
+            target_edge,
+        )
+        place_edge = None
+        for place_density in (0.25, 0.20, 0.15, 0.10):
+            edge = box_from_density(counts, place_density)
+            if edge <= target_edge:
+                continue
+            try:
+                positions, species, template, groups, propagation_map = _build(edge, rng)
+                place_edge = edge
+                logger.info(
+                    'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
+                    place_density, edge, target_edge,
+                )
+                break
+            except RuntimeError:
+                continue
+        if place_edge is None:
+            raise RuntimeError(
+                'Could not place the system even at dilute density 0.10 g/mL.'
+            )
+        from src.integrators.minimize import compress_box
+        place_cell = np.diag([place_edge, place_edge, place_edge])
+        result = compress_box(positions, place_cell, target_edge, species, calc)
+        positions, cell = result.positions, result.cell
+
     logger.info(
-        'System: %d atoms total  (%d radical_C, %d vinyl_alpha_C sites)',
+        'System: %d atoms total  (%d radical_C, %d vinyl_alpha_C sites), box %.2f Å',
         len(species),
         len(groups['radical_C'].atom_indices),
         len(groups['vinyl_alpha_C'].atom_indices),
+        float(cell[0, 0]),
     )
     logger.info('Propagation map: %d entries', len(propagation_map))
-
-    cell = np.diag([args.box_size, args.box_size, args.box_size])
 
     langevin_params = LangevinParams(temperature_K=args.temperature)
     config = PolymerizationConfig(
@@ -133,10 +187,10 @@ def main() -> None:
         ),
         seed=args.seed,
         save_interval=50,
+        minimize=args.minimize,
+        minimize_fmax=args.minimize_fmax,
+        equil_steps=args.equil_steps,
     )
-
-    calc = _create_backend(args.backend, args.device, args.model)
-    logger.info('Backend: %s', calc.name)
 
     integrator = LangevinIntegrator(langevin_params)
     tracker = BondTracker()
@@ -159,6 +213,10 @@ def main() -> None:
         masses=masses,
     )
 
+    logger.info(
+        'Pre-TDBB: minimize=%s (fmax=%.2f), equilibration=%d steps',
+        config.minimize, config.minimize_fmax, config.equil_steps,
+    )
     logger.info(
         'Starting TDBB: %d cycles × (%d biased + %d unbiased steps), T=%.0f K',
         config.n_cycles, config.biased_steps, config.unbiased_steps, args.temperature,
@@ -188,13 +246,16 @@ def main() -> None:
         'n_monomers': args.n_monomers,
         'n_initiators': args.n_initiators,
         'n_atoms': len(species),
-        'box_size_A': args.box_size,
+        'box_size_A': float(cell[0, 0]),
         'cell_periodic': True,
         'backend': calc.name,
         'temperature_K': langevin_params.temperature_K,
         'biased_steps': args.biased_steps,
         'unbiased_steps': args.unbiased_steps,
         'n_cycles': args.n_cycles,
+        'minimize': args.minimize,
+        'minimize_fmax': args.minimize_fmax,
+        'equil_steps': args.equil_steps,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'propagation_events': n_form,  # each formation triggers one propagation
