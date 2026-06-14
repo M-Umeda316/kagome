@@ -90,6 +90,11 @@ def main() -> None:
                         help='Unbiased NPT equilibration steps before TDBB '
                              '(paper anchor PDF p.20; length not specified, default 2000 '
                              '= 500 fs matching a TDBB block). 0 disables.')
+    parser.add_argument('--load-structure', type=Path, default=None,
+                        help='Load a classically pre-equilibrated structure (JSON from '
+                             'scripts/prep_structure.py) and skip build/place/compress. '
+                             'positions+cell come from the file; the short ML re-equil '
+                             '(--minimize/--equil-steps) still runs. See decision D-4.')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -122,46 +127,72 @@ def main() -> None:
             rng=gen,
         )
 
-    logger.info(
-        'Building vinyl/AIBN system: %d monomers + %d initiators, target box %.1f Å...',
-        args.n_monomers, args.n_initiators, target_edge,
-    )
-    try:
-        # Direct placement at the target box (small systems take this path,
-        # bit-for-bit identical to prior behaviour).
-        positions, species, template, groups, propagation_map = _build(target_edge, rng)
-        cell = np.diag([target_edge, target_edge, target_edge])
-    except RuntimeError:
-        # Greedy placer stalls at high molecule counts even when the density is
-        # physically feasible.  Place dilute, then FIRE-compress to the target
-        # (see specs/decisions.md 2026-06-14 densification record).
-        logger.warning(
-            'Direct placement at %.2f Å failed — placing dilute then compressing.',
-            target_edge,
-        )
-        place_edge = None
-        for place_density in (0.25, 0.20, 0.15, 0.10):
-            edge = box_from_density(counts, place_density)
-            if edge <= target_edge:
-                continue
-            try:
-                positions, species, template, groups, propagation_map = _build(edge, rng)
-                place_edge = edge
-                logger.info(
-                    'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
-                    place_density, edge, target_edge,
-                )
-                break
-            except RuntimeError:
-                continue
-        if place_edge is None:
-            raise RuntimeError(
-                'Could not place the system even at dilute density 0.10 g/mL.'
+    if args.load_structure is not None:
+        # Consume a classically pre-equilibrated structure (positions + cell).
+        # template/groups/propagation_map are composition-derived (not position-
+        # dependent), so rebuild them at a dilute box (always places) and overlay
+        # the loaded coordinates. Atom order must match 1:1 (decision D-4),
+        # asserted via the species list.
+        from src.prep.structure_io import PreparedStructure
+
+        prepared = PreparedStructure.load(args.load_structure)
+        meta_edge = box_from_density(counts, 0.10)
+        _, ref_species, template, groups, propagation_map = _build(meta_edge, rng)
+        if list(ref_species) != list(prepared.species):
+            raise ValueError(
+                'Loaded structure species do not match the builder '
+                f'(loaded N={len(prepared.species)}, builder N={len(ref_species)}). '
+                'Ensure --n-monomers/--n-initiators match the prepped structure.'
             )
-        from src.integrators.minimize import compress_box
-        place_cell = np.diag([place_edge, place_edge, place_edge])
-        result = compress_box(positions, place_cell, target_edge, species, calc)
-        positions, cell = result.positions, result.cell
+        positions = prepared.positions
+        species = prepared.species
+        cell = (prepared.cell if prepared.cell is not None
+                else np.diag([target_edge, target_edge, target_edge]))
+        logger.info(
+            'Loaded pre-equilibrated structure from %s (%d atoms, box %.2f Å).',
+            args.load_structure, len(species), float(cell[0, 0]),
+        )
+    else:
+        logger.info(
+            'Building vinyl/AIBN system: %d monomers + %d initiators, target box %.1f Å...',
+            args.n_monomers, args.n_initiators, target_edge,
+        )
+        try:
+            # Direct placement at the target box (small systems take this path,
+            # bit-for-bit identical to prior behaviour).
+            positions, species, template, groups, propagation_map = _build(target_edge, rng)
+            cell = np.diag([target_edge, target_edge, target_edge])
+        except RuntimeError:
+            # Greedy placer stalls at high molecule counts even when the density is
+            # physically feasible.  Place dilute, then FIRE-compress to the target
+            # (see specs/decisions.md 2026-06-14 densification record).
+            logger.warning(
+                'Direct placement at %.2f Å failed — placing dilute then compressing.',
+                target_edge,
+            )
+            place_edge = None
+            for place_density in (0.25, 0.20, 0.15, 0.10):
+                edge = box_from_density(counts, place_density)
+                if edge <= target_edge:
+                    continue
+                try:
+                    positions, species, template, groups, propagation_map = _build(edge, rng)
+                    place_edge = edge
+                    logger.info(
+                        'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
+                        place_density, edge, target_edge,
+                    )
+                    break
+                except RuntimeError:
+                    continue
+            if place_edge is None:
+                raise RuntimeError(
+                    'Could not place the system even at dilute density 0.10 g/mL.'
+                )
+            from src.integrators.minimize import compress_box
+            place_cell = np.diag([place_edge, place_edge, place_edge])
+            result = compress_box(positions, place_cell, target_edge, species, calc)
+            positions, cell = result.positions, result.cell
 
     logger.info(
         'System: %d atoms total  (%d radical_C, %d vinyl_alpha_C sites), box %.2f Å',

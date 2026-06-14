@@ -15,3 +15,11 @@ FORCE_CONV = 4.184e-4
 # 1 kcal/(mol·Å³) = (4184/N_A) J / (1e-10)³ m³ ≈ 6.947e9 Pa = 6.947 GPa
 # 1 atm = 101325 Pa → 101325 / 6.947e9 ≈ 1.4596e-5 kcal/(mol·Å³)
 ATM_TO_KCAL_MOL_A3 = 1.4596e-5
+
+# ── Boundary conversions for OpenMM (nm, kJ/mol) ↔ this repo (Å, kcal/mol) ─────
+# Used only at the classical structure-prep boundary (src/prep). OpenMM's native
+# unit system is nm / kJ/mol / ps; the rest of the repo uses Å / kcal/mol / fs.
+ANGSTROM_PER_NM = 10.0
+NM_PER_ANGSTROM = 0.1
+KJ_PER_KCAL = 4.184
+KCAL_PER_KJ = 1.0 / 4.184

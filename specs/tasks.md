@@ -66,8 +66,8 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 - [x] P0a: License-verify + register openmm, openff-toolkit/interchange/forcefields/nagl(+models) in dependency-license-matrix.md and approved_dependencies.yaml
 - [x] P0b: Record decisions D-1 (0.5 g/mL fixed prep), D-2 (nagl charges + Gasteiger fallback), D-3 (simple protocol), D-4 (self-contained OpenMM prep) in decisions.md
 - [x] P0c: Correct the paper200 record (launched run did not complete; no artifacts)
-- [ ] P1a: Refactor `_systems._rdkit_mol(smiles, seed)` shared by `_rdkit_3d` and prep (atom-order guarantee)
-- [ ] P1b: Scaffold `src/prep/openmm_equilibrate.py` + `ClassicalPrepConfig`; centralize Å↔nm / kcal↔kJ conversions
+- [x] P1a: Refactor `_systems._rdkit_mol(smiles, seed)` shared by `_rdkit_3d` and prep (atom-order guarantee)
+- [x] P1b: Scaffold `src/prep/` (structure_io + openmm_equilibrate config/body) + `--load-structure` handoff in run_vinyl_aibn.py; Å↔nm / kcal↔kJ constants in src/units.py; tests/unit/test_prep.py (12 cases). OpenMM/OpenFF body lands but is validated in P2.
 - [ ] P2a: Build OpenFF Topology in builder order → Sage + charges → OpenMM System
 - [ ] P2b: Protocol: minimize → compress 0.25→0.5 g/mL → NVT thermalize → return (positions, cell)
 - [ ] P2c: Wire `--prep {none,openmm}` (+ protocol/density/charge flags) into run_vinyl_aibn.py

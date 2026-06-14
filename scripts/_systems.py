@@ -125,8 +125,19 @@ def build_template_and_groups(
 
 # ── RDKit-based helpers ──────────────────────────────────────────────────────
 
-def _rdkit_3d(smiles: str, seed: int = 42) -> tuple[np.ndarray, list[str]]:
-    """SMILES → (positions Å, species list) via RDKit EmbedMolecule + MMFF."""
+def _rdkit_mol(smiles: str, seed: int = 42):
+    """SMILES → 3D-embedded, MMFF-optimized RDKit Mol with explicit hydrogens.
+
+    Single source of atom ordering for both the system builder (`_rdkit_3d`) and
+    the classical structure-prep stage. The OpenFF Topology used by prep is built
+    from this exact Mol (via Molecule.from_rdkit) so that AddHs atom ordering
+    matches the builder's `species`/`positions` order; otherwise the global
+    `groups` / `propagation_map` indices would be invalidated when prep hands
+    relaxed coordinates back. See specs/decisions.md 2026-06-14 decision D-4.
+
+    The conformer seed only affects 3-D coordinates, not atom indexing, so the
+    returned connectivity/ordering is deterministic for a given SMILES.
+    """
     try:
         from rdkit import Chem
         from rdkit.Chem import AllChem
@@ -146,6 +157,16 @@ def _rdkit_3d(smiles: str, seed: int = 42) -> tuple[np.ndarray, list[str]]:
     if result == -1:
         raise RuntimeError(f'EmbedMolecule failed for {smiles!r}')
     AllChem.MMFFOptimizeMolecule(mol)
+    return mol
+
+
+def _rdkit_3d(smiles: str, seed: int = 42) -> tuple[np.ndarray, list[str]]:
+    """SMILES → (positions Å, species list) via RDKit EmbedMolecule + MMFF.
+
+    Thin wrapper over `_rdkit_mol` so the builder and the classical prep stage
+    share one atom-ordering source (see `_rdkit_mol`).
+    """
+    mol = _rdkit_mol(smiles, seed)
     conf = mol.GetConformer()
     positions = np.array(conf.GetPositions(), dtype=np.float64)
     species = [atom.GetSymbol() for atom in mol.GetAtoms()]
