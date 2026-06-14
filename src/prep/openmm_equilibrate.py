@@ -64,9 +64,10 @@ class ClassicalPrepConfig:
     nagl_model: str = 'openff-gnn-am1bcc-0.1.0-rc.3.pt'
     minimize_tolerance_kj_mol_nm: float = 10.0
     compress_stages: int = 20
-    compress_relax_steps: int = 200           # MD steps relaxing each shrink
+    compress_minimize_iters: int = 200        # max minimizer iters per shrink stage
+    compress_relax_steps: int = 200           # MD steps relaxing each shrink (after minimize)
     nvt_steps: int = 50_000                    # thermalization (classical, cheap)
-    timestep_fs: float = 1.0
+    timestep_fs: float = 0.5                    # conservative: all-atom (H), dense box
     friction_per_ps: float = 1.0
     platform: str = 'CPU'                      # 'CUDA'|'OpenCL'|'CPU'|'Reference'
     seed: int = 42
@@ -214,8 +215,30 @@ def equilibrate_structure(
     # 2) deterministic compression start_edge -> target_edge
     _compress(context, system, start_edge_A, target_edge_A, cfg)
 
-    # 3) NVT thermalization at the (fixed) target box
-    integrator.step(cfg.nvt_steps)
+    # 3) final full minimization at the target box, then fresh velocities, so the
+    #    NVT below starts from a low-force state (otherwise residual close
+    #    contacts at liquid density blow up the integrator: "coordinate is NaN").
+    openmm.LocalEnergyMinimizer.minimize(
+        context, cfg.minimize_tolerance_kj_mol_nm, 0,
+    )
+    context.setVelocitiesToTemperature(cfg.temperature_K * ommunit.kelvin, cfg.seed)
+    logger.info('Classical prep: final minimization at target density done.')
+
+    # 4) NVT thermalization at the (fixed) target box. Run in chunks and bail out
+    #    early with a clear error if the integrator produces a non-finite state.
+    chunk = max(1, cfg.nvt_steps // 20)
+    done = 0
+    while done < cfg.nvt_steps:
+        integrator.step(min(chunk, cfg.nvt_steps - done))
+        done += chunk
+        e = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(
+            ommunit.kilojoule_per_mole
+        )
+        if not np.isfinite(e):
+            raise RuntimeError(
+                f'Classical prep: NVT became non-finite after {done} steps '
+                f'(timestep {cfg.timestep_fs} fs may be too large for the dense box).'
+            )
     logger.info('Classical prep: NVT thermalization %d steps done.', cfg.nvt_steps)
 
     state = context.getState(getPositions=True)
@@ -288,6 +311,8 @@ def _compress(context, system, start_edge_A, target_edge_A, cfg) -> None:
         'Classical prep: compressing %.2f Å -> %.2f Å in %d stages.',
         start_edge_A, target_edge_A, cfg.compress_stages,
     )
+    import openmm
+
     for stage in range(1, cfg.compress_stages + 1):
         state = context.getState(getPositions=True)
         pos_nm = np.array(
@@ -298,5 +323,12 @@ def _compress(context, system, start_edge_A, target_edge_A, cfg) -> None:
         cur_edge_A *= ratio
         _set_cubic_box(context, system, cur_edge_A * NM_PER_ANGSTROM)
         context.setPositions(pos_nm * ommunit.nanometer)
-        context.getIntegrator().step(cfg.compress_relax_steps)
+        # Affine scaling introduces close contacts; energy-minimize (stable, no
+        # timestep) to remove them BEFORE any MD, otherwise the huge overlap
+        # forces blow up the integrator ("Particle coordinate is NaN").
+        openmm.LocalEnergyMinimizer.minimize(
+            context, cfg.minimize_tolerance_kj_mol_nm, cfg.compress_minimize_iters,
+        )
+        if cfg.compress_relax_steps > 0:
+            context.getIntegrator().step(cfg.compress_relax_steps)
     logger.info('Classical prep: compression complete (edge %.2f Å).', cur_edge_A)
