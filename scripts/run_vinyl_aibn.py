@@ -313,6 +313,8 @@ def main() -> None:
                 'n_candidates': log.n_candidates,
                 'n_selected': log.n_selected,
                 'bias_energy': log.bias_energy,
+                'min_pair_distance': (None if log.min_pair_distance == float('inf')
+                                      else log.min_pair_distance),
             }
             for log in logs
         ],

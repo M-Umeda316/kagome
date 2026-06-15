@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 
 from src.backends.base import Calculator
 from src.boost.tdbb import BoostState, PairBias, TDBBParams, target_distance, total_bias
+from src.geometry import minimum_image
 from src.integrators.mc_barostat import MCBarostat
 from src.integrators.minimize import FireParams, fire_minimize
 from src.integrators.verlet import Integrator, VelocityVerletIntegrator
@@ -60,6 +61,9 @@ class CycleLog:
     n_candidates: int = 0
     n_selected: int = 0
     bias_energy: float = 0.0
+    # Closest any biased formation pair got during the phase (Å). Evidence for
+    # whether [3,6]-window pairs reach the bias-capture shell / bonding distance.
+    min_pair_distance: float = float('inf')
 
 
 @dataclass
@@ -183,9 +187,10 @@ class PolymerizationWorkflow:
                 log_biased = self._run_biased_phase(state, cycle, rng, writer)
                 self.logs.append(log_biased)
                 logger.info(
-                    'Cycle %d biased: %d candidates, %d selected, bias_E=%.2f',
+                    'Cycle %d biased: %d candidates, %d selected, bias_E=%.2f, '
+                    'min_pair_dist=%.2f A',
                     cycle, log_biased.n_candidates, log_biased.n_selected,
-                    log_biased.bias_energy,
+                    log_biased.bias_energy, log_biased.min_pair_distance,
                 )
 
                 log_unbiased = self._run_unbiased_phase(state, cycle, rng, writer)
@@ -312,6 +317,9 @@ class PolymerizationWorkflow:
         )
         current_forces = base_forces + bias_forces
 
+        form_pairs = [p for p in active_pairs if p.is_formation]
+        min_form_dist = float('inf')
+
         for step_in_phase in range(self.config.biased_steps):
             boost.advance(
                 self.config.tdbb.gamma,
@@ -337,6 +345,12 @@ class PolymerizationWorkflow:
                 state.velocities, current_forces, state.masses, dt,
             )
             state.step += 1
+
+            for _p in form_pairs:
+                _r = float(np.linalg.norm(minimum_image(
+                    state.positions[_p.idx_b] - state.positions[_p.idx_a], state.cell)))
+                if _r < min_form_dist:
+                    min_form_dist = _r
 
             if (self.barostat is not None
                     and state.cell is not None
@@ -391,6 +405,7 @@ class PolymerizationWorkflow:
             n_candidates=len(candidates),
             n_selected=len(selected),
             bias_energy=last_bias_energy,
+            min_pair_distance=min_form_dist,
         )
 
     def _run_unbiased_phase(
