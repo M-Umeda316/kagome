@@ -127,3 +127,96 @@ builds directly on the validated demo_radical_formation.py.
 ```
 (WSL classical prep is not required for this small isolated single-chain demo;
 build + place directly. spin=2 is set inside the script.)
+
+---
+
+# S2 work plan — melt-driven formation from the paper [3,6] window
+
+## Goal
+Demonstrate that confirmed formations occur in a real **melt** WITHOUT the S1 demo
+devices — i.e. with the paper-faithful candidate window **[3,6] Å (Table S1)** and
+**no directed monomer placement**. Selected pairs must diffuse from the [3,6]
+window across the ~6 kcal/mol addition barrier into the bias-capture shell
+(<~2.6 Å), where the bias drives them to the product. Target: **>=1 melt-driven
+confirmed_formation** (ideally a few / short propagation) from [3,6].
+
+## Scope decision — single radical, to isolate sampling from S3
+A melt-driven test needs REAL radical chemistry (the closed-shell surrogate used in
+paper100/paper100_fixA can never bond → those zeros were expected). But a dense melt
+with MANY radicals hits the multi-radical system-spin problem (S3). So S2 uses
+**ONE open-shell radical in a dense methyl-acrylate melt** → spin=2 (doublet)
+throughout, S3 avoided. This cleanly isolates the question S2 exists to answer:
+*does a pair selected from [3,6] reach bonding distance by melt diffusion + the
+weak inward bias slope within a feasible biased-phase length / cycle count?*
+(The single-bond demo + PES scan say it is physically possible once a pair reaches
+the capture shell; S2 measures/achieves the RATE.)
+
+## Physics levers (paper-allowed; do NOT touch f2/r0/λ/window)
+- The bias V^f decreases monotonically from ~250 (at 3.5 Å) to 0 (at r0=2.04), so it
+  adds a WEAK inward thermodynamic slope across [2.04, 3.5] that strengthens as the
+  pair approaches — over a long biased phase this nudges pairs inward.
+- **Biased-phase max length** (run-until-reaction already implemented; raise the cap).
+- **Number of cycles** (the paper builds chains over many cycles).
+- **γ** (acceleration factor): the paper explicitly tunes reaction rate via γ
+  (Fig. S4); larger γ ramps f1 faster → higher rate. This is the legitimate knob.
+- **Density** (0.5 g/mL paper; higher density → more near-contacts).
+
+## Design / system preparation (two options)
+- **Option A (recommended first, fast):** build 1 radical (`C[C](C)C#N`) + N monomers
+  (N≈30–50) directly via the grid placer at the densest feasible density for this
+  count (the placer handled 42 molecules at gpu40; try 0.5, fall back to ~0.35),
+  then a short ML equilibration (existing `equil_steps`) to relax. No WSL/OpenFF
+  prep → avoids classical parametrization of an open-shell radical. spin=2.
+- **Option B (fidelity follow-up):** WSL classical prep at 0.5 g/mL using the
+  CLOSED-SHELL initiator for packing only, then convert that initiator to the
+  radical in production by removing its radical H (atom-count/index/group fix-up)
+  and setting spin=2. Truer to the paper density but needs a small H-removal utility.
+
+## Tasks
+- **T-S2.1**: single-radical dense melt builder/runner (Option A): extend
+  run_vinyl_aibn.py (already has --initiator-smiles/--spin) or a small script;
+  1 radical + N monomers, spin=2, ML equilibration, NVT, paper window [3,6]
+  (NO --select-rmin widening), NO directed placement.
+- **T-S2.2**: run TDBB with run-until-reaction and a LONG biased cap (e.g. 5000–10000
+  steps) over MANY cycles (e.g. 20–50); log per-cycle reaction events and the
+  min radical–vinyl distance reached (to see how close pairs get).
+- **T-S2.3**: if formations are too rare, sweep the paper-allowed levers — γ (e.g.
+  1→2→4), biased-phase length, density — and report reaction count vs each
+  (mirrors the paper's Fig. S4 sensitivity study). Record what is needed for a
+  feasible melt rate on this hardware.
+- **T-S2.4**: produce a conversion-like metric (cumulative formations vs cycle) and
+  compare qualitatively to the paper (monotonic rise; α(t) shape — full Eq.11 fit
+  is S5).
+- **T-S2.5**: record results in decisions.md + figure-comparison.md; commit.
+
+## Acceptance criteria
+- **>=1 melt-driven confirmed_formation** with the paper window [3,6] and no directed
+  placement / no widened window (single radical, spin=2).
+- Logged evidence that selected [3,6] pairs reach <r0 during biasing (min-distance
+  trace), i.e. the mechanism works from the paper window, not just from pre-placed
+  contacts.
+- The biased-phase length / cycles / γ needed for a feasible rate are recorded
+  (quantifies the sampling cost on this hardware).
+- Reproduction command recorded.
+
+## Risks / open questions
+- **Rate / GPU time**: melt-driven crossing may be rare → long runs (hours). Mitigate
+  with higher density, longer biased caps, larger γ; cap total wall-clock and report
+  the achieved rate even if low.
+- **Open-shell radical in classical prep** (Option B only) — parametrization;
+  Option A avoids it.
+- If even with aggressive (but paper-allowed) γ / length the melt rate is impractical
+  on this GPU, that is itself a finding (quantifies why directed placement was needed
+  in S1); document and consider scale/hardware (S6).
+- Stays single-radical: multi-radical melts (paper-parallel) remain S3.
+
+## Reproduction command (planned, Option A)
+```
+<pfpoly-gpu>/python scripts/run_vinyl_aibn.py \
+    --n-monomers 40 --n-initiators 1 --initiator-smiles "C[C](C)C#N" --spin 2 \
+    --density 0.5 --backend orb --device cuda --no-barostat \
+    --n-cycles 30 --biased-steps 6000 --unbiased-steps 500 --equil-steps 2000 \
+    --output-dir runs/s2_melt_single_radical
+```
+(window stays [3,6]; no --select-rmin. If placement at 0.5 fails, lower --density or
+use WSL prep per Option B.)
