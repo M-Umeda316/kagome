@@ -34,6 +34,53 @@ class BondTracker:
         self._threshold_fraction = threshold_fraction
         self._events: list[BondEvent] = []
         self._pending: list[tuple[PairBias, int]] = []
+        # Pairs already confirmed (min,max index) so in-phase detection and the
+        # end-of-unbiased check never double-count the same reaction.
+        self._reacted: set[tuple[int, int]] = set()
+
+    @staticmethod
+    def _key(a: int, b: int) -> tuple[int, int]:
+        return (min(a, b), max(a, b))
+
+    def check_reactions_during_bias(
+        self,
+        pairs: list[PairBias],
+        positions: NDArray[np.floating],
+        step: int,
+        cycle: int,
+        cell: NDArray[np.floating] | None = None,
+    ) -> list[BondEvent]:
+        """Detect reaction events DURING the biased phase (paper §2.2 step 3).
+
+        A formation pair reacts when its separation falls below the vdW bonding
+        threshold (r ≤ threshold_fraction·r0 = 0.6·Σr_vdw); a dissociation pair
+        reacts when it rises above it. Newly reacted pairs are recorded once and
+        returned so the caller can end the biased segment (run-until-reaction).
+        """
+        newly: list[BondEvent] = []
+        for pair in pairs:
+            key = self._key(pair.idx_a, pair.idx_b)
+            if key in self._reacted:
+                continue
+            r_vec = minimum_image(
+                positions[pair.idx_b] - positions[pair.idx_a], cell,
+            )
+            r = float(np.linalg.norm(r_vec))
+            threshold = self._threshold_fraction * pair.r0
+            reacted = (r <= threshold) if pair.is_formation else (r > threshold)
+            if not reacted:
+                continue
+            etype = ('confirmed_formation' if pair.is_formation
+                     else 'confirmed_dissociation')
+            ev = BondEvent(
+                step=step, cycle=cycle,
+                atom_a=pair.idx_a, atom_b=pair.idx_b,
+                event_type=etype, distance=r, r0=pair.r0,
+            )
+            self._events.append(ev)
+            self._reacted.add(key)
+            newly.append(ev)
+        return newly
 
     def record_attempts(
         self,
@@ -65,6 +112,8 @@ class BondTracker:
     ) -> list[BondEvent]:
         confirmed: list[BondEvent] = []
         for pair, cycle in self._pending:
+            if self._key(pair.idx_a, pair.idx_b) in self._reacted:
+                continue  # already confirmed during the biased phase
             r_vec = minimum_image(
                 positions[pair.idx_b] - positions[pair.idx_a], cell,
             )
@@ -79,6 +128,7 @@ class BondTracker:
                         distance=r, r0=pair.r0,
                     )
                     self._events.append(ev)
+                    self._reacted.add(self._key(pair.idx_a, pair.idx_b))
                     confirmed.append(ev)
             else:
                 threshold = self._threshold_fraction * pair.r0
@@ -90,6 +140,7 @@ class BondTracker:
                         distance=r, r0=pair.r0,
                     )
                     self._events.append(ev)
+                    self._reacted.add(self._key(pair.idx_a, pair.idx_b))
                     confirmed.append(ev)
         self._pending.clear()
         return confirmed

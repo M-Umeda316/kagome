@@ -369,6 +369,22 @@ class PolymerizationWorkflow:
                     temperature_K=_instant_temperature(state.velocities, state.masses),
                 ))
 
+            # Paper §2.2 step 3: detect reaction events DURING biasing and end the
+            # biased segment on the first event (run-until-reaction). A formation
+            # pair reacts when its separation falls below the vdW bonding threshold
+            # (r ≤ threshold_fraction·r0 = 0.6·Σr_vdw); dissociation when above.
+            if self.bond_tracker is not None:
+                events = self.bond_tracker.check_reactions_during_bias(
+                    active_pairs, state.positions, state.step, cycle, state.cell,
+                )
+                if events:
+                    logger.info(
+                        'Cycle %d biased: reaction event at step %d (%d pair(s)) '
+                        '- ending biased phase', cycle, step_in_phase + 1, len(events),
+                    )
+                    last_bias_energy = bias_energy
+                    break
+
         return CycleLog(
             cycle=cycle, phase='biased',
             steps=self.config.biased_steps,
