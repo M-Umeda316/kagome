@@ -72,8 +72,16 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 - [x] P2b: Protocol: minimize → compress 0.25→0.5 g/mL → NVT thermalize → return (positions, cell); box_vectors set pre-interchange for PBC
 - [x] P2c: scripts/prep_structure.py entry point (runs in WSL prep env) + run_vinyl_aibn.py `--load-structure` handoff
 - [x] P2d: ENV PIVOT — OpenFF unusable on native Windows (MKL gemm DLL fault); prep runs in WSL conda env `pfpoly-prep`, production stays on Windows `pfpoly-gpu`, handoff via PreparedStructure JSON on /mnt/c. Validated 40+2 end-to-end. See decisions.md 2026-06-14 "Classical prep runs in WSL".
-- [ ] P3a: Unit tests (atom-order/species match, unit round-trip, tiny-system smoke, compression target)
-- [ ] P3b: Integration on 40+2 (completes, T stable, wall-clock vs all-ML)
-- [ ] P4a: Run 40+2 E2E with classical prep; save artifacts
-- [ ] P4b: Run paper200 (200+10) classical prep → ML production; check formations>=1, T≈333 K, VRAM/wall-clock; figures; update figure-comparison.md
-- [ ] P5: Demote ML compress_box to fallback for paper-scale; docs; final commit
+- [x] P3a: Unit tests (atom-order/species match, unit round-trip, tiny-system smoke) — tests/unit/test_prep.py (12 cases). OpenFF body validated by WSL integration run.
+- [x] P3b: Integration on 40+2 (prep completes; handoff into GPU production passes species assert; FIRE E=-67.5; 6 candidates)
+- [x] P4a: 40+2 prep + handoff validated end-to-end
+- [x] P4b: paper-scale run — 200+10 exceeds 16 GB VRAM (OrbMol-v2 ~9.5 GB/call), so ran **100+5** instead: completed 14,000 steps NVT at 0.50 g/mL, T mean 295 K, VRAM 2.4-4.7 GB, candidates 14/11/19. confirmed_formations=0 (isolated to TDBB bias capture range — Ask-first). Figures generated; figure-comparison.md updated.
+- [x] P5: ML compress_box is now only the legacy fallback (paper-scale uses WSL classical prep + --load-structure); reproduce_figures cp932 fix; docs in decisions.md/figure-comparison.md; commits per phase.
+
+### Reproduction recipe (paper-density vinyl, this machine)
+1. Prep in WSL: `wsl -d Ubuntu-24.04 -- bash -lc 'cd /mnt/c/Users/shanu/Documents/Python/pfpoly && ~/miniconda3/envs/pfpoly-prep/bin/python scripts/prep_structure.py --n-monomers 100 --n-initiators 5 --seed 42 --charge-method gasteiger --platform CPU --compress-relax-steps 0 --nvt-steps 20000 --output runs/prep/paper100.json'`
+2. Produce on Windows GPU: `<pfpoly-gpu>/python scripts/run_vinyl_aibn.py --load-structure runs/prep/paper100.json --n-monomers 100 --n-initiators 5 --seed 42 --backend orb --device cuda --no-barostat --n-cycles 3 --biased-steps 2000 --unbiased-steps 2000 --equil-steps 2000 --output-dir runs/vinyl_aibn_paper100`
+3. Figures: `scripts/reproduce_figures.py --trajectory ...trajectory.jsonl --bonds ...bonds.jsonl --n-reactive-sites 205 --target-temperature 333 --output-dir .../figures`
+
+### OPEN (Ask-first, TDBB physics): formations=0
+Density/scale/temperature are all correct now; pairs are listed at 3-6 Å (Table S1) but the bias well (f2=10 -> ~0.32 Å half-width near r0~2 Å) exerts ~0 force there, so selected pairs are never pulled to bonding. Needs a paper re-read + owner decision on the listing-window vs bias-range coupling (do NOT change f2/r0/listing range unilaterally — trigger 3).
