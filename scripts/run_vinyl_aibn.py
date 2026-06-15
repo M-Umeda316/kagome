@@ -49,10 +49,10 @@ logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def _create_backend(backend: str, device: str, model: str) -> Calculator:
+def _create_backend(backend: str, device: str, model: str, spin: int = 1) -> Calculator:
     if backend == 'orb':
         from src.backends.orb_backend import create_orb_calculator
-        return create_orb_calculator(device=device)
+        return create_orb_calculator(device=device, spin=spin)
     else:
         from src.backends.mace_backend import create_mace_calculator
         return create_mace_calculator(model=model, device=device)
@@ -85,6 +85,12 @@ def main() -> None:
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
+    parser.add_argument('--initiator-smiles', type=str, default=None,
+                        help='Override the initiator SMILES (e.g. "C[C](C)C#N" for the '
+                             'real open-shell 2-cyanoprop-2-yl radical). Default: closed-shell model.')
+    parser.add_argument('--spin', type=int, default=1,
+                        help='Total spin multiplicity (2S+1) passed to OrbMol-v2. '
+                             'Use 2 (doublet) for a single radical. Default 1 (singlet).')
     parser.add_argument('--minimize', dest='minimize', action='store_true', default=True,
                         help='FIRE energy minimization before TDBB (default: on). '
                              'Relaxes initial close contacts (paper anchor PDF p.20).')
@@ -122,8 +128,10 @@ def main() -> None:
         )
 
     # Backend is created before the system so it can drive FIRE densification.
-    calc = _create_backend(args.backend, args.device, args.model)
-    logger.info('Backend: %s', calc.name)
+    calc = _create_backend(args.backend, args.device, args.model, spin=args.spin)
+    logger.info('Backend: %s (spin=%d)', calc.name, args.spin)
+
+    _init_smiles = args.initiator_smiles or _INITIATOR_SMILES
 
     def _build(edge: float, gen: np.random.Generator):
         return build_vinyl_aibn_system(
@@ -131,6 +139,7 @@ def main() -> None:
             n_initiators=args.n_initiators,
             box_size=edge,
             rng=gen,
+            initiator_smiles=_init_smiles,
         )
 
     if args.load_structure is not None:
