@@ -83,5 +83,18 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 2. Produce on Windows GPU: `<pfpoly-gpu>/python scripts/run_vinyl_aibn.py --load-structure runs/prep/paper100.json --n-monomers 100 --n-initiators 5 --seed 42 --backend orb --device cuda --no-barostat --n-cycles 3 --biased-steps 2000 --unbiased-steps 2000 --equil-steps 2000 --output-dir runs/vinyl_aibn_paper100`
 3. Figures: `scripts/reproduce_figures.py --trajectory ...trajectory.jsonl --bonds ...bonds.jsonl --n-reactive-sites 205 --target-temperature 333 --output-dir .../figures`
 
-### OPEN (Ask-first, TDBB physics): formations=0
-Density/scale/temperature are all correct now; pairs are listed at 3-6 Å (Table S1) but the bias well (f2=10 -> ~0.32 Å half-width near r0~2 Å) exerts ~0 force there, so selected pairs are never pulled to bonding. Needs a paper re-read + owner decision on the listing-window vs bias-range coupling (do NOT change f2/r0/listing range unilaterally — trigger 3).
+### RESOLVED (2026-06-15): formations=0 diagnosed; first bond demonstrated
+- PDF Table S1 confirms the [3,6] window is paper-correct (earlier "window bug" hypothesis withdrawn).
+- Fix A implemented: in-phase reaction detection during the biased phase + run-until-reaction (paper §2.2 step 3).
+- OrbMol-v2 reproduces the radical addition (relaxed PES scan: barrier +6, product −28 kcal/mol; scripts/scan_radical_addition.py).
+- First confirmed bond: scripts/demo_radical_formation.py forms+retains a C–C bond (final 1.62 Å). Full TDBB chain validated.
+- formations=0 in melt runs was: closed-shell surrogate (no radical channel) + sampling (bias has ~0 force beyond ~2.6 Å, so pairs must diffuse inward). See specs/decisions.md 2026-06-15 entries.
+
+## Phase 7: Toward polymerization reproduction — see specs/handoff-plan-v4.md
+Remaining scope S1–S6 (single-chain propagation → melt sampling → multi-radical spin → paper fidelity → figures → hardware). Detailed roadmap and the S1 work plan are in **specs/handoff-plan-v4.md**.
+- [ ] S1: single-chain propagation demo (1 radical + N monomers, doublet throughout, propagation_events>=2) — NEXT
+- [ ] S2: melt-driven formations from the [3,6] window (run-until-reaction length, cycles)
+- [ ] S3: multi-radical system-spin handling for OrbMol-v2 (open modeling question)
+- [ ] S4: paper-fidelity (ij+ik+jl multi-pair criterion; AIBN decomposition / Activation)
+- [ ] S5: figures — conversion α(t) (Eq.11), Carothers, depth-resolved density (Eq.12) vs paper
+- [ ] S6: hardware for full 200+10 (>=24 GB GPU) or stay at 100+5
