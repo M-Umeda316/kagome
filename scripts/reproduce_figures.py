@@ -163,7 +163,7 @@ def plot_density_profile(
     events = read_bond_events(bonds_path)
     formations = [e for e in events if e.event_type == 'confirmed_formation']
     if not formations:
-        print(f'No confirmed_formation events in {bonds_path} — skipping density plot.')
+        print(f'No confirmed_formation events in {bonds_path} -- skipping density plot.')
         return
 
     _, frames = read_trajectory(trajectory_path)

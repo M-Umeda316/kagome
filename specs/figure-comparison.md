@@ -6,8 +6,25 @@
 - `runs/toy_bond_demo/`  (T8.1: toy LJ system, confirmed_formations=1)
 - `runs/mace_pbc_paper/` (T8.2: MACE-MP-0 + PBC, 4 ethylene molecules, 3 cycles)
 - `runs/vinyl_aibn_gpu40/` (T-G1a paper-scale: OrbMol-v2, 40 monomer + 2 AIBN = 504 atoms, density 0.35 g/mL, NPT 333 K, 3 cycles × 2000+2000 = 12,000 steps, seed 42, RTX 4060 Ti)
+- `runs/vinyl_aibn_paper100/` (2026-06-15: OrbMol-v2, 100 monomer + 5 initiator = 1260 atoms, **classical OpenFF/Sage prep to 0.50 g/mL in WSL**, NVT 333 K, FIRE minimize + 2000 ML equil + 3×2000+2000 = 14,000 steps, seed 42, RTX 4060 Ti)
 
 ---
+
+## 2026-06-15 追記: paper100(古典prep + NVT)結果
+
+WSL の OpenFF/Sage で 0.50 g/mL に高密度化した構造を `--load-structure` で読み込み、Windows GPU で NVT 本番を完走。
+
+| 項目 | 結果 | 判定 |
+|---|---|---|
+| E2E 完走（14,000 steps, 1260 atoms, 0.50 g/mL） | ✅ RC=0, summary/trajectory/bonds/figures 出力 | 達成 |
+| 温度安定（333 K 付近） | ✅ 全体 mean 295 K / max 336 K（旧 unprepped: mean 527 / max 1364）, biased 300 / unbiased 314 K | 達成（スパイク解消） |
+| VRAM（16 GB GPU） | ✅ 2.4–4.7 GB / 16 GB, util 75–87% | 達成 |
+| 候補検出・選択・bias 印加 | ✅ biased 各 14/11/19 候補、5/4/5 選択、bias_E=1000–1250（f1_max=250/pair フル） | 達成 |
+| confirmed_formations ≥ 1 | ❌ formations=0, dissociations=0, propagation=0 | **未達** |
+
+**結論**: インフラ的な障壁(論文密度での GPU 完走)は**解決**。`formations=0` は密度・規模・温度のいずれでもなく、**TDBB バイアスの捕捉範囲(~2.5 Å)と候補リスト範囲(3–6 Å, Table S1)の不一致**に切り分け済み(decisions.md 2026-06-15 参照)。これは TDBB の科学的意味に関わる Ask-first 事項で、論文の力場定義の再読+承認が必要。
+
+**注**: 200+10(2520 atoms)は OrbMol-v2 の単発フットプリント ~9.5 GB のため 16 GB では sustained 実行不可(24 GB+ GPU が必要)。
 
 ## 2026-06-14 追記: gpu40 論文スケール検証結果
 
