@@ -92,7 +92,7 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 
 ## Phase 7: Toward polymerization reproduction — see specs/handoff-plan-v4.md
 Remaining scope S1–S6 (single-chain propagation → melt sampling → multi-radical spin → paper fidelity → figures → hardware). Detailed roadmap and the S1 work plan are in **specs/handoff-plan-v4.md**.
-- [ ] S1: single-chain propagation demo (1 radical + N monomers, doublet throughout, propagation_events>=2) — NEXT
+- [x] S1: single-chain propagation demo — DONE. scripts/demo_chain_propagation.py + tests/unit/test_propagation.py. Pentamer built (propagation_events=4), radical migrated 1→12→24→36→48, doublet invariant held. See decisions.md 2026-06-15 "S1 DONE".
 - [ ] S2: melt-driven formations from the [3,6] window (run-until-reaction length, cycles)
 - [ ] S3: multi-radical system-spin handling for OrbMol-v2 (open modeling question)
 - [ ] S4: paper-fidelity (ij+ik+jl multi-pair criterion; AIBN decomposition / Activation)
