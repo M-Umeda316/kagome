@@ -102,6 +102,10 @@ def main() -> None:
                         help='Unbiased NPT equilibration steps before TDBB '
                              '(paper anchor PDF p.20; length not specified, default 2000 '
                              '= 500 fs matching a TDBB block). 0 disables.')
+    parser.add_argument('--timestep-fs', type=float, default=0.25,
+                        help='MD timestep (fs). Default 0.25 fs (conservative, validated '
+                             'for FIRE densification + ML NVT). 1.0 fs is standard for '
+                             'organic ML MD and gives 4x speed for the same physical time.')
     parser.add_argument('--load-structure', type=Path, default=None,
                         help='Load a classically pre-equilibrated structure (JSON from '
                              'scripts/prep_structure.py) and skip build/place/compress. '
@@ -220,7 +224,7 @@ def main() -> None:
 
     langevin_params = LangevinParams(temperature_K=args.temperature)
     config = PolymerizationConfig(
-        timestep_fs=0.25,
+        timestep_fs=args.timestep_fs,
         biased_steps=args.biased_steps,
         unbiased_steps=args.unbiased_steps,
         n_cycles=args.n_cycles,
