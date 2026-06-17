@@ -106,6 +106,17 @@ def main() -> None:
                         help='MD timestep (fs). Default 0.25 fs (conservative, validated '
                              'for FIRE densification + ML NVT). 1.0 fs is standard for '
                              'organic ML MD and gives 4x speed for the same physical time.')
+    parser.add_argument('--f2', type=float, default=10.0,
+                        help='TDBB Gaussian width parameter f2 (Å⁻²). Paper default 10.0, '
+                             'stated robust range 5-20. Lower values widen the bias well '
+                             '(capture radius ~1/√f2). Use 5.0 for OrbMol-v2 PES '
+                             '(see decisions.md 2026-06-17).')
+    parser.add_argument('--select-rmin', type=float, default=None,
+                        help='Override candidate selection r_min (Å). Paper Table S1: 3.0. '
+                             'For OrbMol-v2 PES-tuned window use 1.5 (see decisions.md 2026-06-17).')
+    parser.add_argument('--select-rmax', type=float, default=None,
+                        help='Override candidate selection r_max (Å). Paper Table S1: 6.0. '
+                             'For OrbMol-v2 PES-tuned window use 3.0 (see decisions.md 2026-06-17).')
     parser.add_argument('--load-structure', type=Path, default=None,
                         help='Load a classically pre-equilibrated structure (JSON from '
                              'scripts/prep_structure.py) and skip build/place/compress. '
@@ -213,6 +224,17 @@ def main() -> None:
             result = compress_box(positions, place_cell, target_edge, species, calc)
             positions, cell = result.positions, result.cell
 
+    if args.select_rmin is not None or args.select_rmax is not None:
+        for ps in template.pairs:
+            if args.select_rmin is not None:
+                ps.r_min = args.select_rmin
+            if args.select_rmax is not None:
+                ps.r_max = args.select_rmax
+        logger.info(
+            'Candidate window overridden: [%.1f, %.1f] Å (paper Table S1: [3.0, 6.0])',
+            template.pairs[0].r_min, template.pairs[0].r_max,
+        )
+
     logger.info(
         'System: %d atoms total  (%d radical_C, %d vinyl_alpha_C sites), box %.2f Å',
         len(species),
@@ -229,7 +251,7 @@ def main() -> None:
         unbiased_steps=args.unbiased_steps,
         n_cycles=args.n_cycles,
         tdbb=TDBBParams(
-            f2=10.0,
+            f2=args.f2,
             gamma=1.0,
             f1_max_formation=250.0,
             f1_max_dissociation=125.0,
