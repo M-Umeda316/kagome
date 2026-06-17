@@ -58,15 +58,61 @@ pre-TDBB 段階（FIRE 最小化 + 2000 step NPT 平衡化）を実装し gpu40 
 
 | 再現図 | 論文 Fig | 比較結果 | 備考 |
 |---|---|---|---|
-| energy_vs_step.png | Fig. 2 (推定) | 定性一致 | biased/unbiased エネルギー分離を確認 |
+| energy_vs_step.png | Fig. 2 (推定) | **定性一致** | biased/unbiased エネルギー分離を確認（OrbMol-v2 S2 含む） |
 | base_energy.png | Fig. 2 (推定) | 定性一致 | base ポテンシャルの緩和トレンドを確認 |
-| temperature_vs_step.png | — | 参考 | 論文図との対応は不明。NVT 検証用 |
-| conversion_vs_step.png (toy) | Fig. 3/4 (推定) | 定性一致 | α(t) 単調増加を確認（toy系） |
-| conversion_vs_step.png (MACE) | Fig. 3/4 (推定) | 部分一致 | MACE+PBC では α=0（原因は既知バリア） |
+| temperature_vs_step.png | -- | 参考 | NVT 333 K 安定。反応イベント時にスパイク（物理的に正） |
+| conversion_vs_step.png | Fig. 3/4 (推定) | **定性一致** | α(t) 単調増加 + Eq.11 指数フィット overlay（OrbMol-v2 S2） |
+| s2_diagnostics.png | -- (S2固有) | 検証用 | min_pair_dist + candidates per cycle、2 seed 比較 |
+| conversion_vs_step.png (toy) | Fig. 3/4 (推定) | 定性一致 | α(t) 単調増加を確認（toy系、以前のもの） |
 
 ---
 
-## 詳細比較
+## 2026-06-18: S2 figure 生成 (OrbMol-v2, formations > 0)
+
+対象 run: `runs/s2_sweep5_seed7/` (20+1, f2=5, [3,6] window, 15 cycles, seed 7, confirmed_formations=2)
+比較用: `runs/s2_sweep4/` (同条件, 5 cycles, seed 42, confirmed_formations=1)
+
+### conversion_vs_step.png (S2, OrbMol-v2)
+
+- **初の MLIP 系での非ゼロ α(t)。** 2 段の階段状転化率（cycle 6, 12 で各 1 formation）
+- Eq. 11 指数フィット overlay: kp_eff = 1.58e-06 fs^-1, R^2 = 0.653
+- R^2 が低いのは 2 events のみの階段関数への指数フィットのため。統計的にはデータ不足だが、手法の動作実証として有効
+- α_max = 9.5% (2/21 reactive sites) -- 論文の 60-80% には規模・サイクル数が不足
+- Artifact: `runs/s2_sweep5_seed7/figures/conversion_vs_step.{png,pdf}`
+
+### energy_vs_step.png (S2, OrbMol-v2)
+
+- biased(赤)/unbiased(青) の明確な分離: 論文 Fig. 2 と定性一致
+- biased phase で total energy 400-500 kcal/mol (bias 250 + base ~200)
+- unbiased phase で 150-200 kcal/mol に緩和
+- 15 cycle にわたりパターンが安定（TDBB machinery の安定動作を確認）
+- Artifact: `runs/s2_sweep5_seed7/figures/energy_vs_step.{png,pdf}`
+
+### temperature_vs_step.png (S2, OrbMol-v2)
+
+- NVT 333 K に安定。平常時 300-350 K 範囲
+- step ~17,600 と ~32,100 に温度スパイク（~490 K, ~600 K）-- 反応イベント（C-C 結合形成）に伴うエネルギー放出。Langevin が数百 step で収束。物理的に正しい挙動
+- Artifact: `runs/s2_sweep5_seed7/figures/temperature_vs_step.{png,pdf}`
+
+### s2_diagnostics.png (S2 固有検証図)
+
+- 上段: min_pair_distance vs cycle（2 seed 比較）
+  - 反応 cycle (★) で min_pair_dist が ~2 Å に急降下（r0=2.04 Å 以下）
+  - 非反応 cycle は 3.2-5.0 Å 範囲に分布（f2=5 capture radius ~3.2 Å の上下）
+  - f2=10 capture radius (2.87 Å) と f2=5 capture radius (3.2 Å) の参照線で差異を可視化
+- 下段: candidates per cycle（棒グラフ）-- [3,6] window で常に 2-5 candidates
+- Artifact: `runs/s2_figures/s2_diagnostics.{png,pdf}`
+
+### 非適用図（vinyl 周期系）
+
+| 図 | 理由 |
+|---|---|
+| density_profile (Eq. 12) | 界面/硬化系の深さ方向密度用。等方的な周期 melt box では z 方向に構造がない |
+| Carothers DPn (Fig. 4c) | ステップ成長重合用。ビニルラジカル重合は連鎖成長であり Carothers は科学的に不適合 |
+
+---
+
+## 詳細比較（以前の run、参考）
 
 ### 1. energy_vs_step（エネルギー vs ステップ）
 
@@ -138,23 +184,37 @@ pre-TDBB 段階（FIRE 最小化 + 2000 step NPT 平衡化）を実装し gpu40 
 
 | 項目 | 状態 |
 |---|---|
-| biased/unbiased エネルギー分離 | ✅ 確認済み |
-| Langevin 温度制御 | ✅ 確認済み（スパイクあり） |
-| TDBB 機械による bond formation | ✅ toy 系で確認（machinery が正しく動作） |
-| MLIP 系での bond formation | ❌ 未達成（エチレン直接 C-C 障壁が高い） |
-| α(t) 単調増加トレンド | △ toy 系のみ（MLIP 系は 0） |
-| 深さ分解密度プロット | ❌ 未着手（formations=0） |
-
-**Phase 3 受け入れ基準**（specs/acceptance-criteria.md）:
-- 「Paper-faithful config reproduces the expected qualitative trend」
-- → エネルギー biased/unbiased 分離と温度制御は達成。α(t) の定性一致は toy 系で証明済み。
-  MLIP 系での α(t) 増加は T8.2 の論文スケール実行（2000+2000 steps, 適切な反応系）で達成見込み。
+| biased/unbiased エネルギー分離 | ✅ 確認済み（toy + OrbMol-v2 S2） |
+| Langevin 温度制御 | ✅ 確認済み（333 K 安定、反応時スパイクは物理的に正） |
+| TDBB 機械による bond formation | ✅ toy + OrbMol-v2 両方で確認 |
+| MLIP 系での bond formation | ✅ **達成**（S2: OrbMol-v2, f2=5, 3 formations / 20 cycles） |
+| α(t) 単調増加トレンド | ✅ **達成**（S2 sweep5: 0→4.8%→9.5% 階段状増加） |
+| Eq. 11 指数フィット | ✅ 実装済み（kp_eff, R^2 表示。統計的にはデータ点不足） |
+| 深さ分解密度プロット | N/A vinyl 周期系では非適用（界面/硬化系用） |
+| Carothers DPn | N/A vinyl 連鎖成長では非適用（ステップ成長用） |
 
 ---
 
 ## 再現コマンド
 
 ```bash
+# S2 sweep5_seed7 (OrbMol-v2, formations=2, 主要 figure)
+python scripts/run_vinyl_aibn.py \
+    --n-monomers 20 --n-initiators 1 --initiator-smiles "C[C](C)C#N" --spin 2 \
+    --density 0.5 --backend orb --device cuda --no-barostat \
+    --n-cycles 15 --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 \
+    --timestep-fs 1.0 --f2 5.0 --seed 7 --output-dir runs/s2_sweep5_seed7
+python scripts/reproduce_figures.py \
+    --trajectory runs/s2_sweep5_seed7/trajectory.jsonl \
+    --bonds runs/s2_sweep5_seed7/bonds.jsonl \
+    --n-reactive-sites 21 --target-temperature 333.0 --timestep-fs 1.0 \
+    --output-dir runs/s2_sweep5_seed7/figures
+
+# S2 diagnostics (sweep4 + sweep5 comparison)
+python scripts/reproduce_figures.py \
+    --summary runs/s2_sweep4/summary.json runs/s2_sweep5_seed7/summary.json \
+    --output-dir runs/s2_figures
+
 # T8.1 toy system (確定: formations=1)
 python scripts/run_toy_bond_demo.py --seed 7 --output-dir runs/toy_bond_demo
 python scripts/reproduce_figures.py \
