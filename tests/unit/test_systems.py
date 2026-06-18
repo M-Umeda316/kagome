@@ -237,6 +237,89 @@ class TestBuildVinylAIBNSystem:
         assert not np.any(np.isnan(pos))
 
 
+class TestBuildActivationTemplate:
+    """Tests for AIBN activation template builder (Table S1, V^d on C-N)."""
+
+    def test_template_targets_dissociation(self):
+        """Activation template pairs are dissociation-only (V^d)."""
+        from scripts._systems import build_activation_template
+        azo_bonds = [(1, 5), (7, 6)]
+        template, groups = build_activation_template(azo_bonds)
+        assert template.name == 'aibn_activation'
+        assert len(template.pairs) == 1
+        assert template.pairs[0].is_formation is False
+
+    def test_groups_match_input_bonds(self):
+        """azo_C and azo_N groups contain exactly the input bond atoms."""
+        from scripts._systems import build_activation_template
+        azo_bonds = [(10, 20), (30, 40)]
+        _, groups = build_activation_template(azo_bonds)
+        assert groups['azo_C'].atom_indices == [10, 30]
+        assert groups['azo_N'].atom_indices == [20, 40]
+
+    def test_template_has_2_groups(self):
+        from scripts._systems import build_activation_template
+        template, _ = build_activation_template([(0, 1)])
+        assert len(template.groups) == 2
+        assert set(template.groups) == {'azo_C', 'azo_N'}
+
+
+class TestFindAIBNAzoBonds:
+    """Tests for _find_aibn_azo_bonds (excludes nitrile C≡N)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    def test_finds_two_azo_bonds(self):
+        from scripts._systems import _find_aibn_azo_bonds
+        bonds = _find_aibn_azo_bonds()
+        assert len(bonds) == 2
+
+    def test_excludes_nitrile(self):
+        """Returned bonds must be C-N single bonds, not C≡N (nitrile)."""
+        from rdkit import Chem
+        from scripts._systems import _find_aibn_azo_bonds, _AIBN_SMILES
+        mol = Chem.MolFromSmiles(_AIBN_SMILES)
+        mol = Chem.AddHs(mol)
+        bonds = _find_aibn_azo_bonds()
+        for c_idx, n_idx in bonds:
+            bond = mol.GetBondBetweenAtoms(c_idx, n_idx)
+            assert bond is not None
+            assert bond.GetBondTypeAsDouble() == 1.0
+
+
+class TestBuildFullAIBNSystem:
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    def test_azo_bonds_are_c_n_pairs(self):
+        """aibn_azo_bonds should reference C and N atoms in the global species."""
+        from scripts._systems import build_full_aibn_system
+        rng = np.random.default_rng(0)
+        _, species, azo_bonds, _, _, _, _ = build_full_aibn_system(
+            n_monomers=2, n_aibn=1, box_size=20.0, rng=rng,
+        )
+        for c_idx, n_idx in azo_bonds:
+            assert species[c_idx] == 'C'
+            assert species[n_idx] == 'N'
+
+    def test_activation_template_from_azo_bonds(self):
+        """build_activation_template on the output of build_full_aibn_system
+        produces a valid template with correct group sizes."""
+        from scripts._systems import build_full_aibn_system, build_activation_template
+        rng = np.random.default_rng(0)
+        _, _, azo_bonds, _, _, _, _ = build_full_aibn_system(
+            n_monomers=2, n_aibn=1, box_size=20.0, rng=rng,
+        )
+        template, groups = build_activation_template(azo_bonds)
+        assert len(groups['azo_C'].atom_indices) == len(azo_bonds)
+        assert len(groups['azo_N'].atom_indices) == len(azo_bonds)
+        assert template.pairs[0].is_formation is False
+
+
 class TestNylon66Helpers:
     """Tests for nylon-6,6 RDKit-based helpers."""
 

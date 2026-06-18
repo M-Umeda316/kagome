@@ -5,10 +5,16 @@ import numpy as np
 import pytest
 
 from src.backends.toy import ToyCalculator
+from src.boost.tdbb import PairBias
 from src.integrators.langevin import LangevinIntegrator, LangevinParams
 from src.io.readers import read_trajectory
 from src.reactive.bonds import BondEvent, BondTracker
 from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
+from src.reactive.selection import (
+    find_candidates,
+    score_candidates,
+    select_non_overlapping,
+)
 from src.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
@@ -279,3 +285,249 @@ class TestChainPropagation:
         # Second call should not re-process the same event
         wf._update_groups_after_cycle(state)
         assert wf._processed_formations == 1
+
+
+class TestEquilibrationPhase:
+    """Tests for _run_equilibration_phase (no bias, no bond tracking)."""
+
+    def test_equilibration_frames_metadata(self, tmp_path):
+        """Equilibration frames have phase='equilibration' and cycle=-1."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=1, seed=42,
+            save_interval=1, equil_steps=5,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path)
+
+        _, frames = read_trajectory(tmp_path / 'trajectory.jsonl')
+        equil_frames = [f for f in frames if f.phase == 'equilibration']
+        assert len(equil_frames) > 0
+        for f in equil_frames:
+            assert f.cycle == -1
+
+    def test_equilibration_no_bond_events(self):
+        """Bond tracker records no events during equilibration (no bias applied)."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=0, unbiased_steps=0, n_cycles=0, seed=42,
+            equil_steps=10,
+        )
+        calc = ToyCalculator()
+        tracker = BondTracker()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(
+            config, calc, template, groups, bond_tracker=tracker,
+        )
+        wf.run(state)
+
+        assert len(tracker.events) == 0
+
+    def test_equilibration_advances_step_counter(self):
+        """state.step is advanced by equil_steps."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=0, unbiased_steps=0, n_cycles=0, seed=42,
+            equil_steps=7,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state)
+        assert state.step == 7
+
+
+class TestRunActivation:
+    """Tests for PolymerizationWorkflow.run_activation (Table S1, V^d on C-N)."""
+
+    def test_dissociation_detected_when_beyond_threshold(self):
+        """Activation detects dissociation when C-N distance > 2.5 Å."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=42,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        activation_template = ReactionTemplate(
+            name='aibn_activation',
+            groups=['azo_C', 'azo_N'],
+            pairs=[PairSpec('azo_C', 'azo_N', is_formation=False,
+                            r_min=0.0, r_max=3.0)],
+        )
+        activation_groups = {
+            'azo_C': ReactiveGroup('azo_C', [0]),
+            'azo_N': ReactiveGroup('azo_N', [1]),
+        }
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.6, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'N'],
+        )
+
+        dissociated = wf.run_activation(
+            state, activation_template, activation_groups,
+            activation_steps=10, activation_f2=0.3, activation_f1_max=250.0,
+        )
+        assert len(dissociated) == 1
+        assert dissociated[0] == (0, 1)
+
+    def test_no_dissociation_when_close(self):
+        """Activation does not detect dissociation when C-N stays below 2.5 Å."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=42,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        activation_template = ReactionTemplate(
+            name='aibn_activation',
+            groups=['azo_C', 'azo_N'],
+            pairs=[PairSpec('azo_C', 'azo_N', is_formation=False,
+                            r_min=0.0, r_max=3.0)],
+        )
+        activation_groups = {
+            'azo_C': ReactiveGroup('azo_C', [0]),
+            'azo_N': ReactiveGroup('azo_N', [1]),
+        }
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'N'],
+        )
+
+        dissociated = wf.run_activation(
+            state, activation_template, activation_groups,
+            activation_steps=3, activation_f2=0.3, activation_f1_max=1.0,
+        )
+        assert len(dissociated) == 0
+
+    def test_activation_returns_empty_when_no_candidates(self):
+        """run_activation returns [] when no candidates pass distance filter."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=42,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        activation_template = ReactionTemplate(
+            name='aibn_activation',
+            groups=['azo_C', 'azo_N'],
+            pairs=[PairSpec('azo_C', 'azo_N', is_formation=False,
+                            r_min=0.0, r_max=3.0)],
+        )
+        activation_groups = {
+            'azo_C': ReactiveGroup('azo_C', [0]),
+            'azo_N': ReactiveGroup('azo_N', [1]),
+        }
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'N'],
+        )
+        dissociated = wf.run_activation(
+            state, activation_template, activation_groups,
+            activation_steps=5,
+        )
+        assert dissociated == []
+
+
+class TestNylonMixedBias:
+    """Tests for nylon-like templates with mixed formation/dissociation bias."""
+
+    def _make_nylon_setup(self):
+        """Nylon-like 4-group template (Table S2) with controlled positions."""
+        template = ReactionTemplate(
+            name='nylon_test',
+            groups=['amine_N', 'carboxyl_C', 'amine_H', 'carboxyl_OH'],
+            pairs=[
+                PairSpec('amine_N', 'carboxyl_C', is_formation=True,
+                         r_min=3.0, r_max=6.0),
+                PairSpec('amine_N', 'amine_H', is_formation=False,
+                         r_min=0.0, r_max=3.0),
+                PairSpec('carboxyl_C', 'carboxyl_OH', is_formation=False,
+                         r_min=0.0, r_max=3.0),
+                PairSpec('amine_H', 'carboxyl_OH', is_formation=True,
+                         r_min=0.0, r_max=100.0),
+            ],
+        )
+        groups = {
+            'amine_N':     ReactiveGroup('amine_N', [0]),
+            'carboxyl_C':  ReactiveGroup('carboxyl_C', [1]),
+            'amine_H':     ReactiveGroup('amine_H', [2]),
+            'carboxyl_OH': ReactiveGroup('carboxyl_OH', [3]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],   # amine_N (i)
+            [4.0, 0.0, 0.0],   # carboxyl_C (j) — 4.0 Å from N, in [3,6]
+            [0.0, 1.0, 0.0],   # amine_H (k) — 1.0 Å from N, in [0,3]
+            [4.0, 1.0, 0.0],   # carboxyl_OH (l) — 1.0 Å from C, in [0,3]
+        ])
+        return template, groups, positions
+
+    def test_candidates_found(self):
+        """Nylon 4-group template finds candidates with valid positions."""
+        template, groups, positions = self._make_nylon_setup()
+        candidates = find_candidates(template, groups, positions)
+        assert len(candidates) == 1
+        assert candidates[0].atom_indices == (0, 1, 2, 3)
+
+    def test_build_pair_biases_generates_both_types(self):
+        """_build_pair_biases on nylon template produces formation + dissociation pairs."""
+        template, groups, positions = self._make_nylon_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=7,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        candidates = find_candidates(template, groups, positions)
+        scored = score_candidates(candidates, template, positions)
+        selected = select_non_overlapping(scored)
+        assert len(selected) >= 1
+
+        pairs = wf._build_pair_biases(selected, ['N', 'C', 'H', 'O'])
+        formation = [p for p in pairs if p.is_formation]
+        dissociation = [p for p in pairs if not p.is_formation]
+        assert len(formation) == 2
+        assert len(dissociation) == 2
+
+    def test_bias_forces_have_correct_direction(self):
+        """Formation pairs attract (toward r0), dissociation pairs repel."""
+        from src.boost.tdbb import BoostState, TDBBParams, total_bias
+
+        template, groups, positions = self._make_nylon_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=7,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        candidates = find_candidates(template, groups, positions)
+        scored = score_candidates(candidates, template, positions)
+        selected = select_non_overlapping(scored)
+        pairs = wf._build_pair_biases(selected, ['N', 'C', 'H', 'O'])
+
+        boost = BoostState()
+        boost.advance(1.0, 250.0, 125.0)
+        energy, forces = total_bias(
+            pairs, positions, boost, TDBBParams(),
+        )
+        assert energy > 0.0
+        assert forces.shape == (4, 3)
