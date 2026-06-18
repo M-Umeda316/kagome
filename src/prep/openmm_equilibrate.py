@@ -12,7 +12,7 @@ classical barostat to the FF's own equilibrium density. Density evolution is lef
 to the ML NPT production loop.
 
 Atom-order invariant (decision D-4): the OpenFF Topology is built from the SAME
-RDKit Mol objects the system builder uses (``scripts._systems._rdkit_mol``), in
+RDKit Mol objects the system builder uses (``src.chem.builders._rdkit_mol``), in
 the SAME molecule order, so the returned positions map 1:1 onto the caller's
 ``species`` / ``groups`` / ``propagation_map``.
 
@@ -83,7 +83,7 @@ def _build_openff_topology(species: list[str], specs: list[MoleculeSpec], cfg):
     """
     from openff.toolkit import Molecule, Topology
 
-    from scripts._systems import _rdkit_mol
+    from src.chem.builders import _rdkit_mol
 
     unique: list = []
     ordered: list = []
@@ -269,7 +269,7 @@ def equilibrate_structure(
 
 def _target_edge_A(species, specs, cfg) -> float:
     """Cubic edge (Å) for the target density given the molecule counts."""
-    from scripts._systems import box_from_density
+    from src.chem.builders import box_from_density
 
     counts = {spec.smiles: spec.count for spec in specs}
     return box_from_density(counts, cfg.target_density_g_per_ml)

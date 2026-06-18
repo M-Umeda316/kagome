@@ -876,3 +876,11 @@ Use this template for each decision.
 - Alternatives considered: (a) `pair_distances` を残し `score_candidates` がそれを参照する形に変更 — 二重計算は解消されるが不要な dict を保持し続ける。(b) 現状維持 — 二重計算と死蔵が残る。
 - Scientific risk: なし。スコア値は同一（同じ距離を同じ順序で加算）。vinyl の決定論テストに影響なし。
 - Licensing/commercial impact: None.
+
+## 2026-06-19: RF11 — パッケージング構造の整理（最小対応: 逆方向依存解消 + packages.find 制限）
+- Context: 配布名 `pfpoly` (pyproject.toml) と import 名 `src.*` が不一致。`src/prep/openmm_equilibrate.py` が `from scripts._systems import _rdkit_mol, box_from_density` でライブラリ層→スクリプト層の逆方向依存。`pyproject.toml` の `packages.find where=["."]` が `scripts`/`tests` もパッケージ化。egg-info がルートと `src/` に重複。
+- Paper anchor: N/A（実装/配布の健全性）。
+- Decision: (1) `_rdkit_mol` と `box_from_density` を `src/chem/builders.py`（新設）に移動。`scripts/_systems.py` は re-export で後方互換を維持。`src/prep/openmm_equilibrate.py` は `src.chem.builders` から import するよう修正し逆方向依存を解消。(2) `pyproject.toml` に `include = ["src*"]` を追加し、`scripts`/`tests` のパッケージ化を防止。(3) `src/` 配下の重複 egg-info を削除（.gitignore 済みのためローカルのみ）。(4) `src/` → `pfpoly/` リネーム（フル import 名統一）は影響範囲が広いため別タスク・別 PR とする。
+- Alternatives considered: (a) `src/` を `pfpoly/` にリネームし全 import を統一 — 理想的だが `from src.` が全コード/テストに散在しており変更面積が大きい。別 PR で段階的に実施すべき。(b) 現状維持 — 逆方向依存が残る。
+- Scientific risk: なし。コード移動のみ、関数の実装は不変。
+- Licensing/commercial impact: None.
