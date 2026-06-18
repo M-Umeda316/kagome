@@ -93,12 +93,16 @@ def masses_from_species(species: list[str]) -> NDArray[np.floating]:
     return np.array(masses, dtype=np.float64)
 
 
-def _integrator_temperature(integrator: object) -> float:
-    """Extract target temperature from a Langevin integrator, or return 300 K."""
+def _integrator_temperature(integrator: object, state: SimulationState) -> float:
+    """Return the temperature for MC barostat acceptance.
+
+    Langevin: use the thermostat target temperature (constant).
+    Other (e.g. Verlet/NVE): use the instantaneous kinetic temperature.
+    """
     from src.integrators.langevin import LangevinIntegrator
     if isinstance(integrator, LangevinIntegrator):
         return integrator.params.temperature_K
-    return 300.0
+    return instant_temperature_K(state.velocities, state.masses)
 
 
 class PolymerizationWorkflow:
@@ -247,7 +251,7 @@ class PolymerizationWorkflow:
                 accepted, new_e, new_f = self.barostat.try_step(
                     state.positions, state.species, state.cell,
                     energy, self.calculator, rng,
-                    _integrator_temperature(self.integrator),
+                    _integrator_temperature(self.integrator, state),
                 )
                 if accepted and new_f is not None:
                     energy, current_forces = new_e, new_f
@@ -342,7 +346,7 @@ class PolymerizationWorkflow:
                 accepted, new_base_e, new_base_f = self.barostat.try_step(
                     state.positions, state.species, state.cell,
                     base_energy, self.calculator, rng,
-                    _integrator_temperature(self.integrator),
+                    _integrator_temperature(self.integrator, state),
                 )
                 if accepted and new_base_f is not None:
                     base_energy, base_forces = new_base_e, new_base_f
@@ -428,7 +432,7 @@ class PolymerizationWorkflow:
                 accepted, new_e, new_f = self.barostat.try_step(
                     state.positions, state.species, state.cell,
                     energy, self.calculator, rng,
-                    _integrator_temperature(self.integrator),
+                    _integrator_temperature(self.integrator, state),
                 )
                 if accepted and new_f is not None:
                     energy, current_forces = new_e, new_f

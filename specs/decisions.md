@@ -823,3 +823,12 @@ Use this template for each decision.
       --timestep-fs 1.0 --f2 5.0 --seed 42 --output-dir runs/s4_activation_v3
   ```
 - Artifacts: `runs/s4_activation_v3/`
+
+## 2026-06-18: RF13 — Verlet+barostat temperature source
+- Context: `_integrator_temperature` returned a hardcoded 300 K for non-Langevin integrators. MC barostat acceptance (kT term) used this value even when the actual kinetic temperature differed.
+- Paper anchor: MC barostat acceptance formula requires kT (mc_barostat.py docstring). NPT simulations use Langevin (unaffected); Verlet+barostat path was inconsistent.
+- Decision: Langevin keeps returning target T. Verlet (and any non-Langevin) now returns the instantaneous kinetic temperature via `instant_temperature_K(state.velocities, state.masses)`.
+- Alternatives considered: Always use kinetic T — rejected because Langevin's target T is the correct ensemble temperature for NPT acceptance.
+- Scientific risk: Low. Langevin path (all current production runs) is unchanged. Verlet+barostat acceptance probability now fluctuates with kinetic T instead of being pinned to 300 K.
+- Licensing/commercial impact: None.
+- Follow-up: None.

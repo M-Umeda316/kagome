@@ -583,3 +583,48 @@ class TestNylonMixedBias:
         )
         assert energy > 0.0
         assert forces.shape == (4, 3)
+
+
+class TestIntegratorTemperature:
+    """Tests for _integrator_temperature (RF13: Verlet uses kinetic T, not 300 K)."""
+
+    def test_langevin_returns_target_temperature(self):
+        """Langevin integrator: returns thermostat target temperature."""
+        from src.workflows.polymerization import _integrator_temperature
+        langevin = LangevinIntegrator(LangevinParams(temperature_K=500.0))
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0]]),
+            velocities=np.array([[10.0, 0.0, 0.0]]),
+            species=['C'],
+        )
+        t = _integrator_temperature(langevin, state)
+        assert t == pytest.approx(500.0)
+
+    def test_verlet_returns_kinetic_temperature(self):
+        """Verlet integrator: returns instantaneous kinetic temperature, not 300 K."""
+        from src.integrators.verlet import VelocityVerletIntegrator
+        from src.workflows.polymerization import _integrator_temperature
+        verlet = VelocityVerletIntegrator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0]]),
+            velocities=np.array([[0.01, 0.0, 0.0]]),
+            species=['C'],
+            masses=np.array([12.011]),
+        )
+        t = _integrator_temperature(verlet, state)
+        assert t != pytest.approx(300.0)
+        assert t > 0.0
+
+    def test_verlet_zero_velocity_gives_zero_temperature(self):
+        """Verlet with zero velocities gives T=0, not the old 300 K fallback."""
+        from src.integrators.verlet import VelocityVerletIntegrator
+        from src.workflows.polymerization import _integrator_temperature
+        verlet = VelocityVerletIntegrator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0]]),
+            velocities=np.zeros((1, 3)),
+            species=['C'],
+            masses=np.array([12.011]),
+        )
+        t = _integrator_temperature(verlet, state)
+        assert t == pytest.approx(0.0)
