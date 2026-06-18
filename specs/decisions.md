@@ -867,4 +867,12 @@ Use this template for each decision.
 - Alternatives considered: k-l を template.pairs から除去してバイアス専用リストを別に持つ — 変更面積が大きく、既存の `_build_pair_biases` が template.pairs 全体からバイアスを構築する設計と相性が悪い。フラグ方式の方が最小限。
 - Scientific risk: 中。nylon の候補順位が変わり、異なる反応ペアが選択される可能性がある。vinyl は不変（既存3ペアのみ、全て score_pair=True）。
 - Licensing/commercial impact: None.
-- Follow-up: RF10（pair_distances 死蔵）と合わせて整理可。
+- Follow-up: RF10（pair_distances 死蔵）と合わせて整理可。→ RF10 で対応済み。
+
+## 2026-06-19: RF10 — Candidate.pair_distances 死蔵フィールドの除去とスコア計算の一本化
+- Context: `Candidate.pair_distances` は `_enumerate_recursive` で計算・格納されるが、`score_candidates` は距離を再計算しこの値を使わない。下流でも未使用（テストは `{}` を渡す）。距離の二重計算かつ未使用フィールド。
+- Paper anchor: Eq.7（d_ijkl スコア定義）。スコア計算のタイミングを変更するが、スコア値自体は不変（d_ijkl = r_ij + r_ik + r_jl の3項合計）。
+- Decision: `pair_distances` フィールドを `Candidate` から除去し、`_enumerate_recursive` で距離を合算して `score` を直接設定。`score_candidates` は距離再計算を行わずソートのみに簡略化（引数から `template`, `positions`, `cell` を除去）。これにより (1) 二重計算が解消、(2) `Candidate` が軽量化（dict 不要）、(3) 責務が明確化（列挙時にスコア確定、ソートは分離）。
+- Alternatives considered: (a) `pair_distances` を残し `score_candidates` がそれを参照する形に変更 — 二重計算は解消されるが不要な dict を保持し続ける。(b) 現状維持 — 二重計算と死蔵が残る。
+- Scientific risk: なし。スコア値は同一（同じ距離を同じ順序で加算）。vinyl の決定論テストに影響なし。
+- Licensing/commercial impact: None.

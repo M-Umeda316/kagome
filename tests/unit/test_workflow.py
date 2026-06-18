@@ -617,7 +617,7 @@ class TestNylonMixedBias:
         wf = PolymerizationWorkflow(config, calc, template, groups)
 
         candidates = find_candidates(template, groups, positions)
-        scored = score_candidates(candidates, template, positions)
+        scored = score_candidates(candidates)
         selected = select_non_overlapping(scored)
         assert len(selected) >= 1
 
@@ -639,7 +639,7 @@ class TestNylonMixedBias:
         wf = PolymerizationWorkflow(config, calc, template, groups)
 
         candidates = find_candidates(template, groups, positions)
-        scored = score_candidates(candidates, template, positions)
+        scored = score_candidates(candidates)
         selected = select_non_overlapping(scored)
         pairs = wf._build_pair_biases(selected, ['N', 'C', 'H', 'O'])
 

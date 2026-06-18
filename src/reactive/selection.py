@@ -18,7 +18,6 @@ from src.reactive.groups import ReactiveGroup, ReactionTemplate, PairSpec
 class Candidate:
     """A candidate reaction group: one atom per template group."""
     atom_indices: tuple[int, ...]
-    pair_distances: dict[tuple[str, str], float]
     score: float = 0.0
 
 
@@ -59,7 +58,7 @@ def find_candidates(
     candidates: list[Candidate] = []
     _enumerate_recursive(
         group_atoms, label_list, pair_specs, positions, candidates,
-        depth=0, chosen=[], chosen_distances={}, cell=cell,
+        depth=0, chosen=[], running_score=0.0, cell=cell,
     )
     return candidates
 
@@ -72,19 +71,19 @@ def _enumerate_recursive(
     out: list[Candidate],
     depth: int,
     chosen: list[int],
-    chosen_distances: dict[tuple[str, str], float],
+    running_score: float,
     cell: NDArray[np.floating] | None = None,
 ) -> None:
     if depth == len(group_atoms):
         out.append(Candidate(
             atom_indices=tuple(chosen),
-            pair_distances=dict(chosen_distances),
+            score=running_score,
         ))
         return
 
     for atom_idx in group_atoms[depth]:
         ok = True
-        new_distances: dict[tuple[str, str], float] = {}
+        added_score = 0.0
 
         for prev_depth in range(depth):
             key = (prev_depth, depth)
@@ -95,43 +94,27 @@ def _enumerate_recursive(
             if d < ps.r_min or d > ps.r_max:
                 ok = False
                 break
-            new_distances[(ps.group_a, ps.group_b)] = d
+            added_score += d
 
         if not ok:
             continue
 
         chosen.append(atom_idx)
-        merged = {**chosen_distances, **new_distances}
         _enumerate_recursive(
             group_atoms, label_list, pair_specs, positions, out,
-            depth + 1, chosen, merged, cell=cell,
+            depth + 1, chosen, running_score + added_score, cell=cell,
         )
         chosen.pop()
 
 
 def score_candidates(
     candidates: list[Candidate],
-    template: ReactionTemplate,
-    positions: NDArray[np.floating],
-    cell: NDArray[np.floating] | None = None,
 ) -> list[Candidate]:
-    """Score each candidate: d = sum of score_pair distances.  Sort ascending.
+    """Sort candidates ascending by pre-computed score (d_ijkl, Eq. 7).
 
-    Only pairs with score_pair=True contribute to d_ijkl (Eq. 7:
-    d_ijkl = r_ij + r_ik + r_jl, 3 terms fixed for all reaction types).
+    Scores are computed during find_candidates (enumeration phase) as the
+    sum of score_pair=True pair distances: d_ijkl = r_ij + r_ik + r_jl.
     """
-    label_list = template.groups
-    for c in candidates:
-        total = 0.0
-        for ps in template.pairs:
-            if not ps.score_pair:
-                continue
-            idx_a = label_list.index(ps.group_a)
-            idx_b = label_list.index(ps.group_b)
-            d = _distance(positions, c.atom_indices[idx_a], c.atom_indices[idx_b], cell)
-            total += d
-        c.score = total
-
     candidates.sort(key=lambda c: c.score)
     return candidates
 

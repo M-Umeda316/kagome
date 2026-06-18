@@ -449,7 +449,7 @@ class PolymerizationWorkflow:
         candidates = find_candidates(
             self.template, self.groups, state.positions, state.cell,
         )
-        scored = score_candidates(candidates, self.template, state.positions, state.cell)
+        scored = score_candidates(candidates)
         selected = select_non_overlapping(scored)
 
         active_pairs = self._build_pair_biases(selected, state.species)
@@ -601,9 +601,7 @@ class PolymerizationWorkflow:
         candidates = find_candidates(
             activation_template, activation_groups, state.positions, state.cell,
         )
-        scored = score_candidates(
-            candidates, activation_template, state.positions, state.cell,
-        )
+        scored = score_candidates(candidates)
         selected = select_non_overlapping(scored)
 
         if not selected:

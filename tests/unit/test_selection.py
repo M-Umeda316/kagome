@@ -82,7 +82,7 @@ class TestScoreCandidates:
         groups = _make_groups()
 
         cands = find_candidates(template, groups, positions)
-        scored = score_candidates(cands, template, positions)
+        scored = score_candidates(cands)
 
         scores = [c.score for c in scored]
         assert scores == sorted(scores)
@@ -98,7 +98,7 @@ class TestScoreCandidates:
         groups = _make_groups()
 
         cands = find_candidates(template, groups, positions)
-        scored = score_candidates(cands, template, positions)
+        scored = score_candidates(cands)
 
         for c in scored:
             expected = np.linalg.norm(
@@ -110,24 +110,24 @@ class TestScoreCandidates:
 class TestSelectNonOverlapping:
 
     def test_no_overlap(self):
-        c1 = Candidate(atom_indices=(0, 2), pair_distances={}, score=1.0)
-        c2 = Candidate(atom_indices=(1, 3), pair_distances={}, score=2.0)
+        c1 = Candidate(atom_indices=(0, 2), score=1.0)
+        c2 = Candidate(atom_indices=(1, 3), score=2.0)
 
         selected = select_non_overlapping([c1, c2])
         assert len(selected) == 2
 
     def test_overlap_rejected(self):
-        c1 = Candidate(atom_indices=(0, 2), pair_distances={}, score=1.0)
-        c2 = Candidate(atom_indices=(0, 3), pair_distances={}, score=2.0)
+        c1 = Candidate(atom_indices=(0, 2), score=1.0)
+        c2 = Candidate(atom_indices=(0, 3), score=2.0)
 
         selected = select_non_overlapping([c1, c2])
         assert len(selected) == 1
         assert selected[0] is c1
 
     def test_greedy_order_matters(self):
-        c1 = Candidate(atom_indices=(0, 1), pair_distances={}, score=1.0)
-        c2 = Candidate(atom_indices=(1, 2), pair_distances={}, score=2.0)
-        c3 = Candidate(atom_indices=(2, 3), pair_distances={}, score=3.0)
+        c1 = Candidate(atom_indices=(0, 1), score=1.0)
+        c2 = Candidate(atom_indices=(1, 2), score=2.0)
+        c3 = Candidate(atom_indices=(2, 3), score=3.0)
 
         selected = select_non_overlapping([c1, c2, c3])
         assert len(selected) == 2
@@ -181,7 +181,7 @@ class TestScorePairFlag:
         cands = find_candidates(template, groups, positions)
         assert len(cands) == 1
 
-        scored = score_candidates(cands, template, positions)
+        scored = score_candidates(cands)
         r_ij = np.linalg.norm(positions[1] - positions[0])  # N-C
         r_ik = np.linalg.norm(positions[2] - positions[0])  # N-H
         r_jl = np.linalg.norm(positions[3] - positions[1])  # C-OH
@@ -239,7 +239,7 @@ class TestScorePairFlag:
             [1.5, 1.0, 0.0],
         ])
         cands = find_candidates(template, groups, positions)
-        scored = score_candidates(cands, template, positions)
+        scored = score_candidates(cands)
 
         r_ij = np.linalg.norm(positions[1] - positions[0])
         r_ik = np.linalg.norm(positions[2] - positions[0])
