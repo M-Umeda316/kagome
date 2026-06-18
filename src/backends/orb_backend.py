@@ -17,9 +17,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.backends.base import Calculator
-
-# 1 eV = 23.060548 kcal/mol (NIST CODATA 2018)
-EV_TO_KCAL_MOL = 23.060548
+from src.units import EV_TO_KCAL_MOL
 
 
 def create_orb_calculator(

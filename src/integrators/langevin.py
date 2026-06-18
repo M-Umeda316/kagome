@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.geometry import wrap_positions
-from src.units import FORCE_CONV, KB
+from src.units import FORCE_CONV, KB, force_to_accel
 
 
 @dataclass
@@ -42,7 +42,7 @@ class LangevinIntegrator:
         gamma = self.params.friction_per_fs
         kT = KB * self.params.temperature_K
 
-        accel = _accel(forces, masses)
+        accel = force_to_accel(forces, masses)
         c1 = np.exp(-gamma * dt)
 
         if masses is not None:
@@ -69,16 +69,5 @@ class LangevinIntegrator:
         masses: NDArray[np.floating] | None,
         dt: float,
     ) -> None:
-        accel = _accel(forces, masses)
+        accel = force_to_accel(forces, masses)
         velocities += 0.5 * dt * accel
-
-
-def _accel(
-    forces: NDArray[np.floating],
-    masses: NDArray[np.floating] | None,
-) -> NDArray[np.floating]:
-    if masses is not None:
-        inv_m = (1.0 / masses)[:, np.newaxis]
-    else:
-        inv_m = 1.0
-    return FORCE_CONV * forces * inv_m

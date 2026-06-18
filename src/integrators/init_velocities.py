@@ -45,7 +45,7 @@ def maxwell_boltzmann_velocities(
 
 def instant_temperature_K(
     velocities: NDArray[np.floating],
-    masses: NDArray[np.floating],
+    masses: NDArray[np.floating] | None = None,
 ) -> float:
     """Kinetic temperature from velocities.
 
@@ -54,6 +54,9 @@ def instant_temperature_K(
     n = velocities.shape[0]
     if n == 0:
         return 0.0
-    ke_amu = 0.5 * float(np.sum(masses[:, np.newaxis] * velocities ** 2))
+    if masses is not None:
+        ke_amu = 0.5 * float(np.sum(masses[:, np.newaxis] * velocities ** 2))
+    else:
+        ke_amu = 0.5 * float(np.sum(velocities ** 2))
     ke_kcal = ke_amu / FORCE_CONV
     return 2.0 * ke_kcal / (3.0 * n * KB)

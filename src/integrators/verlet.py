@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.geometry import wrap_positions
-from src.units import FORCE_CONV
+from src.units import force_to_accel
 
 
 class Integrator(Protocol):
@@ -52,7 +52,7 @@ class VelocityVerletIntegrator:
         rng: np.random.Generator,
         cell: NDArray[np.floating] | None = None,
     ) -> None:
-        accel = self._accel(forces, masses)
+        accel = force_to_accel(forces, masses)
         velocities += 0.5 * dt * accel
         positions += dt * velocities
         wrap_positions(positions, cell)
@@ -64,16 +64,5 @@ class VelocityVerletIntegrator:
         masses: NDArray[np.floating] | None,
         dt: float,
     ) -> None:
-        accel = self._accel(forces, masses)
+        accel = force_to_accel(forces, masses)
         velocities += 0.5 * dt * accel
-
-    @staticmethod
-    def _accel(
-        forces: NDArray[np.floating],
-        masses: NDArray[np.floating] | None,
-    ) -> NDArray[np.floating]:
-        if masses is not None:
-            inv_m = (1.0 / masses)[:, np.newaxis]
-        else:
-            inv_m = 1.0
-        return FORCE_CONV * forces * inv_m

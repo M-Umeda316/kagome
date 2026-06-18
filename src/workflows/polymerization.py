@@ -27,7 +27,7 @@ from src.reactive.selection import (
     score_candidates,
     select_non_overlapping,
 )
-from src.units import FORCE_CONV, KB
+from src.integrators.init_velocities import instant_temperature_K
 from src.workflows.manifest import RunManifest
 
 logger = logging.getLogger(__name__)
@@ -91,26 +91,6 @@ def masses_from_species(species: list[str]) -> NDArray[np.floating]:
             logger.warning('Unknown element %r — using fallback mass 12.0 amu', s)
         masses.append(ATOMIC_MASSES.get(s, 12.0))
     return np.array(masses, dtype=np.float64)
-
-
-def _instant_temperature(
-    velocities: NDArray[np.floating],
-    masses: NDArray[np.floating] | None,
-) -> float:
-    """Instantaneous kinetic temperature from velocities.
-
-    KE[kcal/mol] = 0.5 * sum(m * v^2) / FORCE_CONV
-    T[K] = 2 * KE / (3 * N * KB)
-    """
-    n = velocities.shape[0]
-    if n == 0:
-        return 0.0
-    if masses is not None:
-        ke_amu = 0.5 * float(np.sum(masses[:, np.newaxis] * velocities ** 2))
-    else:
-        ke_amu = 0.5 * float(np.sum(velocities ** 2))
-    ke_kcal = ke_amu / FORCE_CONV
-    return 2.0 * ke_kcal / (3.0 * n * KB)
 
 
 def _integrator_temperature(integrator: object) -> float:
@@ -282,7 +262,7 @@ class PolymerizationWorkflow:
                     energy_bias=0.0,
                     energy_total=energy,
                     positions=state.positions.tolist(),
-                    temperature_K=_instant_temperature(state.velocities, state.masses),
+                    temperature_K=instant_temperature_K(state.velocities, state.masses),
                 ))
 
         logger.info('Equilibration: %d steps complete', self.config.equil_steps)
@@ -384,7 +364,7 @@ class PolymerizationWorkflow:
                     positions=state.positions.tolist(),
                     n_candidates=len(candidates),
                     n_selected=len(selected),
-                    temperature_K=_instant_temperature(state.velocities, state.masses),
+                    temperature_K=instant_temperature_K(state.velocities, state.masses),
                 ))
 
             # Paper §2.2 step 3: detect reaction events DURING biasing and end the
@@ -463,7 +443,7 @@ class PolymerizationWorkflow:
                     energy_bias=0.0,
                     energy_total=energy,
                     positions=state.positions.tolist(),
-                    temperature_K=_instant_temperature(state.velocities, state.masses),
+                    temperature_K=instant_temperature_K(state.velocities, state.masses),
                 ))
 
         if self.bond_tracker:

@@ -10,12 +10,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.backends.base import Calculator
+from src.units import EV_TO_KCAL_MOL
 
 if TYPE_CHECKING:
     from ase.calculators.calculator import Calculator as ASECalc
-
-# eV -> kcal/mol, eV/Å -> kcal/(mol·Å)  — NIST CODATA 2018
-EV_TO_KCAL_MOL = 23.060548
 
 
 class ASECalculatorAdapter(Calculator):
