@@ -70,6 +70,32 @@ conda env export -n pfpoly-gpu --no-builds | grep -v "^prefix:" > environment.ym
 
 ## 実行手順
 
+### Windows (PowerShell) — 推奨
+
+```powershell
+# repo root から
+conda activate pfpoly-gpu
+
+# S6 実行（デフォルト: seed=7, 50 cycles）
+# 環境変数 PYTORCH_CUDA_ALLOC_CONF, KMP_DUPLICATE_LIB_OK はスクリプト内で自動設定
+.\scripts\run_s6_paper_scale.ps1
+
+# カスタム設定で実行する場合
+.\scripts\run_s6_paper_scale.ps1 -Seed 42 -OutputDir runs\s6_seed42 -NCycles 100
+
+# GPU が 16 GB しかない場合（論文スケール半分: 100+5）
+python scripts\run_vinyl_aibn.py `
+    --seed 7 --output-dir runs\s6_half_scale `
+    --n-monomers 100 --n-initiators 5 `
+    --activation --activation-f2 0.3 --activation-f1-max 250 `
+    --f2 5.0 --density 0.5 --temperature 333.0 --no-barostat `
+    --backend orb --device cuda `
+    --n-cycles 30 --biased-steps 2000 --unbiased-steps 500 `
+    --equil-steps 2000 --timestep-fs 1.0
+```
+
+### Linux / WSL2 / Git Bash
+
 ```bash
 # repo root から
 conda activate pfpoly-gpu
@@ -85,7 +111,7 @@ bash scripts/run_s6_paper_scale.sh
 SEED=42 OUTPUT_DIR=runs/s6_seed42 N_CYCLES=100 bash scripts/run_s6_paper_scale.sh
 
 # GPU が 16 GB しかない場合（論文スケール半分: 100+5）
-DEVICE=cuda python scripts/run_vinyl_aibn.py \
+python scripts/run_vinyl_aibn.py \
     --seed 7 --output-dir runs/s6_half_scale \
     --n-monomers 100 --n-initiators 5 \
     --activation --activation-f2 0.3 --activation-f1-max 250 \

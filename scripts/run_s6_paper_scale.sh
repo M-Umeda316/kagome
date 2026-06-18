@@ -9,7 +9,7 @@
 #   bash scripts/run_s6_paper_scale.sh
 #
 #   # Or with explicit seed/output-dir:
-#   SEED=42 OUTPUT_DIR=runs/s6_paper OUTPUT_DIR=runs/s6_seed42 bash scripts/run_s6_paper_scale.sh
+#   SEED=42 OUTPUT_DIR=runs/s6_seed42 bash scripts/run_s6_paper_scale.sh
 #
 # Environment: pfpoly-gpu (or equivalent clone; see docs below)
 # Estimated wall-clock: 12-48 h depending on GPU and n_cycles
@@ -90,13 +90,11 @@ python scripts/run_vinyl_aibn.py \
 echo ""
 echo "Run complete. Generating figures..."
 
-# Determine n_reactive_sites: 200 vinyl alpha-C + 20 C-N bonds (10 AIBN x 2 C-N)
-N_REACTIVE_SITES=220
-
+# n_reactive_sites is auto-read from the trajectory header (RF2: α denominator
+# = n_monomers, written by PolymerizationWorkflow). No CLI override needed.
 python scripts/reproduce_figures.py \
     --trajectory "${OUTPUT_DIR}/trajectory.jsonl" \
     --bonds "${OUTPUT_DIR}/bonds.jsonl" \
-    --n-reactive-sites "${N_REACTIVE_SITES}" \
     --target-temperature 333.0 \
     --timestep-fs 1.0 \
     --output-dir "${OUTPUT_DIR}/figures"
