@@ -832,3 +832,12 @@ Use this template for each decision.
 - Scientific risk: Low. Langevin path (all current production runs) is unchanged. Verlet+barostat acceptance probability now fluctuates with kinetic T instead of being pinned to 300 K.
 - Licensing/commercial impact: None.
 - Follow-up: None.
+
+## 2026-06-19: RF1 — manifest に実効パラメータを記録（案A採用）
+- Context: `configs/boost/paper_faithful.yaml` はどの実行経路でも読み込まれておらず、`RunManifest` の `config_path` は文字列参照のみ。真実源が TDBBParams 既定・YAML・argparse 既定の3系統に分散し、manifest.json から実効値を復元できなかった。
+- Paper anchor: CLAUDE.md 非交渉要件「All experiments must record seed, config path, git SHA, backend name, and output directory」。configs/boost/paper_faithful.yaml の値は PDF p.7 由来。
+- Decision: 案A（YAML を実読込せず、`RunManifest.extra` に実効パラメータの dict を格納）を採用。`PolymerizationConfig` を `dataclasses.asdict` でシリアライズし、TDBBParams 入れ子も展開する。numpy 型は float/int に正規化。`config_path` は由来の目安と位置づけ、真の記録は `extra` に置く。
+- Alternatives considered: 案B（YAML ローダ新設 + CLI 上書き差分記録）— 変更面積が大きく、乖離解消の本質は「実効値の記録」であるため、案Aの方が即効性がある。
+- Scientific risk: なし。記録の追加のみで物理に触れない。
+- Licensing/commercial impact: None.
+- Follow-up: 案B（YAML ローダ）は将来的に検討可。paper_faithful.yaml の冒頭コメントに実効値は manifest.extra を見る旨を追記済み。

@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -27,6 +28,17 @@ class RunManifest:
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2), encoding='utf-8')
+
+
+def _normalize_value(v: Any) -> Any:
+    """Convert numpy scalars to Python built-ins for JSON serialisation."""
+    if isinstance(v, dict):
+        return {k: _normalize_value(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_normalize_value(item) for item in v]
+    if hasattr(v, 'item'):
+        return v.item()
+    return v
 
 
 def _get_git_sha() -> str:

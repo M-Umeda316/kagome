@@ -6,7 +6,7 @@ Fig. 1: biased (2000 steps) → unbiased (2000 steps) → repeat.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +28,7 @@ from src.reactive.selection import (
     select_non_overlapping,
 )
 from src.integrators.init_velocities import instant_temperature_K
-from src.workflows.manifest import RunManifest
+from src.workflows.manifest import RunManifest, _normalize_value
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +141,16 @@ class PolymerizationWorkflow:
         config_path: str = '',
     ) -> list[CycleLog]:
         if output_dir:
+            effective_params = _normalize_value(asdict(self.config))
+            effective_params['backend'] = self.calculator.name
+            effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
+            effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
             manifest = RunManifest(
                 config_path=config_path,
                 seed=self.config.seed,
                 backend=self.calculator.name,
                 output_dir=str(output_dir),
+                extra=effective_params,
             )
             manifest.save(output_dir / 'manifest.json')
 

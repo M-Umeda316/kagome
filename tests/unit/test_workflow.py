@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from src.backends.toy import ToyCalculator
-from src.boost.tdbb import PairBias
+from src.boost.tdbb import PairBias, TDBBParams
 from src.integrators.langevin import LangevinIntegrator, LangevinParams
 from src.io.readers import read_trajectory
 from src.reactive.bonds import BondEvent, BondTracker
@@ -133,6 +133,54 @@ class TestPolymerizationWorkflow:
         assert len(frames) >= 2
         assert any(f.phase == 'biased' for f in frames)
         assert any(f.phase == 'unbiased' for f in frames)
+
+    def test_manifest_records_effective_params(self, tmp_path):
+        """RF1: manifest.json extra contains TDBB effective parameters."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=10,
+            unbiased_steps=10,
+            n_cycles=1,
+            seed=42,
+            save_interval=5,
+            tdbb=TDBBParams(
+                f2=5.0,
+                gamma=1.0,
+                f1_max_formation=250.0,
+                f1_max_dissociation=125.0,
+                lambda_vdw=0.60,
+            ),
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path, config_path='configs/boost/paper_faithful.yaml')
+
+        manifest_path = tmp_path / 'manifest.json'
+        assert manifest_path.exists()
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+
+        assert data['config_path'] == 'configs/boost/paper_faithful.yaml'
+        assert data['seed'] == 42
+        assert data['backend'] == 'toy'
+
+        ex = data['extra']
+        assert ex['tdbb']['f2'] == 5.0
+        assert ex['tdbb']['gamma'] == 1.0
+        assert ex['tdbb']['f1_max_formation'] == 250.0
+        assert ex['tdbb']['f1_max_dissociation'] == 125.0
+        assert ex['tdbb']['lambda_vdw'] == 0.60
+        assert ex['timestep_fs'] == config.timestep_fs
+        assert ex['biased_steps'] == 10
+        assert ex['unbiased_steps'] == 10
+        assert ex['n_cycles'] == 1
+        assert ex['backend'] == 'toy'
+        assert ex['candidate_r_min'] == 0.5
+        assert ex['candidate_r_max'] == 5.0
 
     def test_with_masses(self):
         template, groups = _make_simple_setup()

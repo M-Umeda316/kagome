@@ -1,3 +1,6 @@
+# NOTE: This file is NOT auto-loaded by run scripts. Effective parameter values
+# are recorded in each run's manifest.json (extra field). See specs/decisions.md
+# 2026-06-19 RF1 for rationale.
 boost:
   mode: paper_faithful
   # All values confirmed from arXiv:2511.22874 PDF (Section 3 Methods), 2026-06-13.
