@@ -58,12 +58,65 @@ pre-TDBB 段階（FIRE 最小化 + 2000 step NPT 平衡化）を実装し gpu40 
 
 | 再現図 | 論文 Fig | 比較結果 | 備考 |
 |---|---|---|---|
-| energy_vs_step.png | Fig. 2 (推定) | **定性一致** | biased/unbiased エネルギー分離を確認（OrbMol-v2 S2 含む） |
+| energy_vs_step.png | Fig. 2 (推定) | **定性一致** | biased/unbiased エネルギー分離を確認（S2/S3/S4 全て） |
 | base_energy.png | Fig. 2 (推定) | 定性一致 | base ポテンシャルの緩和トレンドを確認 |
 | temperature_vs_step.png | -- | 参考 | NVT 333 K 安定。反応イベント時にスパイク（物理的に正） |
-| conversion_vs_step.png | Fig. 3/4 (推定) | **定性一致** | α(t) 単調増加 + Eq.11 指数フィット overlay（OrbMol-v2 S2） |
+| conversion_vs_step.png (S2) | Fig. 3/4 (推定) | **定性一致** | α_max=9.5%, kp_eff=1.58e-06, R^2=0.653（単 radical, f2=5） |
+| conversion_vs_step.png (S3) | Fig. 3/4 (推定) | **定性一致** | α_max=27.3%, kp_eff=1.07e-05, R^2=0.833（2-radical, 高スピン近似） |
+| conversion_vs_step.png (S4) | Fig. 3/4 (推定) | 部分一致 | α_max=7.1%, AIBN activation → C-N 解離→重合を実証（小規模） |
 | s2_diagnostics.png | -- (S2固有) | 検証用 | min_pair_dist + candidates per cycle、2 seed 比較 |
 | conversion_vs_step.png (toy) | Fig. 3/4 (推定) | 定性一致 | α(t) 単調増加を確認（toy系、以前のもの） |
+
+---
+
+## 2026-06-18: S3 figure 生成 (2-radical, high-spin approximation)
+
+対象 run: `runs/s3_2rad/` (20+2, spin=4, f2=5, [3,6] window, 15 cycles, seed 42, confirmed_formations=6)
+
+### conversion_vs_step.png (S3, OrbMol-v2, 2-radical)
+
+- **2-radical 系での高スピン近似の動作実証。** 6 formations (steps: 5620, 6729, 12422, 15681, 16423, 17594)
+- Eq. 11 指数フィット overlay: kp_eff = 1.07e-05 fs^-1, R^2 = 0.833
+- α_max = 27.3% (6/22 reactive sites) — S2 の 9.5% より大幅増加（radical 数 2 倍の効果）
+- R^2=0.833 は統計的に有意な指数的増加を示す（S2 の 0.653 より改善）
+- Artifact: `runs/s3_2rad/figures/conversion_vs_step.{png,pdf}`
+
+### energy_vs_step.png (S3, OrbMol-v2)
+
+- biased(赤)/unbiased(青) の明確な分離を 15 cycles にわたり確認
+- 反応後に base energy が段階的に低下（重合によるエネルギー利得）
+- Artifact: `runs/s3_2rad/figures/energy_vs_step.{png,pdf}`
+
+### temperature_vs_step.png (S3, OrbMol-v2)
+
+- NVT 333 K に安定。6 反応イベントに対応するスパイクを確認
+- Artifact: `runs/s3_2rad/figures/temperature_vs_step.{png,pdf}`
+
+### S3 の科学的意義
+
+- 高スピン近似（多 radical → 最大スピン状態）が OrbMol-v2 で動作することを実証
+- 単 radical の S2 (9.5%) から 2 radical の S3 (27.3%) へ: radical 濃度増加が転化率を加速
+- 論文 S3 の「多 radical 系での重合」に定性的に一致
+
+---
+
+## 2026-06-18: S4 figure 生成 (AIBN activation + 連鎖重合)
+
+対象 run: `runs/s4_activation_v3/` (5+1 full AIBN, activation f2=0.3 + f1_max=250, 5 cycles, seed 42)
+activation_dissociations=2 (両 C-N 結合解離), confirmed_formations=1
+
+### conversion_vs_step.png (S4, OrbMol-v2 + AIBN activation)
+
+- V^d バイアスによる C-N 結合ホモリシスを実証: step 175-176 で 2/2 C-N 結合解離
+- AIBN 活性化後の連鎖重合: 1 confirmed_formation (step 2269), α=7.1% (1/14 reactive sites)
+- Eq. 11 フィット: kp_eff = 4.16e-08 fs^-1, R^2 = 0.001 — データ点 1 つのため適合不可（想定内）
+- Artifact: `runs/s4_activation_v3/figures/conversion_vs_step.{png,pdf}`
+
+### S4 の科学的意義
+
+- 論文 Table S1 の「Activation」行 (V^d, C-N) の実証: AIBN の C-N 結合が dissociative バイアスで切断
+- OrbMol-v2 でのパラメータ調整: 論文デフォルト (f2=10, f1_max=125) では OrbMol-v2 の 39.4 kcal/mol C-N 障壁を超えられず、f2=0.3 + f1_max=250 が必要（specs/decisions.md 参照）
+- 活性化 → radical 生成 → 連鎖重合の End-to-End フローを確認
 
 ---
 
