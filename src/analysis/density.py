@@ -1,6 +1,6 @@
 """Depth-resolved reaction density.
 
-Paper: arXiv:2511.22874, Eq. 13.
+Paper: arXiv:2511.22874, PDF p.12 (unnumbered equation).
 ρ_rxn(z) = N_rxn(z) / (A · Δz · N_frames)
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ def reaction_density_profile(
     area_xy: float,
     n_frames: int = 1,
 ) -> NDArray[np.floating]:
-    """Eq. 13: depth-resolved reaction density.
+    """Depth-resolved reaction density (PDF p.12, unnumbered).
 
     events: confirmed bond events
     positions_at_event: {step: positions_array} for each event step

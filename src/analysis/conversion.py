@@ -1,8 +1,8 @@
 """Conversion tracking from bond events.
 
 Paper: arXiv:2511.22874.
-- Raw conversion: α = N_reacted / N_total_reactive_sites
-- Eq. 11 (arXiv HTML numbering): α(t) = 1 - exp(-kp_eff * t)  [exponential fit]
+- Raw conversion: α = N_reacted / N_total (unnumbered; see PDF p.9 Fig.2 caption)
+- Eq. 11 (PDF p.9): α(t) = 1 - exp(-k*_p · t)  [exponential fit, last numbered eq.]
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from src.reactive.bonds import BondEvent
 
 
 def conversion(n_reacted: int, n_total: int) -> float:
-    """Eq. 11: α = N_reacted / N_total."""
+    """Raw conversion α = N_reacted / N_total (unnumbered in PDF)."""
     if n_total == 0:
         return 0.0
     return n_reacted / n_total
@@ -60,7 +60,7 @@ def fit_conversion_exponential(
 ) -> tuple[float, float]:
     """Fit α(t) = 1 - exp(-kp_eff * t) and return (kp_eff, r_squared).
 
-    Eq. 11 (arXiv HTML): α(t) = 1 - exp(-kp_eff * t)
+    Eq. 11 (PDF p.9): α(t) = 1 - exp(-k*_p · t)
 
     Args:
         steps:       step indices (integer), shape (N,)

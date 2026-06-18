@@ -247,6 +247,7 @@ Use this template for each decision.
 - Follow-up: Real-chemistry bond formation via MACE+PBC is T8.2.
 
 ## 2026-06-13: 2-group reaction template for vinyl polymerization (simplification of Eq. 6-7)
+**Superseded by 2026-06-18 S4 Phase1 — 4-group multi-pair template (d_ijkl = r_ij + r_ik + r_jl per Table S1).**
 - Context: Eq. 6-7 defines a general framework with groups I, J, K, L and pair set P. The current implementation in scripts/_systems.py uses a 2-group template (C_donor, C_acceptor) with 1 pair for vinyl polymerization.
 - Paper anchor: Eq. 6-7, Table of reaction systems (Section 3 and paper examples).
 - Decision: 2-group template is correct for vinyl/radical polymerization. Confirmed from arXiv HTML: vinyl radical polymerization uses Gi (radical carbon) and Gj (alkene carbon), pair {(i,j)} only. The 4-group template (Gi, Gj, Gk, Gl with pairs (i,j),(i,k),(j,l)) is specifically needed for epoxy curing on CuO surface, NOT for vinyl polymerization.
@@ -256,13 +257,12 @@ Use this template for each decision.
 - Follow-up: When adding nylon-6,6 or epoxy systems, add a corresponding build_*_template() function in scripts/_systems.py. The 4-group epoxy template requires Gi (epoxy O), Gj (1-deg amine N), Gk (2-deg amine N), Gl (surface OH) with P={(i,j),(i,k),(j,l)}.
 
 ## 2026-06-13: Equation numbering discrepancy in analysis modules (src/analysis/)
+**Resolved 2026-06-18: PDF confirmed Eq.11 is the last numbered equation. Density formula is unnumbered. Docstrings and claims.yaml updated.**
 - Context: During T6.1 (arXiv HTML verification), confirmed that the equation numbering used in src/analysis/conversion.py ("Eq. 11-12") and src/analysis/density.py ("Eq. 13") may not match the actual paper. From the HTML: Eq. 11 = alpha(t) = 1 - exp(-kp_eff*t) (fitting formula), Eq. 12 = depth-resolved density. The raw conversion fraction alpha = N_reacted/N_total appears to be either unnumbered or given a different number.
-- Paper anchor: Eq. 11-12 (per HTML numbering; PDF needed for confirmation).
-- Decision: Do not change docstrings or code until the PDF confirms equation numbers. The functional implementations are correct regardless of numbering. Flag the discrepancy in claims.yaml and paper/notes.md.
-- Alternatives considered: Renaming based on HTML — rejected because HTML rendering may be incomplete for math-heavy sections.
-- Scientific risk: None for computation. Risk is in documentation confusion only.
+- Paper anchor: Eq. 11 (PDF p.9), density formula (PDF p.12, unnumbered).
+- Decision: PDF confirmed: Eq.11 = α(t) = 1 − exp(−k*_p·t) is the last numbered equation. The density formula ρ_rxn(z) on p.12 has no equation number. The raw conversion α = N_reacted/N_total is also unnumbered (defined in Fig.2 caption as α = 1 − [M]/[M]₀). Docstrings in conversion.py and density.py updated to match. claims.yaml eq12 renamed to unnumbered_density.
+- Scientific risk: None.
 - Licensing/commercial impact: None.
-- Follow-up: Verify equation numbers from PDF and update docstrings in src/analysis/conversion.py and src/analysis/density.py accordingly.
 
 ## 2026-06-13: OrbMol-v2 as default backend for vinyl polymerization (T-OD)
 - Context: Owner requested OrbMol-v2 as the default backend. run_vinyl_aibn.py previously used MACE-MP-0.

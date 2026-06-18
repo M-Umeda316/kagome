@@ -1,7 +1,7 @@
 # Paper notes
 
 arXiv:2511.22874, Mori et al. (2025-11-28)
-Last verified: 2026-06-13 (arXiv HTML version; PDF needed for final confirmation)
+Last verified: 2026-06-18 (PDF cross-checked for eq numbering, reaction templates, and α definition)
 
 ## Core claim
 uMLIP + TDBB enables system-independent polymerization simulations without per-system parameter tuning.
@@ -16,12 +16,12 @@ uMLIP + TDBB enables system-independent polymerization simulations without per-s
 - Eq. 8: ΔV = Σ_groups Σ_pairs [fp V^f + (1-fp) V^d] — total bias
 
 ## Post-hoc analysis equations (not in simulation loop)
-Numbering from arXiv HTML — needs PDF cross-check (docstrings in src/ may cite different numbers).
-- Eq. 9: Rp = -d[M]/dt = kp·[M]·[P*] — polymerization rate (kinetics theory comparison)
-- Eq. 10: Rp ∝ [M]·[I] — simplified rate (Carothers comparison)
-- Eq. 11: α(t) = 1 - exp(-kp_eff·t) — exponential fit to conversion curve (post-hoc only)
-- Eq. 12: ρ_rxn(z) = N_rxn(z) / (A·Δz·N_frames) — depth-resolved reaction density
-- (Unnumbered or different number): α = N_reacted / N_total — raw conversion fraction from bond counts
+Numbering confirmed from PDF (2026-06-18). Eq.11 is the last numbered equation.
+- Eq. 9 (PDF p.8): Rp = -d[M]/dt = kp·[M]·[P*] — polymerization rate (kinetics theory comparison)
+- Eq. 10 (PDF p.8): Rp ∝ [M]·[I] — simplified rate (Carothers comparison)
+- Eq. 11 (PDF p.9): α(t) = 1 - exp(-k*_p·t) — exponential fit to conversion curve (post-hoc only)
+- Unnumbered (PDF p.12): ρ_rxn(z) = N_rxn(z) / (A·Δz·N_frames) — depth-resolved reaction density
+- Unnumbered (PDF p.9 Fig.2 caption): α = 1 − [M]/[M]₀ — raw monomer conversion definition
 
 ## Reaction-selection workflow
 1. Define reactive atom groups G_I, G_J, G_K, G_L (chemically equivalent atoms).
@@ -29,12 +29,12 @@ Numbering from arXiv HTML — needs PDF cross-check (docstrings in src/ may cite
 3. Score each candidate: d_ijkl = r_ij + r_ik + r_jl.
 4. Sort ascending, greedily select non-overlapping (no shared atoms).
 
-## Reaction templates per system
-| System | Groups | Pair set P | Notes |
-|---|---|---|---|
-| Vinyl radical polymerization | 2: Gi (radical C), Gj (alkene C) | {(i,j)} | Matches current 2-group implementation |
-| Nylon-6,6 (step-growth) | 2: Gi (amine N), Gj (carboxylic acid C) | {(i,j)} | |
-| Epoxy curing (DGEBA+DETA on CuO) | 4: Gi (epoxy O), Gj (1° amine N), Gk (2° amine N), Gl (surface OH) | {(i,j),(i,k),(j,l)} | 4-group full template |
+## Reaction templates per system (Table S1/S2, PDF p.21-22)
+| System | Groups | Pair set P (scoring/identification) | Bias-only pairs | Notes |
+|---|---|---|---|---|
+| Vinyl radical polymerization | 4: Gi (radical_C), Gj (vinyl_alpha_C), Gk (chain_C), Gl (vinyl_beta_C) | {(i,j) [3,6], (i,k) [0,3], (j,l) [0,3]} | — | Table S1: i-j V^f, i-k/j-l constraint only (no bias) |
+| Nylon-6,6 (step-growth) | 4: Gi (amine_N), Gj (carboxyl_C), Gk (amine_H), Gl (carboxyl_OH) | {(i,j) [3,6], (i,k) [0,3], (j,l) [0,3]} | k-l (H-OH water formation, V^f) | Table S2: d_ijkl = r_ij+r_ik+r_jl (3 terms); k-l is bias-only, not in score |
+| Epoxy curing (DGEBA+DETA on CuO) | 4: Gi (epoxy O), Gj (1° amine N), Gk (2° amine N), Gl (surface OH) | {(i,j),(i,k),(j,l)} | — | 4-group full template |
 
 ## Simulation schedule (Section 3 Methods — confirmed)
 Alternating: **2000 biased steps** → **2000 unbiased steps** → repeat.
