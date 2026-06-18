@@ -884,3 +884,11 @@ Use this template for each decision.
 - Alternatives considered: (a) `src/` を `pfpoly/` にリネームし全 import を統一 — 理想的だが `from src.` が全コード/テストに散在しており変更面積が大きい。別 PR で段階的に実施すべき。(b) 現状維持 — 逆方向依存が残る。
 - Scientific risk: なし。コード移動のみ、関数の実装は不変。
 - Licensing/commercial impact: None.
+
+## 2026-06-19: RF12 — 幾何の orthorhombic 限定を明文化し非対角 cell で ValueError
+- Context: `src/geometry.py` の `minimum_image`/`wrap_positions` は cell の対角成分のみ使用するが、非対角成分が渡された場合に静かに誤った結果を返す状態だった。decisions.md "2026-06-13" に「triclinic は deferred」と記載あり。
+- Paper anchor: 現行系（vinyl, nylon）は全て cubic/orthorhombic。epoxy/CuO スラブ系で triclinic が必要になる場合は別途対応。
+- Decision: `_check_orthorhombic(cell)` ガード関数を追加。非対角成分の絶対値が 1e-10 を超える場合に `ValueError` を発行。`minimum_image`/`wrap_positions` の両関数で cell が非 None のときに呼び出す。`warnings.warn` ではなく `ValueError` を採用（誤った最小像距離は下流の反応候補選択・バイアス力計算を破壊するため、静かに続行するより早期に失敗すべき）。
+- Alternatives considered: (a) `warnings.warn` で続行 — 誤った物理量が伝播するリスクがある。(b) triclinic 対応を実装 — 現行系では不要で過剰設計。
+- Scientific risk: なし。現行系は全て orthorhombic。将来 triclinic が必要になった場合は `_check_orthorhombic` を一般化する。
+- Licensing/commercial impact: None.
