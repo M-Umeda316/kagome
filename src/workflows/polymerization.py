@@ -20,7 +20,7 @@ from src.integrators.mc_barostat import MCBarostat
 from src.integrators.minimize import FireParams, fire_minimize
 from src.integrators.verlet import Integrator, VelocityVerletIntegrator
 from src.io.trajectory import TrajectoryFrame, TrajectoryWriter
-from src.reactive.bonds import BondTracker
+from src.reactive.bonds import BondTracker, is_dissociated
 from src.reactive.groups import ReactiveGroup, ReactionTemplate
 from src.reactive.selection import (
     Candidate,
@@ -639,6 +639,11 @@ class PolymerizationWorkflow:
         )
         current_forces = base_forces + bias_forces
 
+        # Absolute dissociation threshold for azo C-N bonds (decisions.md
+        # 2026-06-19 RF8).  C-N equilibrium ~1.49 Å; 2.5 Å is well beyond
+        # the barrier and indicates a clearly broken bond.  Expressed via
+        # is_dissociated(r, r0=threshold, fraction=1.0) for API consistency
+        # with BondTracker's r0-relative convention.
         dissoc_threshold = 2.5
         dissociated: list[tuple[int, int]] = []
 
@@ -660,7 +665,7 @@ class PolymerizationWorkflow:
                         step_in_phase + 1, p.idx_a, p.idx_b, r,
                         boost.f1_dissociation, bias_energy,
                     )
-                if r > dissoc_threshold and (p.idx_a, p.idx_b) not in dissociated:
+                if is_dissociated(r, dissoc_threshold) and (p.idx_a, p.idx_b) not in dissociated:
                     dissociated.append((p.idx_a, p.idx_b))
                     logger.info(
                         'Activation: C-N dissociation at step %d, atoms (%d, %d), r=%.2f A',

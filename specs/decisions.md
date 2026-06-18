@@ -892,3 +892,11 @@ Use this template for each decision.
 - Alternatives considered: (a) `warnings.warn` で続行 — 誤った物理量が伝播するリスクがある。(b) triclinic 対応を実装 — 現行系では不要で過剰設計。
 - Scientific risk: なし。現行系は全て orthorhombic。将来 triclinic が必要になった場合は `_check_orthorhombic` を一般化する。
 - Licensing/commercial impact: None.
+
+## 2026-06-19: RF8 — 解離判定を純関数 is_dissociated/is_formed に集約、activation の 2.5 Å 閾値を文書化
+- Context: `BondTracker` は `threshold_fraction * r0`（相対閾値、デフォルト1.0）で形成/解離を判定するが、`run_activation` は絶対閾値 `dissoc_threshold = 2.5` Å をハードコードしていた。同じ「解離」概念に対しモジュール間で閾値規約が不統一。
+- Paper anchor: Eq.3（V^d）。decisions.md 既存記録「2026-06-12: Dissociation tracking uses r0 = λ·Σr_vdW as confirmation threshold」。Table S1 Activation 行（V^d on C-N azo bonds）。
+- Decision: (1) `src/reactive/bonds.py` に純関数 `is_dissociated(r, r0, threshold_fraction=1.0) -> bool`（r > threshold_fraction * r0）と `is_formed(r, r0, threshold_fraction=1.0) -> bool`（r <= threshold_fraction * r0）を追加。(2) `BondTracker.check_reactions_during_bias` および `check_outcomes` の判定ロジックをこれらの純関数で置換。(3) `run_activation` の解離判定を `is_dissociated(r, dissoc_threshold)` に置換（dissoc_threshold=2.5, threshold_fraction=1.0 で「r > 2.5」と等価）。(4) 2.5 Å を絶対閾値として維持する根拠: azo C-N 平衡結合長 ~1.49 Å に対し、r0=λ·Σr_vdw(C,N)=0.6*(1.70+1.55)=1.95 Å は vdW 接触距離であり、これを超えただけでは C-N 結合の明確な解離とは限らない。2.5 Å は平衡長の ~1.68 倍であり、結合が確実に破断した状態を示す安全な閾値。activation パラメータ（f2=0.3, f1_max=250）は変更なし。
+- Alternatives considered: (a) r0 相対に完全統一（threshold_fraction=1.0 → 1.95 Å で検出）— 解離をより早く検出するが、揺らぎで偽検出のリスク。(b) 現状維持 — 判定が2箇所にインライン展開され、テスト困難。
+- Scientific risk: なし。activation の閾値 2.5 Å は変更しておらず、判定ロジックの純関数化のみ。BondTracker の動作もビット一致。
+- Licensing/commercial impact: None.

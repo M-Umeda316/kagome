@@ -3,7 +3,48 @@ import numpy as np
 import pytest
 
 from src.boost.tdbb import PairBias
-from src.reactive.bonds import BondTracker
+from src.reactive.bonds import BondTracker, is_dissociated, is_formed
+
+
+class TestIsDissociated:
+
+    def test_beyond_threshold(self):
+        assert is_dissociated(2.5, r0=1.95, threshold_fraction=1.0) is True
+
+    def test_at_threshold(self):
+        assert is_dissociated(1.95, r0=1.95, threshold_fraction=1.0) is False
+
+    def test_below_threshold(self):
+        assert is_dissociated(1.5, r0=1.95, threshold_fraction=1.0) is False
+
+    def test_custom_fraction(self):
+        assert is_dissociated(2.5, r0=2.0, threshold_fraction=1.2) is True
+        assert is_dissociated(2.3, r0=2.0, threshold_fraction=1.2) is False
+
+    def test_default_fraction_is_one(self):
+        assert is_dissociated(2.0, r0=1.9) is True
+        assert is_dissociated(1.8, r0=1.9) is False
+
+    def test_activation_absolute_threshold(self):
+        """Activation uses is_dissociated(r, dissoc_threshold) with absolute 2.5 Å."""
+        assert is_dissociated(2.6, r0=2.5) is True
+        assert is_dissociated(2.4, r0=2.5) is False
+
+
+class TestIsFormed:
+
+    def test_below_threshold(self):
+        assert is_formed(1.5, r0=1.95, threshold_fraction=1.0) is True
+
+    def test_at_threshold(self):
+        assert is_formed(1.95, r0=1.95, threshold_fraction=1.0) is True
+
+    def test_beyond_threshold(self):
+        assert is_formed(2.5, r0=1.95, threshold_fraction=1.0) is False
+
+    def test_custom_fraction(self):
+        assert is_formed(2.3, r0=2.0, threshold_fraction=1.2) is True
+        assert is_formed(2.5, r0=2.0, threshold_fraction=1.2) is False
 
 
 class TestBondTracker:

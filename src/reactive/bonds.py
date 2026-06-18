@@ -16,6 +16,16 @@ from src.boost.tdbb import PairBias
 from src.geometry import minimum_image
 
 
+def is_formed(r: float, r0: float, threshold_fraction: float = 1.0) -> bool:
+    """True when distance *r* indicates bond formation (r <= threshold)."""
+    return r <= threshold_fraction * r0
+
+
+def is_dissociated(r: float, r0: float, threshold_fraction: float = 1.0) -> bool:
+    """True when distance *r* indicates bond dissociation (r > threshold)."""
+    return r > threshold_fraction * r0
+
+
 @dataclass
 class BondEvent:
     step: int
@@ -66,8 +76,10 @@ class BondTracker:
                 positions[pair.idx_b] - positions[pair.idx_a], cell,
             )
             r = float(np.linalg.norm(r_vec))
-            threshold = self._threshold_fraction * pair.r0
-            reacted = (r <= threshold) if pair.is_formation else (r > threshold)
+            if pair.is_formation:
+                reacted = is_formed(r, pair.r0, self._threshold_fraction)
+            else:
+                reacted = is_dissociated(r, pair.r0, self._threshold_fraction)
             if not reacted:
                 continue
             etype = ('confirmed_formation' if pair.is_formation
@@ -119,8 +131,7 @@ class BondTracker:
             )
             r = float(np.linalg.norm(r_vec))
             if pair.is_formation:
-                threshold = self._threshold_fraction * pair.r0
-                if r <= threshold:
+                if is_formed(r, pair.r0, self._threshold_fraction):
                     ev = BondEvent(
                         step=step, cycle=cycle,
                         atom_a=pair.idx_a, atom_b=pair.idx_b,
@@ -131,8 +142,7 @@ class BondTracker:
                     self._reacted.add(self._key(pair.idx_a, pair.idx_b))
                     confirmed.append(ev)
             else:
-                threshold = self._threshold_fraction * pair.r0
-                if r > threshold:
+                if is_dissociated(r, pair.r0, self._threshold_fraction):
                     ev = BondEvent(
                         step=step, cycle=cycle,
                         atom_a=pair.idx_a, atom_b=pair.idx_b,
