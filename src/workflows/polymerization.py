@@ -322,7 +322,9 @@ class PolymerizationWorkflow:
         form_pairs = [p for p in active_pairs if p.is_formation]
         min_form_dist = float('inf')
 
+        steps_run = 0
         for step_in_phase in range(self.config.biased_steps):
+            steps_run = step_in_phase + 1
             boost.advance(
                 self.config.tdbb.gamma,
                 self.config.tdbb.f1_max_formation,
@@ -403,7 +405,7 @@ class PolymerizationWorkflow:
 
         return CycleLog(
             cycle=cycle, phase='biased',
-            steps=self.config.biased_steps,
+            steps=steps_run,
             n_candidates=len(candidates),
             n_selected=len(selected),
             bias_energy=last_bias_energy,

@@ -287,6 +287,58 @@ class TestChainPropagation:
         assert wf._processed_formations == 1
 
 
+class TestBiasedStepsLogging:
+    """Tests for CycleLog.steps recording actual biased steps run (RF7)."""
+
+    def test_full_run_records_biased_steps(self):
+        """When no early break, CycleLog.steps == config.biased_steps."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=10, unbiased_steps=5, n_cycles=1, seed=42,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        logs = wf.run(state)
+        biased_log = logs[0]
+        assert biased_log.phase == 'biased'
+        assert biased_log.steps == config.biased_steps
+
+    def test_early_break_records_fewer_steps(self):
+        """When bond_tracker detects a reaction mid-bias, steps < biased_steps."""
+        template = ReactionTemplate(
+            name='close_pair',
+            groups=['A', 'B'],
+            pairs=[PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=5.0)],
+        )
+        groups = {
+            'A': ReactiveGroup('A', [0]),
+            'B': ReactiveGroup('B', [1]),
+        }
+        config = PolymerizationConfig(
+            biased_steps=1000, unbiased_steps=5, n_cycles=1, seed=42,
+        )
+        calc = ToyCalculator()
+        tracker = BondTracker(threshold_fraction=1.0)
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(
+            config, calc, template, groups, bond_tracker=tracker,
+        )
+        logs = wf.run(state)
+        biased_log = logs[0]
+        assert biased_log.phase == 'biased'
+        assert biased_log.steps < config.biased_steps
+        assert biased_log.steps >= 1
+
+
 class TestEquilibrationPhase:
     """Tests for _run_equilibration_phase (no bias, no bond tracking)."""
 
