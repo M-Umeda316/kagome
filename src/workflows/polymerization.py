@@ -139,6 +139,7 @@ class PolymerizationWorkflow:
         state: SimulationState,
         output_dir: Path | None = None,
         config_path: str = '',
+        n_monomers: int | None = None,
     ) -> list[CycleLog]:
         if output_dir:
             effective_params = _normalize_value(asdict(self.config))
@@ -154,7 +155,7 @@ class PolymerizationWorkflow:
             )
             manifest.save(output_dir / 'manifest.json')
 
-        n_reactive_sites = sum(len(g.atom_indices) for g in self.groups.values())
+        n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:

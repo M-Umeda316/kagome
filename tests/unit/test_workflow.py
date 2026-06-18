@@ -134,6 +134,25 @@ class TestPolymerizationWorkflow:
         assert any(f.phase == 'biased' for f in frames)
         assert any(f.phase == 'unbiased' for f in frames)
 
+    def test_trajectory_header_n_reactive_sites_equals_n_monomers(self, tmp_path):
+        """RF2: header n_reactive_sites == n_monomers when passed."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=1, seed=42,
+            save_interval=1,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path, n_monomers=1)
+
+        header, _ = read_trajectory(tmp_path / 'trajectory.jsonl')
+        assert header['n_reactive_sites'] == 1
+
     def test_manifest_records_effective_params(self, tmp_path):
         """RF1: manifest.json extra contains TDBB effective parameters."""
         template, groups = _make_simple_setup()

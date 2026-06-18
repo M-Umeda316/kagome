@@ -408,13 +408,13 @@ def main() -> None:
         state,
         output_dir=args.output_dir,
         config_path='configs/boost/paper_faithful.yaml',
+        n_monomers=args.n_monomers,
     )
 
     n_form = len(tracker.confirmed_formations())
     n_dissoc = len(tracker.confirmed_dissociations())
     logger.info('Confirmed formations: %d, dissociations: %d', n_form, n_dissoc)
 
-    n_reactive_sites = len(groups['radical_C'].atom_indices) + len(groups['vinyl_alpha_C'].atom_indices)
     summary = {
         'total_steps': state.step,
         'n_monomers': args.n_monomers,
@@ -458,13 +458,12 @@ def main() -> None:
     out_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
     logger.info('Done. Results in %s', args.output_dir)
 
-    n_reactive = args.n_monomers * 2 + args.n_initiators
     print('\nTo generate figures:')
     print(
         f'  python scripts/reproduce_figures.py '
         f'--trajectory {args.output_dir}/trajectory.jsonl '
         f'--bonds {args.output_dir}/bonds.jsonl '
-        f'--n-reactive-sites {n_reactive} '
+        f'--n-reactive-sites {args.n_monomers} '
         f'--target-temperature {args.temperature} '
         f'--output-dir {args.output_dir}/figures'
     )

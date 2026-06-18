@@ -2,8 +2,52 @@
 import numpy as np
 import pytest
 
-from src.analysis.conversion import conversion, conversion_timeseries, fit_conversion_exponential
+from src.analysis.conversion import conversion, conversion_timeseries, fit_conversion_exponential, monomer_site_count
 from src.reactive.bonds import BondEvent
+from src.reactive.groups import ReactiveGroup
+
+
+class TestMonomerSiteCount:
+    """RF2: denominator = initial monomer count, not all groups."""
+
+    def test_vinyl_returns_monomer_count(self):
+        """vinyl_alpha_C group size = n_monomers."""
+        groups = {
+            'radical_C': ReactiveGroup('radical_C', [0, 1]),
+            'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', [2, 3, 4]),
+            'chain_C': ReactiveGroup('chain_C', [5]),
+            'vinyl_beta_C': ReactiveGroup('vinyl_beta_C', [6, 7, 8]),
+        }
+        assert monomer_site_count(groups) == 3
+
+    def test_excludes_constraint_groups(self):
+        """chain_C and vinyl_beta_C are excluded from denominator."""
+        groups = {
+            'radical_C': ReactiveGroup('radical_C', [0]),
+            'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', [1, 2]),
+            'chain_C': ReactiveGroup('chain_C', [3, 4, 5, 6]),
+            'vinyl_beta_C': ReactiveGroup('vinyl_beta_C', [7, 8, 9, 10]),
+        }
+        assert monomer_site_count(groups) == 2
+
+    def test_preserves_count_after_propagation(self):
+        """Even after atoms are removed from vinyl_alpha_C, the
+        caller should capture the initial count before any updates."""
+        groups = {
+            'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', [1, 2, 3]),
+        }
+        initial = monomer_site_count(groups)
+        groups['vinyl_alpha_C'].atom_indices.remove(1)
+        assert initial == 3
+        assert monomer_site_count(groups) == 2
+
+    def test_missing_group_returns_zero(self):
+        groups = {'radical_C': ReactiveGroup('radical_C', [0])}
+        assert monomer_site_count(groups) == 0
+
+    def test_custom_monomer_group(self):
+        groups = {'amine_N': ReactiveGroup('amine_N', [0, 1, 2])}
+        assert monomer_site_count(groups, monomer_group='amine_N') == 3
 
 
 class TestConversion:

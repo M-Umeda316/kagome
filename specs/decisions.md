@@ -841,3 +841,12 @@ Use this template for each decision.
 - Scientific risk: なし。記録の追加のみで物理に触れない。
 - Licensing/commercial impact: None.
 - Follow-up: 案B（YAML ローダ）は将来的に検討可。paper_faithful.yaml の冒頭コメントに実効値は manifest.extra を見る旨を追記済み。
+
+## 2026-06-19: RF2 — α denominator = n_monomers（初期モノマー数）に一本化
+- Context: α = N_reacted / N_total の分母が3箇所で不一致だった。(1) polymerization.py が全群和（radical_C + vinyl_alpha_C + chain_C + vinyl_beta_C）で過大計上、(2) run_vinyl_aibn.py:461 が `n_monomers * 2 + n_initiators`、(3) run_vinyl_aibn.py:417 が radical_C + vinyl_alpha_C で死蔵。
+- Paper anchor: 本文 p.9 Fig.2 キャプション α = 1 − [M]/[M]₀（[M]₀ = 初期モノマー濃度）。Eq. 11 の α は monomer conversion。よって分母 = n_monomers（初期モノマー数）。vinyl では1形成イベントにつきモノマー1個消費 → α = confirmed_formations / n_monomers。開始剤・constraint 群は分母に含めない。
+- Decision: 分母を n_monomers に統一。`monomer_site_count()` を conversion.py に新設（vinyl_alpha_C 群サイズ = 初期モノマー数）。`PolymerizationWorkflow.run()` に `n_monomers` 引数を追加し、渡された場合はそれを trajectory ヘッダに記録。run_vinyl_aibn.py は `args.n_monomers` を渡す。死蔵変数 `n_reactive_sites`（:417）と旧式 `n_monomers * 2 + n_initiators`（:461）を除去。
+- Alternatives considered: 全群和（旧実装）— constraint 群を含むため分母が過大で α を過小評価。`2*n_mono+n_init`（旧図コマンド）— 反応サイトの二重計上。いずれも paper 定義と不一致。
+- Scientific risk: 中。α の絶対スケールが変わる（旧値は分母過大で α を過小評価していた）。過去 run の図と数値が変わるため本記録で定義変更を明示。
+- Licensing/commercial impact: None.
+- Follow-up: nylon は反応進行度 p（Carothers, carothers.py）で別管理。α(t) プロット（Eq. 11）は vinyl monomer-conversion 用。
