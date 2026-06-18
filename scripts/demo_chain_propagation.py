@@ -94,7 +94,7 @@ def main() -> None:
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
-    pos, sp, template, groups, pmap = build_vinyl_aibn_system(
+    pos, sp, template, groups, pmap, _ = build_vinyl_aibn_system(
         n_monomers=args.n_monomers, n_initiators=1, box_size=60.0, rng=rng,
         initiator_smiles=RADICAL_SMILES,
     )

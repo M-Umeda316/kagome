@@ -67,7 +67,7 @@ def _place_dilute(n_monomers, n_initiators, counts, target_edge, rng):
         if edge <= target_edge:
             continue
         try:
-            positions, species, _, _, _ = build_vinyl_aibn_system(
+            positions, species, _, _, _, _ = build_vinyl_aibn_system(
                 n_monomers=n_monomers, n_initiators=n_initiators,
                 box_size=edge, rng=rng,
             )

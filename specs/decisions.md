@@ -657,3 +657,58 @@ Use this template for each decision.
   - Chain propagation works from both radical sites
   - Radical count conserved throughout simulation
 - S3 CLOSED.
+
+## 2026-06-18: S4 Phase 1 — Multi-pair criterion (d_ijkl = r_ij + r_ik + r_jl) implemented and validated
+
+- Context: S4 objective is paper fidelity improvement. Phase 1 extends the vinyl template
+  from 2 groups (i=radical_C, j=vinyl_alpha_C) to 4 groups (+ k=chain_C, l=vinyl_beta_C)
+  with the Table S1 multi-pair scoring criterion d_ijkl = r_ij + r_ik + r_jl.
+- Paper anchor: Table S1 (p.22) — vinyl Initiation/Propagation uses 4 groups with pairs
+  i-j (formation, [3,6]), i-k (structural constraint, [0,3]), j-l (structural constraint, [0,3]).
+  The i-k and j-l pairs participate in candidate selection and scoring but NO bias force is applied.
+- Implementation:
+  - `PairSpec.constraint_only: bool = False` added to `src/reactive/groups.py` — when True,
+    the pair is used for filtering and scoring but `_build_pair_biases` skips it (no V^f/V^d).
+  - `_find_chain_c_neighbor(smiles, radical_idx)` added to `scripts/_systems.py` — finds
+    the non-nitrile C neighbor of the radical C in the initiator molecule.
+  - `build_vinyl_aibn_system` returns 6-tuple (added `chain_c_map: dict[int,int]`).
+  - Template: 4 groups, 3 pairs (1 formation + 2 constraint_only).
+  - `PolymerizationWorkflow` constructor accepts `chain_c_map`, `_update_groups_after_cycle`
+    maintains chain_C and vinyl_beta_C groups after each propagation event.
+  - All callers updated: `run_vinyl_aibn.py`, `prep_structure.py`, `demo_radical_formation.py`,
+    `demo_chain_propagation.py`, `tests/unit/test_systems.py`.
+  - New tests: `test_chain_c_map_size`, `test_template_has_4_groups_and_3_pairs`,
+    `test_find_chain_c_neighbor`, `test_propagation_map_beta_in_vinyl_beta_group_only`.
+  - Full test suite: 199 tests PASSED.
+- Validation run: S3 conditions (20 mono + 2 init, spin=3, f2=5, density 0.5, 15 cycles,
+  2000 biased + 500 unbiased, seed 42, OrbMol-v2/CUDA). Artifact: runs/s4_multipair/.
+- Key results:
+  | Metric | S3 (2-group) | S4 (4-group) |
+  |--------|-------------|-------------|
+  | confirmed_formations | 6 / 15 cycles | 20 / 15 cycles |
+  | reaction rate | 40% / cycle | 100% in cycles 1-10 |
+  | chain_c_map updates | N/A | verified every cycle |
+  | constraint_only skip | N/A | verified (no bias on i-k, j-l) |
+- Analysis:
+  - 20/20 monomers consumed — all monomer groups empty by cycle 12.
+  - Cycles 1-9: 2 formations/cycle (both radicals react); cycle 10: 1; cycle 12: 1.
+  - Cycles 11, 13-15: 0 candidates (monomer pool exhausted, only chain_C/vinyl_beta_C
+    from already-reacted monomers remain; no vinyl_alpha_C for formation).
+  - The 4-group criterion with i-k [0,3] and j-l [0,3] filters candidates more tightly,
+    selecting pairs where the radical's chain backbone and the monomer's vinyl backbone
+    are properly oriented — this dramatically improves reaction success rate.
+  - chain_c_map bookkeeping verified: "removed old partner, added new alpha_C" logged
+    for every propagation event across all 20 formations.
+- Deviation from paper: None for Phase 1 — template and scoring are now paper-faithful
+  per Table S1 (vinyl Propagation row).
+- Scientific risk: None — Phase 1 is a pure paper-fidelity improvement.
+- Licensing/commercial impact: None.
+- Reproduction:
+  ```
+  conda run -n pfpoly-gpu python scripts/run_vinyl_aibn.py \
+      --n-monomers 20 --n-initiators 2 --initiator-smiles "C[C](C)C#N" --spin 3 \
+      --density 0.5 --backend orb --device cuda --no-barostat \
+      --n-cycles 15 --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 \
+      --timestep-fs 1.0 --f2 5.0 --seed 42 --output-dir runs/s4_multipair
+  ```
+- **S4 Phase 1 DONE.** Phase 2 (AIBN decomposition / Activation) is next.

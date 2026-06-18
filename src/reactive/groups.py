@@ -31,12 +31,15 @@ class PairSpec:
     group_a/group_b are labels referencing ReactiveGroup.label.
     is_formation: True for bond-forming, False for bond-breaking.
     r_min, r_max: distance bounds (Å) for candidate selection (Eq. 7).
+    constraint_only: if True, participates in candidate selection and scoring
+        but no bias force is applied (Table S1: i-k, j-l structural constraints).
     """
     group_a: str
     group_b: str
     is_formation: bool
     r_min: float = 0.0
     r_max: float = 5.0
+    constraint_only: bool = False
 
 
 @dataclass

@@ -105,6 +105,25 @@ class TestVinylAIBNHelpers:
         assert sum(1 for n in nbrs if n.GetSymbol() == 'C') == 3
         assert sum(1 for n in nbrs if n.GetSymbol() == 'H') == 1
 
+    def test_find_chain_c_neighbor(self):
+        """chain_C neighbor of radical C in CC(C)C#N must be a non-nitrile C."""
+        from rdkit import Chem
+        from scripts._systems import _find_ibn_radical_c, _find_chain_c_neighbor
+
+        smiles = 'CC(C)C#N'
+        rad_idx = _find_ibn_radical_c(smiles)
+        chain_idx = _find_chain_c_neighbor(smiles, rad_idx)
+        mol = Chem.MolFromSmiles(smiles)
+        mol = Chem.AddHs(mol)
+        chain_atom = mol.GetAtomWithIdx(chain_idx)
+        assert chain_atom.GetSymbol() == 'C'
+        assert chain_idx != rad_idx
+        nitrile_c = [n.GetIdx() for n in mol.GetAtomWithIdx(rad_idx).GetNeighbors()
+                     if n.GetSymbol() == 'C'
+                     and any(b.GetBondTypeAsDouble() == 3.0
+                             for b in n.GetBonds())]
+        assert chain_idx not in nitrile_c
+
     def test_rdkit_3d_species_count(self):
         """Methyl acrylate C=CC(=O)OC has 12 atoms with explicit H."""
         from scripts._systems import _rdkit_3d
@@ -134,7 +153,7 @@ class TestBuildVinylAIBNSystem:
         from scripts._systems import build_vinyl_aibn_system, _rdkit_3d
         rng = np.random.default_rng(0)
         n_mono, n_init = 2, 1
-        pos, species, template, groups, prop_map = build_vinyl_aibn_system(
+        pos, species, template, groups, prop_map, _ = build_vinyl_aibn_system(
             n_monomers=n_mono, n_initiators=n_init, box_size=18.0, rng=rng,
         )
         n_per_mono = len(_rdkit_3d('C=CC(=O)OC')[1])   # 12
@@ -146,7 +165,7 @@ class TestBuildVinylAIBNSystem:
     def test_group_sizes(self):
         from scripts._systems import build_vinyl_aibn_system
         rng = np.random.default_rng(1)
-        _, _, _, groups, _ = build_vinyl_aibn_system(
+        _, _, _, groups, _, _ = build_vinyl_aibn_system(
             n_monomers=3, n_initiators=2, box_size=20.0, rng=rng,
         )
         assert len(groups['radical_C'].atom_indices) == 2
@@ -156,7 +175,7 @@ class TestBuildVinylAIBNSystem:
         from scripts._systems import build_vinyl_aibn_system
         rng = np.random.default_rng(2)
         n_mono = 4
-        _, _, _, _, prop_map = build_vinyl_aibn_system(
+        _, _, _, _, prop_map, _ = build_vinyl_aibn_system(
             n_monomers=n_mono, n_initiators=1, box_size=22.0, rng=rng,
         )
         assert len(prop_map) == n_mono
@@ -165,36 +184,55 @@ class TestBuildVinylAIBNSystem:
         """Every alpha-C key in propagation_map must appear in vinyl_alpha_C group."""
         from scripts._systems import build_vinyl_aibn_system
         rng = np.random.default_rng(3)
-        _, _, _, groups, prop_map = build_vinyl_aibn_system(
+        _, _, _, groups, prop_map, _ = build_vinyl_aibn_system(
             n_monomers=2, n_initiators=1, box_size=18.0, rng=rng,
         )
         alpha_indices = set(groups['vinyl_alpha_C'].atom_indices)
         for alpha in prop_map:
             assert alpha in alpha_indices
 
-    def test_propagation_map_beta_not_in_any_group(self):
-        """beta-C values must NOT already be in radical_C or vinyl_alpha_C groups."""
+    def test_propagation_map_beta_in_vinyl_beta_group_only(self):
+        """beta-C values must be in vinyl_beta_C but NOT in radical_C or vinyl_alpha_C."""
         from scripts._systems import build_vinyl_aibn_system
         rng = np.random.default_rng(4)
-        _, _, _, groups, prop_map = build_vinyl_aibn_system(
+        _, _, _, groups, prop_map, _ = build_vinyl_aibn_system(
             n_monomers=2, n_initiators=1, box_size=18.0, rng=rng,
         )
-        all_group_indices = set(
-            idx for g in groups.values() for idx in g.atom_indices
-        )
+        forbidden = set(groups['radical_C'].atom_indices) | set(groups['vinyl_alpha_C'].atom_indices)
+        beta_group = set(groups['vinyl_beta_C'].atom_indices)
         for beta in prop_map.values():
-            assert beta not in all_group_indices
+            assert beta not in forbidden
+            assert beta in beta_group
+
+    def test_chain_c_map_size(self):
+        from scripts._systems import build_vinyl_aibn_system
+        rng = np.random.default_rng(6)
+        n_init = 2
+        _, _, _, groups, _, chain_c_map = build_vinyl_aibn_system(
+            n_monomers=3, n_initiators=n_init, box_size=20.0, rng=rng,
+        )
+        assert len(chain_c_map) == n_init
+        for rad, chain in chain_c_map.items():
+            assert rad in groups['radical_C'].atom_indices
+            assert chain in groups['chain_C'].atom_indices
+
+    def test_template_has_4_groups_and_3_pairs(self):
+        from scripts._systems import build_vinyl_aibn_system
+        rng = np.random.default_rng(7)
+        _, _, template, _, _, _ = build_vinyl_aibn_system(
+            n_monomers=2, n_initiators=1, box_size=18.0, rng=rng,
+        )
+        assert len(template.groups) == 4
+        assert len(template.pairs) == 3
+        constraint_pairs = [p for p in template.pairs if p.constraint_only]
+        assert len(constraint_pairs) == 2
 
     def test_no_overlap(self):
         from scripts._systems import build_vinyl_aibn_system
         rng = np.random.default_rng(5)
-        pos, species, _, _, _ = build_vinyl_aibn_system(
+        pos, species, _, _, _, _ = build_vinyl_aibn_system(
             n_monomers=2, n_initiators=1, box_size=20.0, rng=rng, min_sep=2.0,
         )
-        # Check min inter-atom distance (across different molecules).
-        # We don't check intra-mol distances (bonds ~1.4 Å are expected).
-        # Rough sanity: at least some atoms should be > 2 Å from each other.
-        # Just verify the array is well-formed.
         assert pos.shape[1] == 3
         assert not np.any(np.isnan(pos))
 

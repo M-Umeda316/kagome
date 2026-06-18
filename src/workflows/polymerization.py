@@ -135,6 +135,7 @@ class PolymerizationWorkflow:
         barostat: MCBarostat | None = None,
         propagation_map: dict[int, int] | None = None,
         propagation_target_group: str = 'radical_C',
+        chain_c_map: dict[int, int] | None = None,
     ) -> None:
         self.config = config
         self.calculator = calculator
@@ -145,6 +146,7 @@ class PolymerizationWorkflow:
         self.barostat = barostat
         self.propagation_map = propagation_map or {}
         self.propagation_target_group = propagation_target_group
+        self.chain_c_map = chain_c_map or {}
         self.logs: list[CycleLog] = []
         self._processed_formations: int = 0
 
@@ -480,6 +482,19 @@ class PolymerizationWorkflow:
                     group.remove_atom(ev.atom_a)
                 if ev.atom_b in group.atom_indices:
                     group.remove_atom(ev.atom_b)
+
+            # Remove old radical's chain_C partner from chain_C group
+            chain_c_group = self.groups.get('chain_C')
+            if chain_c_group is not None and ev.atom_a in self.chain_c_map:
+                old_chain_c = self.chain_c_map.pop(ev.atom_a)
+                chain_c_group.remove_atom(old_chain_c)
+
+            # Remove reacted monomer's beta_C from vinyl_beta_C group
+            beta_c_group = self.groups.get('vinyl_beta_C')
+            if beta_c_group is not None and ev.atom_b in self.propagation_map:
+                beta_idx = self.propagation_map[ev.atom_b]
+                beta_c_group.remove_atom(beta_idx)
+
             # Chain propagation: beta-C of reacted monomer becomes new radical site.
             # ev.atom_b = vinyl_alpha_C; propagation_map[alpha] = beta.
             if self.propagation_map and ev.atom_b in self.propagation_map:
@@ -491,6 +506,12 @@ class PolymerizationWorkflow:
                         'Chain propagation: atom %d (beta-C) → %s',
                         beta_idx, self.propagation_target_group,
                     )
+
+                # New radical's chain_C partner is the alpha_C it just bonded to
+                if chain_c_group is not None:
+                    chain_c_group.atom_indices.append(ev.atom_b)
+                    self.chain_c_map[beta_idx] = ev.atom_b
+
         self._processed_formations = len(formations)
 
     def _build_pair_biases(
@@ -503,6 +524,8 @@ class PolymerizationWorkflow:
 
         for cand in selected:
             for ps in self.template.pairs:
+                if ps.constraint_only:
+                    continue
                 idx_a_pos = label_list.index(ps.group_a)
                 idx_b_pos = label_list.index(ps.group_b)
                 atom_a = cand.atom_indices[idx_a_pos]

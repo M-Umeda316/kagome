@@ -219,6 +219,30 @@ def _find_ibn_radical_c(smiles: str) -> int:
     raise ValueError(f'No C bonded to exactly 3 C-neighbours found in {smiles!r}')
 
 
+def _find_chain_c_neighbor(smiles: str, radical_idx: int) -> int:
+    """Return local index of a C neighbor of the radical C (group k, Table S1).
+
+    Picks the first non-nitrile C neighbor (a methyl C). The nitrile C is bonded
+    to N via triple bond, so we exclude it.
+    """
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    radical = mol.GetAtomWithIdx(radical_idx)
+    for nbr in radical.GetNeighbors():
+        if nbr.GetSymbol() != 'C':
+            continue
+        has_triple = any(
+            b.GetBondTypeAsDouble() == 3.0 for b in nbr.GetBonds()
+        )
+        if not has_triple:
+            return nbr.GetIdx()
+    raise ValueError(
+        f'No non-nitrile C neighbor of radical C (idx {radical_idx}) in {smiles!r}'
+    )
+
+
 def _rotation_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
     """Rodrigues rotation matrix for arbitrary axis/angle."""
     c, s = np.cos(angle), np.sin(angle)
@@ -316,7 +340,8 @@ def build_vinyl_aibn_system(
     initiator_smiles: str = _INITIATOR_SMILES,
     min_sep: float = 2.5,
     rdkit_seed: int = 42,
-) -> tuple[np.ndarray, list[str], ReactionTemplate, dict[str, ReactiveGroup], dict[int, int]]:
+) -> tuple[np.ndarray, list[str], ReactionTemplate, dict[str, ReactiveGroup],
+           dict[int, int], dict[int, int]]:
     """Build a vinyl + AIBN-initiator system for radical polymerization.
 
     Placement order: all initiators first, then all monomers.
@@ -324,13 +349,14 @@ def build_vinyl_aibn_system(
 
     Returns
     -------
-    positions      : (N, 3) Å array
-    species        : list of element symbols
-    template       : ReactionTemplate (radical_C + vinyl_alpha_C → bond)
-    groups         : {'radical_C': Group I, 'vinyl_alpha_C': Group J}
-    propagation_map: {alpha_C_global_idx: beta_C_global_idx} for each monomer
+    positions       : (N, 3) Å array
+    species         : list of element symbols
+    template        : ReactionTemplate (4-group: radical_C, vinyl_alpha_C, chain_C, vinyl_beta_C)
+    groups          : dict of ReactiveGroup (4 groups)
+    propagation_map : {alpha_C_global_idx: beta_C_global_idx} for each monomer
+    chain_c_map     : {radical_C_global_idx: chain_C_global_idx} for each radical
 
-    Paper anchor: Fig. 1, Section 2 (radical chain-growth mechanism).
+    Paper anchor: Fig. 1, Section 2, Table S1 (ij+ik+jl criterion).
     Design: specs/decisions.md — "T-G1: vinyl radical polymerization system".
     """
     # ── generate single-molecule 3D templates ──
@@ -338,6 +364,7 @@ def build_vinyl_aibn_system(
     mono_pos, mono_sp = _rdkit_3d(monomer_smiles, seed=rdkit_seed + 1)
 
     local_radical = _find_ibn_radical_c(initiator_smiles)
+    local_chain_c = _find_chain_c_neighbor(initiator_smiles, local_radical)
     local_alpha, local_beta = _find_vinyl_alpha_beta(monomer_smiles)
 
     n_per_init = len(init_sp)
@@ -360,8 +387,16 @@ def build_vinyl_aibn_system(
         init_offset + i * n_per_init + local_radical
         for i in range(n_initiators)
     ]
+    chain_C_indices = [
+        init_offset + i * n_per_init + local_chain_c
+        for i in range(n_initiators)
+    ]
     alpha_C_indices = [
         mono_offset + j * n_per_mono + local_alpha
+        for j in range(n_monomers)
+    ]
+    beta_C_indices = [
+        mono_offset + j * n_per_mono + local_beta
         for j in range(n_monomers)
     ]
     propagation_map: dict[int, int] = {
@@ -369,11 +404,15 @@ def build_vinyl_aibn_system(
         mono_offset + j * n_per_mono + local_beta
         for j in range(n_monomers)
     }
+    chain_c_map: dict[int, int] = {
+        radical_C_indices[i]: chain_C_indices[i]
+        for i in range(n_initiators)
+    }
 
-    # ── reaction template ──
+    # ── reaction template (Table S1: 4-group ij+ik+jl criterion) ──
     template = ReactionTemplate(
         name='radical_vinyl_polymerization',
-        groups=['radical_C', 'vinyl_alpha_C'],
+        groups=['radical_C', 'vinyl_alpha_C', 'chain_C', 'vinyl_beta_C'],
         pairs=[
             PairSpec(
                 group_a='radical_C',
@@ -382,14 +421,32 @@ def build_vinyl_aibn_system(
                 r_min=3.0,
                 r_max=6.0,
             ),
+            PairSpec(
+                group_a='radical_C',
+                group_b='chain_C',
+                is_formation=True,
+                r_min=0.0,
+                r_max=3.0,
+                constraint_only=True,
+            ),
+            PairSpec(
+                group_a='vinyl_alpha_C',
+                group_b='vinyl_beta_C',
+                is_formation=True,
+                r_min=0.0,
+                r_max=3.0,
+                constraint_only=True,
+            ),
         ],
     )
     groups = {
-        'radical_C':    ReactiveGroup('radical_C',    radical_C_indices),
-        'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', alpha_C_indices),
+        'radical_C':      ReactiveGroup('radical_C',      radical_C_indices),
+        'vinyl_alpha_C':  ReactiveGroup('vinyl_alpha_C',  alpha_C_indices),
+        'chain_C':        ReactiveGroup('chain_C',        chain_C_indices),
+        'vinyl_beta_C':   ReactiveGroup('vinyl_beta_C',   beta_C_indices),
     }
 
-    return positions, species, template, groups, propagation_map
+    return positions, species, template, groups, propagation_map, chain_c_map
 
 
 # ── nylon-6,6 step-growth system ────────────────────────────────────────────

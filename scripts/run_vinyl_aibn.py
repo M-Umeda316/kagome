@@ -167,7 +167,7 @@ def main() -> None:
 
         prepared = PreparedStructure.load(args.load_structure)
         meta_edge = box_from_density(counts, 0.10)
-        _, ref_species, template, groups, propagation_map = _build(meta_edge, rng)
+        _, ref_species, template, groups, propagation_map, chain_c_map = _build(meta_edge, rng)
         if list(ref_species) != list(prepared.species):
             raise ValueError(
                 'Loaded structure species do not match the builder '
@@ -190,7 +190,7 @@ def main() -> None:
         try:
             # Direct placement at the target box (small systems take this path,
             # bit-for-bit identical to prior behaviour).
-            positions, species, template, groups, propagation_map = _build(target_edge, rng)
+            positions, species, template, groups, propagation_map, chain_c_map = _build(target_edge, rng)
             cell = np.diag([target_edge, target_edge, target_edge])
         except RuntimeError:
             # Greedy placer stalls at high molecule counts even when the density is
@@ -206,7 +206,7 @@ def main() -> None:
                 if edge <= target_edge:
                     continue
                 try:
-                    positions, species, template, groups, propagation_map = _build(edge, rng)
+                    positions, species, template, groups, propagation_map, chain_c_map = _build(edge, rng)
                     place_edge = edge
                     logger.info(
                         'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
@@ -301,6 +301,7 @@ def main() -> None:
         barostat=barostat,
         propagation_map=propagation_map,
         propagation_target_group='radical_C',
+        chain_c_map=chain_c_map,
     )
     logs = wf.run(
         state,
