@@ -514,6 +514,142 @@ class PolymerizationWorkflow:
 
         self._processed_formations = len(formations)
 
+    def run_activation(
+        self,
+        state: SimulationState,
+        activation_template: ReactionTemplate,
+        activation_groups: dict[str, ReactiveGroup],
+        activation_steps: int = 2000,
+        activation_f2: float = 0.3,
+        activation_f1_max: float = 250.0,
+        rng: np.random.Generator | None = None,
+    ) -> list[tuple[int, int]]:
+        """Run AIBN activation phase: V^d on azo C-N bonds until dissociation.
+
+        activation_f2: V^d Gaussian width — must be small enough that the
+        force peak (r=1/√(2·f2)) overlaps the C-N bond distance (~1.49 Å).
+        activation_f1_max: peak V^d amplitude.  Must be large enough that the
+        effective potential PES+V^d is monotonically repulsive at the C-N bond.
+        With OrbMol-v2 C-N barrier ≈39 kcal/mol, f2=0.3+f1≥200 guarantees this.
+
+        Returns list of (C_idx, N_idx) pairs that dissociated.
+
+        Paper anchor: Table S1 — Activation row, V^d applied to C-N azo bonds.
+        """
+        if rng is None:
+            rng = np.random.default_rng(self.config.seed)
+
+        candidates = find_candidates(
+            activation_template, activation_groups, state.positions, state.cell,
+        )
+        scored = score_candidates(
+            candidates, activation_template, state.positions, state.cell,
+        )
+        selected = select_non_overlapping(scored)
+
+        if not selected:
+            logger.warning('Activation: no C-N candidates found.')
+            return []
+
+        label_list = activation_template.groups
+        pairs: list[PairBias] = []
+        for cand in selected:
+            for ps in activation_template.pairs:
+                if ps.constraint_only:
+                    continue
+                idx_a_pos = label_list.index(ps.group_a)
+                idx_b_pos = label_list.index(ps.group_b)
+                atom_a = cand.atom_indices[idx_a_pos]
+                atom_b = cand.atom_indices[idx_b_pos]
+                sp_a, sp_b = state.species[atom_a], state.species[atom_b]
+                vdw_a = VDW_RADII.get(sp_a, 1.5)
+                vdw_b = VDW_RADII.get(sp_b, 1.5)
+                r0 = target_distance(
+                    np.array([vdw_a, vdw_b]),
+                    self.config.tdbb.lambda_vdw,
+                )
+                pairs.append(PairBias(
+                    idx_a=atom_a, idx_b=atom_b,
+                    is_formation=ps.is_formation, r0=r0,
+                ))
+
+        logger.info(
+            'Activation: %d candidates, %d selected, %d V^d pairs',
+            len(candidates), len(selected), len(pairs),
+        )
+        for i, p in enumerate(pairs):
+            r = float(np.linalg.norm(minimum_image(
+                state.positions[p.idx_b] - state.positions[p.idx_a], state.cell)))
+            logger.info('  V^d pair %d: atoms (%d, %d) r=%.2f A', i, p.idx_a, p.idx_b, r)
+
+        boost = BoostState()
+        dt = self.config.timestep_fs
+        tdbb = TDBBParams(
+            f1_max_formation=self.config.tdbb.f1_max_formation,
+            f1_max_dissociation=activation_f1_max,
+            f2=activation_f2,
+            gamma=self.config.tdbb.gamma,
+            lambda_vdw=self.config.tdbb.lambda_vdw,
+        )
+
+        base_energy, base_forces = self.calculator.compute(
+            state.positions, state.species, state.cell,
+        )
+        bias_energy, bias_forces = total_bias(
+            pairs, state.positions, boost, tdbb, state.cell,
+        )
+        current_forces = base_forces + bias_forces
+
+        dissoc_threshold = 2.5
+        dissociated: list[tuple[int, int]] = []
+
+        for step_in_phase in range(activation_steps):
+            boost.advance(tdbb.gamma, tdbb.f1_max_formation, tdbb.f1_max_dissociation)
+
+            self.integrator.pre_force(
+                state.positions, state.velocities, current_forces,
+                state.masses, dt, rng, state.cell,
+            )
+
+            base_energy, base_forces = self.calculator.compute(
+                state.positions, state.species, state.cell,
+            )
+            bias_energy, bias_forces = total_bias(
+                pairs, state.positions, boost, tdbb, state.cell,
+            )
+            current_forces = base_forces + bias_forces
+
+            self.integrator.post_force(
+                state.velocities, current_forces, state.masses, dt,
+            )
+            state.step += 1
+
+            for p in pairs:
+                r = float(np.linalg.norm(minimum_image(
+                    state.positions[p.idx_b] - state.positions[p.idx_a], state.cell)))
+                if (step_in_phase + 1) % 500 == 0 or step_in_phase == 0:
+                    logger.info(
+                        'Activation step %d: (%d,%d) r=%.3f A, f1_d=%.1f, bias_E=%.1f',
+                        step_in_phase + 1, p.idx_a, p.idx_b, r,
+                        boost.f1_dissociation, bias_energy,
+                    )
+                if r > dissoc_threshold and (p.idx_a, p.idx_b) not in dissociated:
+                    dissociated.append((p.idx_a, p.idx_b))
+                    logger.info(
+                        'Activation: C-N dissociation at step %d, atoms (%d, %d), r=%.2f A',
+                        step_in_phase + 1, p.idx_a, p.idx_b, r,
+                    )
+
+            if len(dissociated) == len(pairs):
+                logger.info(
+                    'Activation: all %d C-N bonds dissociated at step %d',
+                    len(pairs), step_in_phase + 1,
+                )
+                break
+
+        logger.info('Activation done: %d/%d dissociated', len(dissociated), len(pairs))
+        return dissociated
+
     def _build_pair_biases(
         self,
         selected: list[Candidate],

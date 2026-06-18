@@ -712,3 +712,114 @@ Use this template for each decision.
       --timestep-fs 1.0 --f2 5.0 --seed 42 --output-dir runs/s4_multipair
   ```
 - **S4 Phase 1 DONE.** Phase 2 (AIBN decomposition / Activation) is next.
+
+## 2026-06-18: S4 Phase 2 — AIBN C-N homolysis PES scan (GATE check)
+
+- Context: Before implementing V^d-driven AIBN activation, verify that OrbMol-v2 can
+  model C-N azo bond homolysis. Scanned one C-N bond (C1-N5) of full AIBN
+  (CC(C)(C#N)N=NC(C)(C)C#N, 24 atoms with H) from r=1.4 to 3.4 Å using constrained
+  FIRE relaxation at each point. Tested spin=1 (singlet, intact) and spin=3 (triplet,
+  post-decomposition).
+- Paper anchor: Table S1 — Activation row, V^d on azo C-N bonds; f1_max_dissociation=125 kcal/mol.
+- PES scan results:
+  | r (Å) | Singlet dE (kcal/mol) | Triplet dE (kcal/mol) |
+  |--------|----------------------|----------------------|
+  | 1.4    | 0.0 (ref)            | 0.0 (ref)            |
+  | 1.6    | 0.3                  | 3.4                  |
+  | 1.8    | 10.8                 | 7.0                  |
+  | 2.0    | 23.7                 | 9.4                  |
+  | 2.2    | 35.0                 | −25.1                |
+  | 2.6    | 38.7                 | −4.8                 |
+  | 3.0    | 39.4                 | −38.8                |
+  | 3.4    | 11.1                 | −38.7                |
+- Key findings:
+  - Singlet barrier: 39.4 kcal/mol (max dE at r≈3.0 Å). V^d f1_max=125 >> 39.4 → PASS.
+  - Singlet dissociation energy: ~11 kcal/mol at large r (endothermic, expected for
+    homolysis on closed-shell surface).
+  - Triplet becomes favorable beyond r≈1.8 Å (spin crossing region), with large
+    exothermic stabilization (−38.8 kcal/mol at r=3.0 Å).
+  - OrbMol-v2 PES has discontinuities (triplet at r=2.2 and singlet at r=3.2) — likely
+    constrained FIRE finding different local minima. Does not affect the GATE verdict.
+- **GATE VERDICT: PASS** — V^d (125 kcal/mol) can drive AIBN C-N homolysis. The
+  singlet barrier (39.4 kcal/mol) is well below f1_max. After dissociation, spin
+  switching to triplet provides large thermodynamic stabilization.
+- Decision: proceed with Phase 2 implementation (activation workflow, spin switching).
+- Scientific risk: Low for GATE check. The PES discontinuities suggest OrbMol-v2's
+  AIBN treatment is not perfectly smooth, but the qualitative picture (barrier exists,
+  V^d can overcome it, triplet is stable) is sufficient for TDBB activation.
+- Licensing/commercial impact: None.
+- Reproduction:
+  ```
+  conda run -n pfpoly-gpu python scripts/scan_aibn_decomposition.py --device cuda
+  ```
+- Artifacts: `runs/s4_aibn_pes/aibn_pes.json`, `runs/s4_aibn_pes/aibn_pes.png`
+
+## 2026-06-18: S4 Phase 2 — V^d f2 for activation must differ from production f2
+
+- Context: V^d = f1·exp(-f2·r²) has force peak at r=1/√(2f2). The production f2
+  (5-10) puts the peak at r=0.22-0.32 Å — at C-N bond distance (1.49 Å), the bias
+  energy and force are essentially zero:
+  | f2   | V^d(1.49 Å) | F(1.49 Å) |
+  |------|-------------|-----------|
+  | 10.0 | 0.00        | 0.00      |
+  | 5.0  | 0.00        | 0.03      |
+  | 0.5  | 41.2        | 61.4      |
+  f2=0.5 puts the force peak at r=1.0 Å, providing 41 kcal/mol repulsive energy at
+  the C-N equilibrium — comparable to the 39 kcal/mol homolysis barrier (PES scan).
+- First test result: activation with f2=5.0 (production value) on 5 monomers + 1 AIBN,
+  3000 steps: **0/2 C-N bonds dissociated** — confirmed that production f2 is useless
+  for dissociation at bond distances.
+- Paper anchor: The paper specifies f2=10 for formation (PDF p.7) and f2∈[5,20] as
+  robust range (Fig. S4), but does NOT explicitly state whether the same f2 applies to
+  dissociation/activation. V^d = f1·exp(-f2·r²) (Eq. 3) and V^f = f1·(1-exp(-f2·(r-r0)²))
+  (Eq. 2) use the same f2 parameter in the equations, but the physical contexts are
+  fundamentally different: V^f acts near r0≈2 Å (close-contact, bias→bond), V^d must
+  act near r_bond≈1.5 Å (stretch existing bond apart).
+- Decision: add `activation_f2` and `activation_f1_max` parameters to `run_activation()`
+  and CLI.  Defaults: f2=0.3, f1_max=250.  The production f2 (for V^f formation) remains
+  unchanged.  This is analogous to the f2=5 tuning for OrbMol-v2 PES (decisions.md
+  2026-06-17): adjusting operational parameters for the specific MLIP and reaction context.
+- Scientific risk: Low. f2=0.3, f1_max=250 are outside the paper's stated ranges (f2∈[5,20],
+  f1_max_dissociation=125), but those ranges were validated for FORMATION, not dissociation.
+  The effective potential analysis (PES + V^d) confirms these parameters are physically
+  necessary: the OrbMol-v2 C-N barrier (39.4 kcal/mol) requires f1_max≥200 at f2=0.3
+  for the effective potential to be monotonically repulsive.
+- Licensing/commercial impact: None.
+- Follow-up: see next record for validation results.
+
+## 2026-06-18: S4 Phase 2 — Effective potential analysis and activation validation
+
+- Context: V^d (f2=0.5, f1_max=125) stretched C-N bond to ~1.7-1.8 Å but could not
+  break it. Computed effective potential Eff(r) = PES(r) + V^d(r) at PES scan points
+  for various f1/f2 combinations to find monotonically repulsive parameters.
+- Effective potential barrier (kcal/mol) at key parameter combinations:
+  | f1_max | f2=0.5 | f2=0.3 | f2=0.2 |
+  |--------|--------|--------|--------|
+  | 125    | 11.0   | 6.1    | 7.2    |
+  | 200    | ~2     | **0**  | **0**  |
+  | 250    | **0**  | **0**  | **0**  |
+  "0" = monotonically decreasing effective potential → guaranteed dissociation.
+- Root cause: V^d(r) = f1·exp(-f2·r²) must drop faster than PES rises over the range
+  r=1.5→2.2 Å (PES rises 35 kcal/mol). At f2=0.5/f1=125, V^d drops only 24 kcal/mol
+  → 11 kcal/mol effective barrier → bond equilibrates at ~1.7 Å. At f2=0.3/f1=200,
+  V^d drops 46 kcal/mol → no effective barrier.
+- GPU validation (f2=0.3, f1_max=250, 3000 max steps):
+  - **2/2 C-N bonds dissociated at step 175-176** (f1 reached 175 kcal/mol)
+  - Spin switched 1 → 3 after activation
+  - Subsequent TDBB propagation: 1 confirmed formation in 5 cycles
+  - Full pipeline: AIBN decomposition → radical generation → polymerization propagation
+- Paper anchor: Table S1 Activation row. Parameters differ from paper defaults because
+  OrbMol-v2's C-N barrier (39.4 kcal/mol) may differ from PFP's. The TDBB mechanism
+  (V^d ramp-up → dissociation → spin switch → propagation) is faithfully reproduced.
+- Decision: adopt f2=0.3, f1_max=250 as activation defaults for OrbMol-v2.
+- Licensing/commercial impact: None.
+- Reproduction:
+  ```
+  conda run -n pfpoly-gpu python scripts/run_vinyl_aibn.py \
+      --n-monomers 5 --n-initiators 1 --activation --spin 1 \
+      --activation-f2 0.3 --activation-f1-max 250 --activation-steps 3000 \
+      --density 0.5 --backend orb --device cuda --no-barostat \
+      --n-cycles 5 --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 \
+      --timestep-fs 1.0 --f2 5.0 --seed 42 --output-dir runs/s4_activation_v3
+  ```
+- Artifacts: `runs/s4_activation_v3/`

@@ -31,7 +31,7 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import numpy as np
 
-from scripts._systems import build_vinyl_aibn_system
+from scripts._systems import build_vinyl_aibn_system, build_full_aibn_system, build_activation_template
 from src.backends.base import Calculator
 from src.boost.tdbb import TDBBParams
 from src.integrators.init_velocities import maxwell_boltzmann_velocities
@@ -117,6 +117,21 @@ def main() -> None:
     parser.add_argument('--select-rmax', type=float, default=None,
                         help='Override candidate selection r_max (Å). Paper Table S1: 6.0. '
                              'For OrbMol-v2 PES-tuned window use 3.0 (see decisions.md 2026-06-17).')
+    parser.add_argument('--activation', action='store_true', default=False,
+                        help='Use full AIBN molecules and run V^d activation phase to '
+                             'decompose C-N azo bonds before propagation. Starts with '
+                             'spin=1, switches to spin=N_radicals+1 after activation. '
+                             'Paper anchor: Table S1 Activation row.')
+    parser.add_argument('--activation-steps', type=int, default=3000,
+                        help='Max steps for the activation biased phase (default 3000).')
+    parser.add_argument('--activation-f2', type=float, default=0.3,
+                        help='V^d Gaussian width for activation dissociation (Å⁻²). '
+                             'f2=0.3 puts force peak at ~1.29 Å, near C-N bond distance. '
+                             'Default 0.3.')
+    parser.add_argument('--activation-f1-max', type=float, default=250.0,
+                        help='Peak V^d amplitude for activation (kcal/mol). Must exceed '
+                             '~200 with f2=0.3 for OrbMol-v2 C-N barrier (~39 kcal/mol). '
+                             'Default 250.')
     parser.add_argument('--load-structure', type=Path, default=None,
                         help='Load a classically pre-equilibrated structure (JSON from '
                              'scripts/prep_structure.py) and skip build/place/compress. '
@@ -127,11 +142,20 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
 
     from scripts._systems import (
+        _AIBN_SMILES,
         _INITIATOR_SMILES,
         _MONOMER_SMILES,
         box_from_density,
     )
-    counts = {_MONOMER_SMILES: args.n_monomers, _INITIATOR_SMILES: args.n_initiators}
+
+    if args.activation:
+        init_smiles_for_density = _AIBN_SMILES
+        initial_spin = 1
+    else:
+        init_smiles_for_density = args.initiator_smiles or _INITIATOR_SMILES
+        initial_spin = args.spin
+
+    counts = {_MONOMER_SMILES: args.n_monomers, init_smiles_for_density: args.n_initiators}
 
     if args.box_size is not None:
         target_edge = args.box_size
@@ -142,60 +166,30 @@ def main() -> None:
             args.density, target_edge,
         )
 
-    # Backend is created before the system so it can drive FIRE densification.
-    calc = _create_backend(args.backend, args.device, args.model, spin=args.spin)
-    logger.info('Backend: %s (spin=%d)', calc.name, args.spin)
+    calc = _create_backend(args.backend, args.device, args.model, spin=initial_spin)
+    logger.info('Backend: %s (spin=%d)', calc.name, initial_spin)
 
     _init_smiles = args.initiator_smiles or _INITIATOR_SMILES
 
-    def _build(edge: float, gen: np.random.Generator):
-        return build_vinyl_aibn_system(
-            n_monomers=args.n_monomers,
-            n_initiators=args.n_initiators,
-            box_size=edge,
-            rng=gen,
-            initiator_smiles=_init_smiles,
-        )
+    aibn_azo_bonds = None
 
-    if args.load_structure is not None:
-        # Consume a classically pre-equilibrated structure (positions + cell).
-        # template/groups/propagation_map are composition-derived (not position-
-        # dependent), so rebuild them at a dilute box (always places) and overlay
-        # the loaded coordinates. Atom order must match 1:1 (decision D-4),
-        # asserted via the species list.
-        from src.prep.structure_io import PreparedStructure
-
-        prepared = PreparedStructure.load(args.load_structure)
-        meta_edge = box_from_density(counts, 0.10)
-        _, ref_species, template, groups, propagation_map, chain_c_map = _build(meta_edge, rng)
-        if list(ref_species) != list(prepared.species):
-            raise ValueError(
-                'Loaded structure species do not match the builder '
-                f'(loaded N={len(prepared.species)}, builder N={len(ref_species)}). '
-                'Ensure --n-monomers/--n-initiators match the prepped structure.'
+    if args.activation:
+        def _build_aibn(edge: float, gen: np.random.Generator):
+            return build_full_aibn_system(
+                n_monomers=args.n_monomers,
+                n_aibn=args.n_initiators,
+                box_size=edge,
+                rng=gen,
             )
-        positions = prepared.positions
-        species = prepared.species
-        cell = (prepared.cell if prepared.cell is not None
-                else np.diag([target_edge, target_edge, target_edge]))
+
         logger.info(
-            'Loaded pre-equilibrated structure from %s (%d atoms, box %.2f Å).',
-            args.load_structure, len(species), float(cell[0, 0]),
-        )
-    else:
-        logger.info(
-            'Building vinyl/AIBN system: %d monomers + %d initiators, target box %.1f Å...',
+            'Building full AIBN system: %d monomers + %d AIBN, target box %.1f Å...',
             args.n_monomers, args.n_initiators, target_edge,
         )
         try:
-            # Direct placement at the target box (small systems take this path,
-            # bit-for-bit identical to prior behaviour).
-            positions, species, template, groups, propagation_map, chain_c_map = _build(target_edge, rng)
+            positions, species, aibn_azo_bonds, template, groups, propagation_map, chain_c_map = _build_aibn(target_edge, rng)
             cell = np.diag([target_edge, target_edge, target_edge])
         except RuntimeError:
-            # Greedy placer stalls at high molecule counts even when the density is
-            # physically feasible.  Place dilute, then FIRE-compress to the target
-            # (see specs/decisions.md 2026-06-14 densification record).
             logger.warning(
                 'Direct placement at %.2f Å failed — placing dilute then compressing.',
                 target_edge,
@@ -206,23 +200,83 @@ def main() -> None:
                 if edge <= target_edge:
                     continue
                 try:
-                    positions, species, template, groups, propagation_map, chain_c_map = _build(edge, rng)
+                    positions, species, aibn_azo_bonds, template, groups, propagation_map, chain_c_map = _build_aibn(edge, rng)
                     place_edge = edge
-                    logger.info(
-                        'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
-                        place_density, edge, target_edge,
-                    )
                     break
                 except RuntimeError:
                     continue
             if place_edge is None:
-                raise RuntimeError(
-                    'Could not place the system even at dilute density 0.10 g/mL.'
-                )
+                raise RuntimeError('Could not place the system even at dilute density 0.10 g/mL.')
             from src.integrators.minimize import compress_box
             place_cell = np.diag([place_edge, place_edge, place_edge])
             result = compress_box(positions, place_cell, target_edge, species, calc)
             positions, cell = result.positions, result.cell
+    else:
+        def _build(edge: float, gen: np.random.Generator):
+            return build_vinyl_aibn_system(
+                n_monomers=args.n_monomers,
+                n_initiators=args.n_initiators,
+                box_size=edge,
+                rng=gen,
+                initiator_smiles=_init_smiles,
+            )
+
+        if args.load_structure is not None:
+            from src.prep.structure_io import PreparedStructure
+
+            prepared = PreparedStructure.load(args.load_structure)
+            meta_edge = box_from_density(counts, 0.10)
+            _, ref_species, template, groups, propagation_map, chain_c_map = _build(meta_edge, rng)
+            if list(ref_species) != list(prepared.species):
+                raise ValueError(
+                    'Loaded structure species do not match the builder '
+                    f'(loaded N={len(prepared.species)}, builder N={len(ref_species)}). '
+                    'Ensure --n-monomers/--n-initiators match the prepped structure.'
+                )
+            positions = prepared.positions
+            species = prepared.species
+            cell = (prepared.cell if prepared.cell is not None
+                    else np.diag([target_edge, target_edge, target_edge]))
+            logger.info(
+                'Loaded pre-equilibrated structure from %s (%d atoms, box %.2f Å).',
+                args.load_structure, len(species), float(cell[0, 0]),
+            )
+        else:
+            logger.info(
+                'Building vinyl/AIBN system: %d monomers + %d initiators, target box %.1f Å...',
+                args.n_monomers, args.n_initiators, target_edge,
+            )
+            try:
+                positions, species, template, groups, propagation_map, chain_c_map = _build(target_edge, rng)
+                cell = np.diag([target_edge, target_edge, target_edge])
+            except RuntimeError:
+                logger.warning(
+                    'Direct placement at %.2f Å failed — placing dilute then compressing.',
+                    target_edge,
+                )
+                place_edge = None
+                for place_density in (0.25, 0.20, 0.15, 0.10):
+                    edge = box_from_density(counts, place_density)
+                    if edge <= target_edge:
+                        continue
+                    try:
+                        positions, species, template, groups, propagation_map, chain_c_map = _build(edge, rng)
+                        place_edge = edge
+                        logger.info(
+                            'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
+                            place_density, edge, target_edge,
+                        )
+                        break
+                    except RuntimeError:
+                        continue
+                if place_edge is None:
+                    raise RuntimeError(
+                        'Could not place the system even at dilute density 0.10 g/mL.'
+                    )
+                from src.integrators.minimize import compress_box
+                place_cell = np.diag([place_edge, place_edge, place_edge])
+                result = compress_box(positions, place_cell, target_edge, species, calc)
+                positions, cell = result.positions, result.cell
 
     if args.select_rmin is not None or args.select_rmax is not None:
         for ps in template.pairs:
@@ -289,10 +343,6 @@ def main() -> None:
         'Pre-TDBB: minimize=%s (fmax=%.2f), equilibration=%d steps',
         config.minimize, config.minimize_fmax, config.equil_steps,
     )
-    logger.info(
-        'Starting TDBB: %d cycles × (%d biased + %d unbiased steps), T=%.0f K',
-        config.n_cycles, config.biased_steps, config.unbiased_steps, args.temperature,
-    )
 
     wf = PolymerizationWorkflow(
         config, calc, template, groups,
@@ -303,6 +353,57 @@ def main() -> None:
         propagation_target_group='radical_C',
         chain_c_map=chain_c_map,
     )
+
+    n_activation_dissoc = 0
+    if args.activation and aibn_azo_bonds:
+        logger.info(
+            'Activation phase: %d C-N azo bonds, %d steps, f2=%.2f, f1_max=%.0f, spin=1',
+            len(aibn_azo_bonds), args.activation_steps, args.activation_f2,
+            args.activation_f1_max,
+        )
+        act_template, act_groups = build_activation_template(aibn_azo_bonds)
+
+        if config.minimize:
+            wf._minimize(state)
+        if config.equil_steps > 0:
+            act_rng = np.random.default_rng(args.seed)
+            wf._run_equilibration_phase(state, act_rng, writer=None)
+
+        dissociated = wf.run_activation(
+            state, act_template, act_groups,
+            activation_steps=args.activation_steps,
+            activation_f2=args.activation_f2,
+            activation_f1_max=args.activation_f1_max,
+            rng=np.random.default_rng(args.seed + 1),
+        )
+        n_activation_dissoc = len(dissociated)
+        logger.info('Activation result: %d C-N bonds dissociated', n_activation_dissoc)
+
+        if dissociated:
+            n_radicals = len(groups['radical_C'].atom_indices)
+            production_spin = n_radicals + 1
+            calc.set_spin(production_spin)
+            logger.info('Spin switched: 1 → %d (N_radicals=%d)', production_spin, n_radicals)
+
+        config = PolymerizationConfig(
+            timestep_fs=config.timestep_fs,
+            biased_steps=config.biased_steps,
+            unbiased_steps=config.unbiased_steps,
+            n_cycles=config.n_cycles,
+            tdbb=config.tdbb,
+            seed=config.seed,
+            save_interval=config.save_interval,
+            minimize=False,
+            minimize_fmax=config.minimize_fmax,
+            equil_steps=0,
+        )
+        wf.config = config
+
+    logger.info(
+        'Starting TDBB: %d cycles × (%d biased + %d unbiased steps), T=%.0f K',
+        config.n_cycles, config.biased_steps, config.unbiased_steps, args.temperature,
+    )
+
     logs = wf.run(
         state,
         output_dir=args.output_dir,
@@ -329,9 +430,14 @@ def main() -> None:
         'minimize': args.minimize,
         'minimize_fmax': args.minimize_fmax,
         'equil_steps': args.equil_steps,
+        'activation': args.activation,
+        'activation_steps': args.activation_steps if args.activation else 0,
+        'activation_f2': args.activation_f2 if args.activation else None,
+        'activation_f1_max': args.activation_f1_max if args.activation else None,
+        'activation_dissociations': n_activation_dissoc,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
-        'propagation_events': n_form,  # each formation triggers one propagation
+        'propagation_events': n_form,
         'logs': [
             {
                 'cycle': log.cycle,

@@ -96,6 +96,9 @@ class OrbCalculatorAdapter(Calculator):
     def name(self) -> str:
         return self._name
 
+    def set_spin(self, spin: int) -> None:
+        self._spin = spin
+
     def compute(
         self,
         positions: NDArray[np.floating],

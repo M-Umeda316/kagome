@@ -28,3 +28,9 @@ class Calculator(ABC):
     @abstractmethod
     def name(self) -> str:
         """Backend identifier for logging."""
+
+    def set_spin(self, spin: int) -> None:
+        """Update the system spin multiplicity (2S+1).
+
+        No-op by default; override in backends that support spin (e.g. OrbMol-v2).
+        """

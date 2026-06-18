@@ -593,3 +593,193 @@ def build_nylon66_system(
     }
 
     return positions, species, template, groups
+
+
+# ── AIBN decomposition (Activation) ────────────────────────────────────────
+
+_AIBN_SMILES = 'CC(C)(C#N)N=NC(C)(C)C#N'
+
+
+def _find_aibn_azo_bonds(smiles: str = _AIBN_SMILES) -> list[tuple[int, int]]:
+    """Return [(C_idx, N_idx), ...] for azo C-N single bonds in AIBN.
+
+    Excludes nitrile C#N bonds. AIBN has two: C1-N5 and C7-N6.
+    """
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    pairs = []
+    for bond in mol.GetBonds():
+        a1, a2 = bond.GetBeginAtom(), bond.GetEndAtom()
+        s1, s2 = a1.GetSymbol(), a2.GetSymbol()
+        if bond.GetBondTypeAsDouble() != 1.0:
+            continue
+        if not (('C' in (s1, s2)) and ('N' in (s1, s2))):
+            continue
+        c_atom = a1 if s1 == 'C' else a2
+        is_nitrile = any(b.GetBondTypeAsDouble() == 3.0 for b in c_atom.GetBonds())
+        if not is_nitrile:
+            c_idx = c_atom.GetIdx()
+            n_idx = (a2 if s1 == 'C' else a1).GetIdx()
+            pairs.append((c_idx, n_idx))
+    return pairs
+
+
+def _find_all_radical_centers(smiles: str) -> list[int]:
+    """Return all C atoms bonded to exactly 3 C neighbors in the molecule.
+
+    In AIBN (CC(C)(C#N)N=NC(C)(C)C#N), both central carbons (C1, C7) have
+    3 C neighbors (2 methyls + nitrile C) and 1 N neighbor.
+    """
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    result = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != 'C':
+            continue
+        n_c = sum(1 for n in atom.GetNeighbors() if n.GetSymbol() == 'C')
+        if n_c == 3:
+            result.append(atom.GetIdx())
+    return result
+
+
+def build_full_aibn_system(
+    n_monomers: int,
+    n_aibn: int,
+    box_size: float,
+    rng: np.random.Generator,
+    monomer_smiles: str = _MONOMER_SMILES,
+    aibn_smiles: str = _AIBN_SMILES,
+    min_sep: float = 2.5,
+    rdkit_seed: int = 42,
+) -> tuple[np.ndarray, list[str],
+           list[tuple[int, int]],
+           ReactionTemplate, dict[str, ReactiveGroup],
+           dict[int, int], dict[int, int]]:
+    """Build a system with full AIBN molecules + vinyl monomers.
+
+    Unlike build_vinyl_aibn_system (pre-formed radicals), this uses intact AIBN
+    molecules that will be decomposed via V^d activation. Each AIBN contributes
+    2 radical centers after decomposition.
+
+    Returns
+    -------
+    positions       : (N, 3) array
+    species         : element symbols
+    aibn_azo_bonds  : [(C_global, N_global), ...] for activation V^d targets
+    template        : propagation ReactionTemplate (4-group, for post-activation use)
+    groups          : propagation groups (radical_C initially empty, filled after activation)
+    propagation_map : {alpha_C → beta_C} for each monomer
+    chain_c_map     : {radical_C → chain_C} (filled after activation)
+    """
+    aibn_pos, aibn_sp = _rdkit_3d(aibn_smiles, seed=rdkit_seed)
+    mono_pos, mono_sp = _rdkit_3d(monomer_smiles, seed=rdkit_seed + 1)
+
+    local_radical_centers = _find_all_radical_centers(aibn_smiles)
+    local_azo_bonds = _find_aibn_azo_bonds(aibn_smiles)
+    local_alpha, local_beta = _find_vinyl_alpha_beta(monomer_smiles)
+
+    n_per_aibn = len(aibn_sp)
+    n_per_mono = len(mono_sp)
+
+    fragments = (
+        [(aibn_pos, aibn_sp)] * n_aibn
+        + [(mono_pos, mono_sp)] * n_monomers
+    )
+    positions, species = _place_fragments_in_box(
+        fragments, box_size, rng, min_sep=min_sep,
+    )
+
+    aibn_offset = 0
+    mono_offset = n_aibn * n_per_aibn
+
+    aibn_azo_bonds_global: list[tuple[int, int]] = []
+    for i in range(n_aibn):
+        base = aibn_offset + i * n_per_aibn
+        for c_local, n_local in local_azo_bonds:
+            aibn_azo_bonds_global.append((base + c_local, base + n_local))
+
+    radical_C_indices: list[int] = []
+    chain_C_indices: list[int] = []
+    for i in range(n_aibn):
+        base = aibn_offset + i * n_per_aibn
+        for rc_local in local_radical_centers:
+            radical_C_indices.append(base + rc_local)
+            chain_c_local = _find_chain_c_neighbor(aibn_smiles, rc_local)
+            chain_C_indices.append(base + chain_c_local)
+
+    alpha_C_indices = [
+        mono_offset + j * n_per_mono + local_alpha
+        for j in range(n_monomers)
+    ]
+    beta_C_indices = [
+        mono_offset + j * n_per_mono + local_beta
+        for j in range(n_monomers)
+    ]
+    propagation_map: dict[int, int] = {
+        mono_offset + j * n_per_mono + local_alpha:
+        mono_offset + j * n_per_mono + local_beta
+        for j in range(n_monomers)
+    }
+    chain_c_map: dict[int, int] = {
+        radical_C_indices[k]: chain_C_indices[k]
+        for k in range(len(radical_C_indices))
+    }
+
+    template = ReactionTemplate(
+        name='radical_vinyl_polymerization',
+        groups=['radical_C', 'vinyl_alpha_C', 'chain_C', 'vinyl_beta_C'],
+        pairs=[
+            PairSpec('radical_C', 'vinyl_alpha_C', is_formation=True,
+                     r_min=3.0, r_max=6.0),
+            PairSpec('radical_C', 'chain_C', is_formation=True,
+                     r_min=0.0, r_max=3.0, constraint_only=True),
+            PairSpec('vinyl_alpha_C', 'vinyl_beta_C', is_formation=True,
+                     r_min=0.0, r_max=3.0, constraint_only=True),
+        ],
+    )
+    groups = {
+        'radical_C':     ReactiveGroup('radical_C',     radical_C_indices),
+        'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', alpha_C_indices),
+        'chain_C':       ReactiveGroup('chain_C',       chain_C_indices),
+        'vinyl_beta_C':  ReactiveGroup('vinyl_beta_C',  beta_C_indices),
+    }
+
+    return (positions, species, aibn_azo_bonds_global,
+            template, groups, propagation_map, chain_c_map)
+
+
+def build_activation_template(
+    aibn_azo_bonds: list[tuple[int, int]],
+) -> tuple[ReactionTemplate, dict[str, ReactiveGroup]]:
+    """Build activation (AIBN decomposition) template for V^d on C-N bonds.
+
+    Paper anchor: Table S1 — Activation row, V^d applied to azo C-N bonds.
+    Each AIBN molecule has 2 C-N bonds; both are targeted for dissociation.
+
+    Returns (template, groups) for the activation phase only.
+    """
+    azo_C_indices = [c for c, _ in aibn_azo_bonds]
+    azo_N_indices = [n for _, n in aibn_azo_bonds]
+
+    template = ReactionTemplate(
+        name='aibn_activation',
+        groups=['azo_C', 'azo_N'],
+        pairs=[
+            PairSpec(
+                group_a='azo_C',
+                group_b='azo_N',
+                is_formation=False,
+                r_min=0.0,
+                r_max=3.0,
+            ),
+        ],
+    )
+    groups = {
+        'azo_C': ReactiveGroup('azo_C', azo_C_indices),
+        'azo_N': ReactiveGroup('azo_N', azo_N_indices),
+    }
+    return template, groups
