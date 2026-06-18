@@ -138,6 +138,115 @@ class TestSelectNonOverlapping:
         assert select_non_overlapping([]) == []
 
 
+class TestScorePairFlag:
+    """RF5: score_pair=False excludes pairs from identification and scoring."""
+
+    def _make_nylon_template(self):
+        """Nylon-like template with k-l as bias-only (score_pair=False)."""
+        return ReactionTemplate(
+            name='nylon_test',
+            groups=['amine_N', 'carboxyl_C', 'amine_H', 'carboxyl_OH'],
+            pairs=[
+                PairSpec('amine_N', 'carboxyl_C', is_formation=True,
+                         r_min=3.0, r_max=6.0),
+                PairSpec('amine_N', 'amine_H', is_formation=False,
+                         r_min=0.0, r_max=3.0),
+                PairSpec('carboxyl_C', 'carboxyl_OH', is_formation=False,
+                         r_min=0.0, r_max=3.0),
+                PairSpec('amine_H', 'carboxyl_OH', is_formation=True,
+                         r_min=0.0, r_max=100.0, score_pair=False),
+            ],
+        )
+
+    def _make_nylon_groups_and_positions(self):
+        groups = {
+            'amine_N':     ReactiveGroup('amine_N', [0]),
+            'carboxyl_C':  ReactiveGroup('carboxyl_C', [1]),
+            'amine_H':     ReactiveGroup('amine_H', [2]),
+            'carboxyl_OH': ReactiveGroup('carboxyl_OH', [3]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],   # amine_N (i)
+            [4.0, 0.0, 0.0],   # carboxyl_C (j) — 4.0 Å from N, in [3,6]
+            [0.0, 1.0, 0.0],   # amine_H (k) — 1.0 Å from N, in [0,3]
+            [4.0, 1.0, 0.0],   # carboxyl_OH (l) — 1.0 Å from C, in [0,3]
+        ])
+        return groups, positions
+
+    def test_nylon_score_is_three_terms(self):
+        """Nylon score = r_ij + r_ik + r_jl (3 terms), not 4."""
+        template = self._make_nylon_template()
+        groups, positions = self._make_nylon_groups_and_positions()
+
+        cands = find_candidates(template, groups, positions)
+        assert len(cands) == 1
+
+        scored = score_candidates(cands, template, positions)
+        r_ij = np.linalg.norm(positions[1] - positions[0])  # N-C
+        r_ik = np.linalg.norm(positions[2] - positions[0])  # N-H
+        r_jl = np.linalg.norm(positions[3] - positions[1])  # C-OH
+        expected_3term = r_ij + r_ik + r_jl
+
+        assert scored[0].score == pytest.approx(expected_3term)
+
+    def test_score_pair_false_not_in_candidate_filter(self):
+        """score_pair=False pair's distance window does not gate candidates."""
+        template = ReactionTemplate(
+            name='test_bias_only',
+            groups=['A', 'B', 'C'],
+            pairs=[
+                PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=5.0),
+                PairSpec('B', 'C', is_formation=True, r_min=0.0, r_max=1.0,
+                         score_pair=False),
+            ],
+        )
+        groups = {
+            'A': ReactiveGroup('A', [0]),
+            'B': ReactiveGroup('B', [1]),
+            'C': ReactiveGroup('C', [2]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],  # B-C distance=18 Å, exceeds r_max=1.0
+        ])
+        cands = find_candidates(template, groups, positions)
+        assert len(cands) == 1
+
+    def test_vinyl_score_unchanged(self):
+        """Vinyl (all score_pair=True) score = sum of all 3 pair distances."""
+        template = ReactionTemplate(
+            name='vinyl',
+            groups=['I', 'J', 'K', 'L'],
+            pairs=[
+                PairSpec('I', 'J', is_formation=True, r_min=0.5, r_max=5.0),
+                PairSpec('I', 'K', is_formation=False, r_min=0.0, r_max=3.0,
+                         constraint_only=True),
+                PairSpec('J', 'L', is_formation=False, r_min=0.0, r_max=3.0,
+                         constraint_only=True),
+            ],
+        )
+        groups = {
+            'I': ReactiveGroup('I', [0]),
+            'J': ReactiveGroup('J', [1]),
+            'K': ReactiveGroup('K', [2]),
+            'L': ReactiveGroup('L', [3]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.5, 1.0, 0.0],
+        ])
+        cands = find_candidates(template, groups, positions)
+        scored = score_candidates(cands, template, positions)
+
+        r_ij = np.linalg.norm(positions[1] - positions[0])
+        r_ik = np.linalg.norm(positions[2] - positions[0])
+        r_jl = np.linalg.norm(positions[3] - positions[1])
+        assert scored[0].score == pytest.approx(r_ij + r_ik + r_jl)
+
+
 class TestFourGroupTemplate:
     """Test with a 4-group template matching the paper's (I,J,K,L) pattern."""
 

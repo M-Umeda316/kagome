@@ -426,6 +426,19 @@ class TestBuildNylon66System:
         assert len(formation_pairs) == 2
         assert len(dissociation_pairs) == 2
 
+    def test_kl_pair_is_bias_only(self):
+        """RF5: nylon k-l (H-OH) has score_pair=False and is_formation=True."""
+        from scripts._systems import build_nylon66_system
+        rng = np.random.default_rng(3)
+        _, _, template, _ = build_nylon66_system(
+            n_diamines=2, n_diacids=2, box_size=20.0, rng=rng,
+        )
+        kl = [p for p in template.pairs
+              if p.group_a == 'amine_H' and p.group_b == 'carboxyl_OH']
+        assert len(kl) == 1
+        assert kl[0].score_pair is False
+        assert kl[0].is_formation is True
+
     def test_amine_h_bonded_to_amine_n(self):
         """Each amine_H must be a neighbor of some amine_N in the system."""
         from rdkit import Chem

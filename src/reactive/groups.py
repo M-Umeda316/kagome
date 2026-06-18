@@ -31,8 +31,13 @@ class PairSpec:
     group_a/group_b are labels referencing ReactiveGroup.label.
     is_formation: True for bond-forming, False for bond-breaking.
     r_min, r_max: distance bounds (Å) for candidate selection (Eq. 7).
-    constraint_only: if True, participates in candidate selection and scoring
-        but no bias force is applied (Table S1: i-k, j-l structural constraints).
+    constraint_only: if True, participates in candidate identification and
+        scoring but no bias force is applied (Table S1: i-k, j-l constraints).
+    score_pair: if False, excluded from candidate identification (distance
+        window filter) and d_ijkl scoring.  Bias is still applied based on
+        is_formation/constraint_only.  Use for nylon k-l (H-OH water
+        formation) which is bias-only per Table S2 (Eq. 7: d_ijkl = r_ij +
+        r_ik + r_jl, 3 terms fixed).
     """
     group_a: str
     group_b: str
@@ -40,6 +45,7 @@ class PairSpec:
     r_min: float = 0.0
     r_max: float = 5.0
     constraint_only: bool = False
+    score_pair: bool = True
 
 
 @dataclass

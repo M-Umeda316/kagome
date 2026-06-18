@@ -40,14 +40,18 @@ def find_candidates(
 ) -> list[Candidate]:
     """Enumerate candidate tuples satisfying distance bounds.  Eq. 7.
 
-    For each combination of one atom per group, check all pair distance bounds.
-    Returns candidates that pass all constraints.
+    Only pairs with score_pair=True participate in candidate identification
+    (distance window filtering).  Pairs with score_pair=False (e.g. nylon
+    k-l water formation) are bias-only and do not constrain candidate
+    selection.
     """
     group_atoms = [groups[label].atom_indices for label in template.groups]
     label_list = template.groups
 
     pair_specs: dict[tuple[int, int], PairSpec] = {}
     for ps in template.pairs:
+        if not ps.score_pair:
+            continue
         idx_a = label_list.index(ps.group_a)
         idx_b = label_list.index(ps.group_b)
         pair_specs[(min(idx_a, idx_b), max(idx_a, idx_b))] = ps
@@ -111,11 +115,17 @@ def score_candidates(
     positions: NDArray[np.floating],
     cell: NDArray[np.floating] | None = None,
 ) -> list[Candidate]:
-    """Score each candidate: d = sum of all pair distances.  Sort ascending."""
+    """Score each candidate: d = sum of score_pair distances.  Sort ascending.
+
+    Only pairs with score_pair=True contribute to d_ijkl (Eq. 7:
+    d_ijkl = r_ij + r_ik + r_jl, 3 terms fixed for all reaction types).
+    """
     label_list = template.groups
     for c in candidates:
         total = 0.0
         for ps in template.pairs:
+            if not ps.score_pair:
+                continue
             idx_a = label_list.index(ps.group_a)
             idx_b = label_list.index(ps.group_b)
             d = _distance(positions, c.atom_indices[idx_a], c.atom_indices[idx_b], cell)

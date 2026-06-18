@@ -850,3 +850,12 @@ Use this template for each decision.
 - Scientific risk: 中。α の絶対スケールが変わる（旧値は分母過大で α を過小評価していた）。過去 run の図と数値が変わるため本記録で定義変更を明示。
 - Licensing/commercial impact: None.
 - Follow-up: nylon は反応進行度 p（Carothers, carothers.py）で別管理。α(t) プロット（Eq. 11）は vinyl monomer-conversion 用。
+
+## 2026-06-19: RF5 — スコア d_ijkl は i-j, i-k, j-l の3項固定。nylon k-l はバイアス専用
+- Context: `score_candidates` が `template.pairs` 全合算のため、nylon では k-l（amine_H–carboxyl_OH, 水形成）の距離がスコアに加算されていた。4項スコアは paper の3項定義 d_ijkl = r_ij + r_ik + r_jl と不一致。k-l の r_max=100 によりほぼ無拘束の H–OH 距離が候補ソートを支配し得る状態。
+- Paper anchor: 本文 p.4 Eq.7（d_ijkl = r_ij + r_ik + r_jl, 3項固定）。SI Table S1（vinyl）/ Table S2（nylon condensation: 群同定は i-j, i-k, j-l の3ペアのみ。k-l にはバイアス V^f のみ適用、距離窓・スコアに非関与）。
+- Decision: `PairSpec` に `score_pair: bool = True` フラグを追加。`score_pair=False` のペアは候補同定（距離窓フィルタ）と d_ijkl スコアの両方から除外。バイアス適用は `is_formation`/`constraint_only` 側で従来どおり制御。nylon k-l ペアに `score_pair=False` を設定。vinyl は全ペアが `score_pair=True`（現状不変）。
+- Alternatives considered: k-l を template.pairs から除去してバイアス専用リストを別に持つ — 変更面積が大きく、既存の `_build_pair_biases` が template.pairs 全体からバイアスを構築する設計と相性が悪い。フラグ方式の方が最小限。
+- Scientific risk: 中。nylon の候補順位が変わり、異なる反応ペアが選択される可能性がある。vinyl は不変（既存3ペアのみ、全て score_pair=True）。
+- Licensing/commercial impact: None.
+- Follow-up: RF10（pair_distances 死蔵）と合わせて整理可。

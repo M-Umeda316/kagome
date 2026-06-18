@@ -583,7 +583,7 @@ class TestNylonMixedBias:
                 PairSpec('carboxyl_C', 'carboxyl_OH', is_formation=False,
                          r_min=0.0, r_max=3.0),
                 PairSpec('amine_H', 'carboxyl_OH', is_formation=True,
-                         r_min=0.0, r_max=100.0),
+                         r_min=0.0, r_max=100.0, score_pair=False),
             ],
         )
         groups = {
