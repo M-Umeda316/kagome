@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -105,6 +106,106 @@ def _integrator_temperature(integrator: object, state: SimulationState) -> float
     return instant_temperature_K(state.velocities, state.masses)
 
 
+# ---------------------------------------------------------------------------
+# PostCycleUpdater: injectable group-update strategy (RF4)
+# ---------------------------------------------------------------------------
+
+class PostCycleUpdater(Protocol):
+    """Protocol for post-cycle group updates after confirmed formations."""
+
+    def update(
+        self,
+        groups: dict[str, ReactiveGroup],
+        tracker: BondTracker | None,
+        state: SimulationState,
+    ) -> None: ...
+
+
+class DefaultPostCycleUpdater:
+    """Remove reacted atoms from their groups after confirmed formation."""
+
+    def __init__(self) -> None:
+        self._processed_formations: int = 0
+
+    def update(
+        self,
+        groups: dict[str, ReactiveGroup],
+        tracker: BondTracker | None,
+        state: SimulationState,
+    ) -> None:
+        if not tracker:
+            return
+        formations = tracker.confirmed_formations()
+        for ev in formations[self._processed_formations:]:
+            for group in groups.values():
+                if ev.atom_a in group.atom_indices:
+                    group.remove_atom(ev.atom_a)
+                if ev.atom_b in group.atom_indices:
+                    group.remove_atom(ev.atom_b)
+        self._processed_formations = len(formations)
+
+
+class VinylChainPropagationUpdater:
+    """Vinyl radical chain propagation: beta-C becomes new radical after formation.
+
+    Paper anchor: Table S1 — after radical + vinyl_alpha_C formation,
+    the monomer's beta-C becomes the new radical site.
+    """
+
+    def __init__(
+        self,
+        propagation_map: dict[int, int],
+        propagation_target_group: str = 'radical_C',
+        chain_c_map: dict[int, int] | None = None,
+    ) -> None:
+        self.propagation_map = propagation_map
+        self.propagation_target_group = propagation_target_group
+        self.chain_c_map = chain_c_map if chain_c_map is not None else {}
+        self._processed_formations: int = 0
+
+    def update(
+        self,
+        groups: dict[str, ReactiveGroup],
+        tracker: BondTracker | None,
+        state: SimulationState,
+    ) -> None:
+        if not tracker:
+            return
+        formations = tracker.confirmed_formations()
+        for ev in formations[self._processed_formations:]:
+            for group in groups.values():
+                if ev.atom_a in group.atom_indices:
+                    group.remove_atom(ev.atom_a)
+                if ev.atom_b in group.atom_indices:
+                    group.remove_atom(ev.atom_b)
+
+            chain_c_group = groups.get('chain_C')
+            if chain_c_group is not None and ev.atom_a in self.chain_c_map:
+                old_chain_c = self.chain_c_map.pop(ev.atom_a)
+                chain_c_group.remove_atom(old_chain_c)
+
+            beta_c_group = groups.get('vinyl_beta_C')
+            if beta_c_group is not None and ev.atom_b in self.propagation_map:
+                beta_idx = self.propagation_map[ev.atom_b]
+                beta_c_group.remove_atom(beta_idx)
+
+            if self.propagation_map and ev.atom_b in self.propagation_map:
+                beta_idx = self.propagation_map[ev.atom_b]
+                target = groups.get(self.propagation_target_group)
+                if target is not None and beta_idx not in target.atom_indices:
+                    target.atom_indices.append(beta_idx)
+                    logger.info(
+                        'Chain propagation: atom %d (beta-C) → %s',
+                        beta_idx, self.propagation_target_group,
+                    )
+
+                if chain_c_group is not None:
+                    chain_c_group.atom_indices.append(ev.atom_b)
+                    self.chain_c_map[beta_idx] = ev.atom_b
+
+        self._processed_formations = len(formations)
+
+
 class PolymerizationWorkflow:
     """Alternating biased/unbiased MD loop for polymerization."""
 
@@ -120,6 +221,7 @@ class PolymerizationWorkflow:
         propagation_map: dict[int, int] | None = None,
         propagation_target_group: str = 'radical_C',
         chain_c_map: dict[int, int] | None = None,
+        updater: PostCycleUpdater | None = None,
     ) -> None:
         self.config = config
         self.calculator = calculator
@@ -128,11 +230,22 @@ class PolymerizationWorkflow:
         self.integrator = integrator or VelocityVerletIntegrator()
         self.bond_tracker = bond_tracker
         self.barostat = barostat
-        self.propagation_map = propagation_map or {}
-        self.propagation_target_group = propagation_target_group
-        self.chain_c_map = chain_c_map or {}
         self.logs: list[CycleLog] = []
-        self._processed_formations: int = 0
+
+        if updater is not None:
+            self._updater = updater
+        elif propagation_map:
+            self._updater = VinylChainPropagationUpdater(
+                propagation_map=propagation_map,
+                propagation_target_group=propagation_target_group,
+                chain_c_map=chain_c_map,
+            )
+        else:
+            self._updater = DefaultPostCycleUpdater()
+
+    @property
+    def _processed_formations(self) -> int:
+        return self._updater._processed_formations
 
     def run(
         self,
@@ -218,6 +331,75 @@ class PolymerizationWorkflow:
         )
         state.positions[:] = result.positions
 
+    # ------------------------------------------------------------------
+    # Consolidated MD step (RF4): single implementation for all phases
+    # ------------------------------------------------------------------
+
+    def _md_step(
+        self,
+        state: SimulationState,
+        current_forces: NDArray[np.floating],
+        dt: float,
+        rng: np.random.Generator,
+        step_in_phase: int,
+        *,
+        active_pairs: list[PairBias] | None = None,
+        boost: BoostState | None = None,
+        tdbb: TDBBParams | None = None,
+        enable_barostat: bool = True,
+    ) -> tuple[float, float, NDArray[np.floating]]:
+        """Single MD step: pre_force → compute → [bias] → post_force → [barostat].
+
+        Returns (base_energy, bias_energy, current_forces).
+        """
+        self.integrator.pre_force(
+            state.positions, state.velocities, current_forces,
+            state.masses, dt, rng, state.cell,
+        )
+
+        base_energy, base_forces = self.calculator.compute(
+            state.positions, state.species, state.cell,
+        )
+
+        bias_energy = 0.0
+        if active_pairs is not None and boost is not None and tdbb is not None:
+            bias_energy, bias_forces = total_bias(
+                active_pairs, state.positions, boost, tdbb, state.cell,
+            )
+            current_forces = base_forces + bias_forces
+        else:
+            current_forces = base_forces
+
+        self.integrator.post_force(
+            state.velocities, current_forces, state.masses, dt,
+        )
+        state.step += 1
+
+        if (enable_barostat
+                and self.barostat is not None
+                and state.cell is not None
+                and self.barostat.should_attempt(step_in_phase)):
+            accepted, new_base_e, new_base_f = self.barostat.try_step(
+                state.positions, state.species, state.cell,
+                base_energy, self.calculator, rng,
+                _integrator_temperature(self.integrator, state),
+            )
+            if accepted and new_base_f is not None:
+                base_energy = new_base_e
+                if active_pairs is not None and boost is not None and tdbb is not None:
+                    bias_energy, bias_forces = total_bias(
+                        active_pairs, state.positions, boost, tdbb, state.cell,
+                    )
+                    current_forces = new_base_f + bias_forces
+                else:
+                    current_forces = new_base_f
+
+        return base_energy, bias_energy, current_forces
+
+    # ------------------------------------------------------------------
+    # Phase implementations — each delegates to _md_step
+    # ------------------------------------------------------------------
+
     def _run_equilibration_phase(
         self,
         state: SimulationState,
@@ -238,29 +420,9 @@ class PolymerizationWorkflow:
         current_forces = forces
 
         for step_in_phase in range(self.config.equil_steps):
-            self.integrator.pre_force(
-                state.positions, state.velocities, current_forces,
-                state.masses, dt, rng, state.cell,
+            energy, _, current_forces = self._md_step(
+                state, current_forces, dt, rng, step_in_phase,
             )
-            energy, forces = self.calculator.compute(
-                state.positions, state.species, state.cell,
-            )
-            current_forces = forces
-            self.integrator.post_force(
-                state.velocities, current_forces, state.masses, dt,
-            )
-            state.step += 1
-
-            if (self.barostat is not None
-                    and state.cell is not None
-                    and self.barostat.should_attempt(step_in_phase)):
-                accepted, new_e, new_f = self.barostat.try_step(
-                    state.positions, state.species, state.cell,
-                    energy, self.calculator, rng,
-                    _integrator_temperature(self.integrator, state),
-                )
-                if accepted and new_f is not None:
-                    energy, current_forces = new_e, new_f
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -321,46 +483,17 @@ class PolymerizationWorkflow:
                 self.config.tdbb.f1_max_dissociation,
             )
 
-            self.integrator.pre_force(
-                state.positions, state.velocities, current_forces,
-                state.masses, dt, rng, state.cell,
+            base_energy, bias_energy, current_forces = self._md_step(
+                state, current_forces, dt, rng, step_in_phase,
+                active_pairs=active_pairs, boost=boost, tdbb=self.config.tdbb,
             )
-
-            base_energy, base_forces = self.calculator.compute(
-                state.positions, state.species, state.cell,
-            )
-            bias_energy, bias_forces = total_bias(
-                active_pairs, state.positions, boost, self.config.tdbb, state.cell,
-            )
-            current_forces = base_forces + bias_forces
             last_bias_energy = bias_energy
-
-            self.integrator.post_force(
-                state.velocities, current_forces, state.masses, dt,
-            )
-            state.step += 1
 
             for _p in form_pairs:
                 _r = float(np.linalg.norm(minimum_image(
                     state.positions[_p.idx_b] - state.positions[_p.idx_a], state.cell)))
                 if _r < min_form_dist:
                     min_form_dist = _r
-
-            if (self.barostat is not None
-                    and state.cell is not None
-                    and self.barostat.should_attempt(step_in_phase)):
-                accepted, new_base_e, new_base_f = self.barostat.try_step(
-                    state.positions, state.species, state.cell,
-                    base_energy, self.calculator, rng,
-                    _integrator_temperature(self.integrator, state),
-                )
-                if accepted and new_base_f is not None:
-                    base_energy, base_forces = new_base_e, new_base_f
-                    bias_energy, bias_forces = total_bias(
-                        active_pairs, state.positions, boost, self.config.tdbb, state.cell,
-                    )
-                    current_forces = base_forces + bias_forces
-                    last_bias_energy = bias_energy
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -377,10 +510,6 @@ class PolymerizationWorkflow:
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
                 ))
 
-            # Paper §2.2 step 3: detect reaction events DURING biasing and end the
-            # biased segment on the first event (run-until-reaction). A formation
-            # pair reacts when its separation falls below the vdW bonding threshold
-            # (r ≤ threshold_fraction·r0 = 0.6·Σr_vdw); dissociation when above.
             if self.bond_tracker is not None:
                 events = self.bond_tracker.check_reactions_during_bias(
                     active_pairs, state.positions, state.step, cycle, state.cell,
@@ -390,7 +519,6 @@ class PolymerizationWorkflow:
                         'Cycle %d biased: reaction event at step %d (%d pair(s)) '
                         '- ending biased phase', cycle, step_in_phase + 1, len(events),
                     )
-                    last_bias_energy = bias_energy
                     break
 
         return CycleLog(
@@ -417,31 +545,9 @@ class PolymerizationWorkflow:
         current_forces = forces
 
         for step_in_phase in range(self.config.unbiased_steps):
-            self.integrator.pre_force(
-                state.positions, state.velocities, current_forces,
-                state.masses, dt, rng, state.cell,
+            energy, _, current_forces = self._md_step(
+                state, current_forces, dt, rng, step_in_phase,
             )
-
-            energy, forces = self.calculator.compute(
-                state.positions, state.species, state.cell,
-            )
-            current_forces = forces
-
-            self.integrator.post_force(
-                state.velocities, current_forces, state.masses, dt,
-            )
-            state.step += 1
-
-            if (self.barostat is not None
-                    and state.cell is not None
-                    and self.barostat.should_attempt(step_in_phase)):
-                accepted, new_e, new_f = self.barostat.try_step(
-                    state.positions, state.species, state.cell,
-                    energy, self.calculator, rng,
-                    _integrator_temperature(self.integrator, state),
-                )
-                if accepted and new_f is not None:
-                    energy, current_forces = new_e, new_f
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -465,46 +571,7 @@ class PolymerizationWorkflow:
         )
 
     def _update_groups_after_cycle(self, state: SimulationState) -> None:
-        if not self.bond_tracker:
-            return
-        formations = self.bond_tracker.confirmed_formations()
-        for ev in formations[self._processed_formations:]:
-            for group in self.groups.values():
-                if ev.atom_a in group.atom_indices:
-                    group.remove_atom(ev.atom_a)
-                if ev.atom_b in group.atom_indices:
-                    group.remove_atom(ev.atom_b)
-
-            # Remove old radical's chain_C partner from chain_C group
-            chain_c_group = self.groups.get('chain_C')
-            if chain_c_group is not None and ev.atom_a in self.chain_c_map:
-                old_chain_c = self.chain_c_map.pop(ev.atom_a)
-                chain_c_group.remove_atom(old_chain_c)
-
-            # Remove reacted monomer's beta_C from vinyl_beta_C group
-            beta_c_group = self.groups.get('vinyl_beta_C')
-            if beta_c_group is not None and ev.atom_b in self.propagation_map:
-                beta_idx = self.propagation_map[ev.atom_b]
-                beta_c_group.remove_atom(beta_idx)
-
-            # Chain propagation: beta-C of reacted monomer becomes new radical site.
-            # ev.atom_b = vinyl_alpha_C; propagation_map[alpha] = beta.
-            if self.propagation_map and ev.atom_b in self.propagation_map:
-                beta_idx = self.propagation_map[ev.atom_b]
-                target = self.groups.get(self.propagation_target_group)
-                if target is not None and beta_idx not in target.atom_indices:
-                    target.atom_indices.append(beta_idx)
-                    logger.info(
-                        'Chain propagation: atom %d (beta-C) → %s',
-                        beta_idx, self.propagation_target_group,
-                    )
-
-                # New radical's chain_C partner is the alpha_C it just bonded to
-                if chain_c_group is not None:
-                    chain_c_group.atom_indices.append(ev.atom_b)
-                    self.chain_c_map[beta_idx] = ev.atom_b
-
-        self._processed_formations = len(formations)
+        self._updater.update(self.groups, self.bond_tracker, state)
 
     def run_activation(
         self,
@@ -543,27 +610,9 @@ class PolymerizationWorkflow:
             logger.warning('Activation: no C-N candidates found.')
             return []
 
-        label_list = activation_template.groups
-        pairs: list[PairBias] = []
-        for cand in selected:
-            for ps in activation_template.pairs:
-                if ps.constraint_only:
-                    continue
-                idx_a_pos = label_list.index(ps.group_a)
-                idx_b_pos = label_list.index(ps.group_b)
-                atom_a = cand.atom_indices[idx_a_pos]
-                atom_b = cand.atom_indices[idx_b_pos]
-                sp_a, sp_b = state.species[atom_a], state.species[atom_b]
-                vdw_a = VDW_RADII.get(sp_a, 1.5)
-                vdw_b = VDW_RADII.get(sp_b, 1.5)
-                r0 = target_distance(
-                    np.array([vdw_a, vdw_b]),
-                    self.config.tdbb.lambda_vdw,
-                )
-                pairs.append(PairBias(
-                    idx_a=atom_a, idx_b=atom_b,
-                    is_formation=ps.is_formation, r0=r0,
-                ))
+        pairs = self._build_pair_biases(
+            selected, state.species, template=activation_template,
+        )
 
         logger.info(
             'Activation: %d candidates, %d selected, %d V^d pairs',
@@ -598,23 +647,11 @@ class PolymerizationWorkflow:
         for step_in_phase in range(activation_steps):
             boost.advance(tdbb.gamma, tdbb.f1_max_formation, tdbb.f1_max_dissociation)
 
-            self.integrator.pre_force(
-                state.positions, state.velocities, current_forces,
-                state.masses, dt, rng, state.cell,
+            base_energy, bias_energy, current_forces = self._md_step(
+                state, current_forces, dt, rng, step_in_phase,
+                active_pairs=pairs, boost=boost, tdbb=tdbb,
+                enable_barostat=False,
             )
-
-            base_energy, base_forces = self.calculator.compute(
-                state.positions, state.species, state.cell,
-            )
-            bias_energy, bias_forces = total_bias(
-                pairs, state.positions, boost, tdbb, state.cell,
-            )
-            current_forces = base_forces + bias_forces
-
-            self.integrator.post_force(
-                state.velocities, current_forces, state.masses, dt,
-            )
-            state.step += 1
 
             for p in pairs:
                 r = float(np.linalg.norm(minimum_image(
@@ -646,12 +683,15 @@ class PolymerizationWorkflow:
         self,
         selected: list[Candidate],
         species: list[str],
+        *,
+        template: ReactionTemplate | None = None,
     ) -> list[PairBias]:
+        template = template or self.template
         pairs: list[PairBias] = []
-        label_list = self.template.groups
+        label_list = template.groups
 
         for cand in selected:
-            for ps in self.template.pairs:
+            for ps in template.pairs:
                 if ps.constraint_only:
                     continue
                 idx_a_pos = label_list.index(ps.group_a)

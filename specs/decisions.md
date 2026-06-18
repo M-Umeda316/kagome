@@ -851,6 +851,15 @@ Use this template for each decision.
 - Licensing/commercial impact: None.
 - Follow-up: nylon は反応進行度 p（Carothers, carothers.py）で別管理。α(t) プロット（Eq. 11）は vinyl monomer-conversion 用。
 
+## 2026-06-19: RF4 — MD ループ共通化と群更新のストラテジ化（不変リファクタ）
+- Context: `PolymerizationWorkflow` の MD ステップ骨格（pre_force → compute → [total_bias] → post_force → barostat）が `_run_biased_phase`, `_run_unbiased_phase`, `_run_equilibration_phase`, `run_activation` の4箇所で重複。群更新 `_update_groups_after_cycle` が vinyl 固有の群名リテラル（`chain_C`, `vinyl_beta_C`, `radical_C`）を直接参照しており、nylon/epoxy では差し替え不可。
+- Paper anchor: CLAUDE.md「Separate numerical kernels from orchestration code」「Functions should align with scientific concepts」。物理不変のリファクタのため paper 解釈変更なし。
+- Decision: (1) `_md_step()` を導入し4フェーズの MD ステップを単一実装に統合。力の構築順（pre_force → compute(base) → [bias] → post_force → step++ → [barostat]）を厳密に保存。`enable_barostat` フラグで activation（バロスタなし）を区別。(2) `PostCycleUpdater` プロトコルを導入し、`DefaultPostCycleUpdater`（形成原子除去のみ）と `VinylChainPropagationUpdater`（連鎖伝播）を実装。DI で注入可能にし、既存の `propagation_map`/`chain_c_map` パラメータからの後方互換変換あり。(3) `_build_pair_biases` に `template` キーワード引数を追加し、`run_activation` の重複ペア構築コードを廃止。
+- Alternatives considered: (a) 各フェーズを完全独立のまま維持 — 4箇所の力評価順変更リスクが分散。(b) MD ステップを外部関数に切り出し — ワークフロー内部状態（barostat, integrator）への参照が多く、メソッドが自然。
+- Scientific risk: なし。不変リファクタ。`test_deterministic_with_seed` でビット一致を確認済み（243テスト全緑）。
+- Licensing/commercial impact: None.
+- Follow-up: VDW_RADII/ATOMIC_MASSES の `src/constants.py` への移動は将来的に検討可（RF4 step 6, optional）。
+
 ## 2026-06-19: RF5 — スコア d_ijkl は i-j, i-k, j-l の3項固定。nylon k-l はバイアス専用
 - Context: `score_candidates` が `template.pairs` 全合算のため、nylon では k-l（amine_H–carboxyl_OH, 水形成）の距離がスコアに加算されていた。4項スコアは paper の3項定義 d_ijkl = r_ij + r_ik + r_jl と不一致。k-l の r_max=100 によりほぼ無拘束の H–OH 距離が候補ソートを支配し得る状態。
 - Paper anchor: 本文 p.4 Eq.7（d_ijkl = r_ij + r_ik + r_jl, 3項固定）。SI Table S1（vinyl）/ Table S2（nylon condensation: 群同定は i-j, i-k, j-l の3ペアのみ。k-l にはバイアス V^f のみ適用、距離窓・スコアに非関与）。
