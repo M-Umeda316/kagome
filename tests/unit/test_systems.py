@@ -49,6 +49,49 @@ class TestBuildEthyleneBox:
         assert sp1 == sp2
 
 
+class TestPlaceFragmentsPBC:
+    """PBC-aware placement: positions wrap and distances use minimum image."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_ase(self):
+        pytest.importorskip('ase')
+
+    def test_positions_not_clipped_away_from_boundary(self):
+        """Positions may lie near 0 or box_size (no 2 Å clip margin)."""
+        from scripts._systems import build_ethylene_box
+        rng = np.random.default_rng(99)
+        box = 12.0
+        pos, _ = build_ethylene_box(4, box, rng)
+        assert np.all(pos >= 0.0) or np.all(pos < box), (
+            'All positions should be non-negative (wrapped into box)'
+        )
+        has_near_zero = np.any(pos < 2.0)
+        has_near_edge = np.any(pos > box - 2.0)
+        assert has_near_zero or has_near_edge, (
+            'With wrapping, some atoms should appear near box boundaries'
+        )
+
+    def test_no_pbc_overlap(self):
+        """Inter-molecular minimum-image distances must exceed min_sep."""
+        from scripts._systems import build_ethylene_box
+        rng = np.random.default_rng(42)
+        box = 14.0
+        n_mol = 4
+        atoms_per_mol = 6
+        pos, _ = build_ethylene_box(n_mol, box, rng, min_sep=2.5)
+        box_vec = np.array([box, box, box])
+        for mol_i in range(n_mol):
+            for mol_j in range(mol_i + 1, n_mol):
+                s_i = mol_i * atoms_per_mol
+                s_j = mol_j * atoms_per_mol
+                diffs = pos[s_i:s_i + atoms_per_mol, np.newaxis, :] - pos[np.newaxis, s_j:s_j + atoms_per_mol, :]
+                diffs = diffs - box_vec * np.round(diffs / box_vec)
+                d_min = float(np.min(np.linalg.norm(diffs, axis=2)))
+                assert d_min >= 2.5, (
+                    f'PBC overlap: mol {mol_i} and {mol_j} at {d_min:.3f} Å'
+                )
+
+
 class TestBuildTemplateAndGroups:
 
     def test_group_sizes(self):

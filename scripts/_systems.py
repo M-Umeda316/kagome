@@ -239,6 +239,8 @@ def _place_fragments_in_box(
     )
     rng.shuffle(cell_centers)
 
+    box = np.array([box_size, box_size, box_size])
+
     for mol_idx, (template_pos, mol_species) in enumerate(fragments):
         centered = template_pos - template_pos.mean(axis=0)
         base = cell_centers[mol_idx]
@@ -249,12 +251,13 @@ def _place_fragments_in_box(
             R = _rotation_matrix(axis, rng.uniform(0.0, 2.0 * np.pi))
             # Jitter shrinks with attempt count so later tries hug the cell centre.
             jitter = rng.uniform(-0.5, 0.5, 3) * cell * (1.0 - _attempt / max_attempts)
-            offset = np.clip(base + jitter, 2.0, box_size - 2.0)
+            offset = (base + jitter) % box_size
             candidate = centered @ R.T + offset
 
             ok = True
             for prev in placed:
                 diffs = candidate[:, np.newaxis, :] - prev[np.newaxis, :, :]
+                diffs = diffs - box * np.round(diffs / box)
                 if np.min(np.linalg.norm(diffs, axis=2)) < min_sep:
                     ok = False
                     break
