@@ -127,3 +127,21 @@ class TestReadTrajectory:
         )
         _, frames = read_trajectory(path)
         assert frames[0].temperature_K == 0.0
+
+    def test_schema_version_in_header(self, tmp_path):
+        path = tmp_path / 'traj.jsonl'
+        writer = TrajectoryWriter(path, species=['C', 'O'], save_interval=1)
+        writer.close()
+
+        header, _ = read_trajectory(path)
+        assert header['schema_version'] == 1
+
+    def test_old_header_without_schema_version(self, tmp_path):
+        """Pre-v1 trajectories without schema_version are readable (version 0)."""
+        import json
+        path = tmp_path / 'traj.jsonl'
+        header = {'_header': True, 'species': ['C'], 'n_atoms': 1, 'save_interval': 1}
+        path.write_text(json.dumps(header) + '\n', encoding='utf-8')
+
+        loaded_header, _ = read_trajectory(path)
+        assert loaded_header.get('schema_version', 0) == 0

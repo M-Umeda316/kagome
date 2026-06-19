@@ -340,18 +340,18 @@ class TestChainPropagation:
         assert groups['radical_C'].atom_indices.count(2) == 1
 
     def test_processed_formations_advances(self):
-        """_processed_formations is updated so events are not replayed."""
+        """processed_formations is updated so events are not replayed."""
         wf, tracker, groups, state = self._make_propagation_setup(propagation_map={1: 2})
         tracker._events.append(BondEvent(
             step=5, cycle=0, atom_a=0, atom_b=1,
             event_type='confirmed_formation', distance=1.5, r0=2.0,
         ))
-        assert wf._processed_formations == 0
+        assert wf.processed_formations == 0
         wf._update_groups_after_cycle(state)
-        assert wf._processed_formations == 1
+        assert wf.processed_formations == 1
         # Second call should not re-process the same event
         wf._update_groups_after_cycle(state)
-        assert wf._processed_formations == 1
+        assert wf.processed_formations == 1
 
 
 class TestBiasedStepsLogging:

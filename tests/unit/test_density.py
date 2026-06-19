@@ -55,3 +55,26 @@ class TestReactionDensityProfile:
         z_bins = np.array([0.0, 5.0])
         density = reaction_density_profile(events, {}, z_bins, area_xy=10.0)
         assert density[0] == 0.0
+
+    def test_pbc_midpoint_correction(self):
+        """Atoms straddling the PBC boundary should have midpoint near z=0."""
+        cell = np.diag([30.0, 30.0, 30.0])
+        events = [
+            BondEvent(step=100, cycle=0, atom_a=0, atom_b=1,
+                      event_type='confirmed_formation', distance=1.8),
+        ]
+        positions = {
+            100: np.array([[5.0, 5.0, 0.5], [5.0, 5.0, 29.5]]),
+        }
+        z_bins = np.array([0.0, 5.0, 15.0, 25.0, 30.0])
+        area_xy = 10.0
+
+        density_pbc = reaction_density_profile(
+            events, positions, z_bins, area_xy, cell=cell,
+        )
+        density_no_pbc = reaction_density_profile(
+            events, positions, z_bins, area_xy, cell=None,
+        )
+        assert density_pbc[0] > 0.0, 'PBC midpoint should be near z=0'
+        assert density_no_pbc[2] > 0.0, 'naive midpoint at z=15 without PBC'
+        assert density_pbc[2] == 0.0, 'PBC should not place event at z=15'

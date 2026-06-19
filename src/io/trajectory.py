@@ -45,6 +45,7 @@ class TrajectoryWriter:
 
         header: dict[str, Any] = {
             '_header': True,
+            'schema_version': 1,
             'species': species,
             'n_atoms': len(species),
             'save_interval': save_interval,

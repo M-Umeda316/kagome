@@ -113,6 +113,9 @@ def _integrator_temperature(integrator: object, state: SimulationState) -> float
 class PostCycleUpdater(Protocol):
     """Protocol for post-cycle group updates after confirmed formations."""
 
+    @property
+    def processed_formations(self) -> int: ...
+
     def update(
         self,
         groups: dict[str, ReactiveGroup],
@@ -126,6 +129,10 @@ class DefaultPostCycleUpdater:
 
     def __init__(self) -> None:
         self._processed_formations: int = 0
+
+    @property
+    def processed_formations(self) -> int:
+        return self._processed_formations
 
     def update(
         self,
@@ -162,6 +169,10 @@ class VinylChainPropagationUpdater:
         self.propagation_target_group = propagation_target_group
         self.chain_c_map = chain_c_map if chain_c_map is not None else {}
         self._processed_formations: int = 0
+
+    @property
+    def processed_formations(self) -> int:
+        return self._processed_formations
 
     def update(
         self,
@@ -244,8 +255,8 @@ class PolymerizationWorkflow:
             self._updater = DefaultPostCycleUpdater()
 
     @property
-    def _processed_formations(self) -> int:
-        return self._updater._processed_formations
+    def processed_formations(self) -> int:
+        return self._updater.processed_formations
 
     def run(
         self,
