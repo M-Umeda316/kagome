@@ -213,3 +213,62 @@ class TestLangevin:
         integrator.post_force(vel, forces, masses, dt=0.25)
 
         assert abs(pos[0, 0]) > abs(pos[1, 0])
+
+
+class TestVelocityVerletConservation:
+    """RF21: symplectic energy conservation and time-reversibility under a
+    conservative (harmonic) force. Free-particle / constant-force tests keep the
+    force constant, so they cannot catch a regression that uses the new force in
+    pre_force or applies a half-kick twice; these do."""
+
+    K = 10.0          # spring constant, kcal/(mol·Å²)
+    DT = 0.25         # fs
+    MASS = 12.0       # amu
+
+    def _energy(self, pos, vel):
+        ke = 0.5 * self.MASS * float(np.sum(vel ** 2)) / FORCE_CONV
+        pe = 0.5 * self.K * float(np.sum(pos ** 2))
+        return ke + pe
+
+    def test_energy_conserved_harmonic(self):
+        integrator = VelocityVerletIntegrator()
+        rng = np.random.default_rng(0)
+        masses = np.array([self.MASS])
+        pos = np.array([[1.0, 0.0, 0.0]])
+        vel = np.zeros((1, 3))
+        forces = -self.K * pos
+        e0 = self._energy(pos, vel)
+
+        max_dev = 0.0
+        for _ in range(4000):  # ~12 oscillation periods
+            integrator.pre_force(pos, vel, forces, masses, dt=self.DT, rng=rng)
+            forces = -self.K * pos
+            integrator.post_force(vel, forces, masses, dt=self.DT)
+            max_dev = max(max_dev, abs(self._energy(pos, vel) - e0))
+
+        # symplectic: bounded oscillation around e0, no secular drift
+        assert max_dev / e0 < 1e-3, f'energy drift {max_dev / e0:.2e}'
+
+    def test_time_reversibility_harmonic(self):
+        integrator = VelocityVerletIntegrator()
+        rng = np.random.default_rng(0)
+        masses = np.array([self.MASS])
+        pos = np.array([[1.0, 0.0, 0.0]])
+        vel = np.array([[0.2, -0.1, 0.05]])
+        x0, v0 = pos.copy(), vel.copy()
+        forces = -self.K * pos
+
+        for _ in range(500):
+            integrator.pre_force(pos, vel, forces, masses, dt=self.DT, rng=rng)
+            forces = -self.K * pos
+            integrator.post_force(vel, forces, masses, dt=self.DT)
+
+        vel[:] = -vel            # reverse time
+        forces = -self.K * pos
+        for _ in range(500):
+            integrator.pre_force(pos, vel, forces, masses, dt=self.DT, rng=rng)
+            forces = -self.K * pos
+            integrator.post_force(vel, forces, masses, dt=self.DT)
+
+        np.testing.assert_allclose(pos, x0, atol=1e-6)
+        np.testing.assert_allclose(vel, -v0, atol=1e-6)

@@ -38,8 +38,9 @@ class TestMCBarostatParams:
         assert p.pressure_atm == pytest.approx(1.0)
 
     def test_pressure_conversion(self):
-        # 1 atm -> kcal/(mol*A^3): known from src/units.py
-        assert ATM_TO_KCAL_MOL_A3 == pytest.approx(1.4596e-5, rel=1e-3)
+        # 1 atm -> kcal/(mol*A^3): see src/units.py (canonical first-principles
+        # check lives in tests/unit/test_units.py; RF19 corrected this value).
+        assert ATM_TO_KCAL_MOL_A3 == pytest.approx(1.4584e-5, rel=1e-3)
 
 
 class TestMCBarostatShouldAttempt:
@@ -85,18 +86,26 @@ class TestMCBarostatStep:
         assert n_accepted > 0, 'At least some steps should be accepted'
 
     def test_accepted_step_changes_cell(self):
+        # RF21: must not pass vacuously — require at least one acceptance and
+        # assert the cell changed on every accepted move.
         barostat = MCBarostat(MCBarostatParams(pressure_atm=0.0, max_volume_change_frac=0.05))
         rng = np.random.default_rng(7)
         calc = _FlatCalculator()
 
-        cell = self._cell(10.0)
+        original_cell = self._cell(10.0)
         positions = self._positions(4, 10.0)
-        original_cell = cell.copy()
-        original_pos = positions.copy()
 
-        accepted, _, _ = barostat.try_step(positions, ['C'] * 4, cell, 0.0, calc, rng, 300.0)
-        if accepted:
-            assert not np.allclose(cell, original_cell), 'Cell should change on acceptance'
+        n_accepted = 0
+        for _ in range(50):
+            cell = original_cell.copy()
+            accepted, _, _ = barostat.try_step(
+                positions.copy(), ['C'] * 4, cell, 0.0, calc, rng, 300.0
+            )
+            if accepted:
+                n_accepted += 1
+                assert not np.allclose(cell, original_cell), 'Cell should change on acceptance'
+
+        assert n_accepted > 0, 'expected at least one accepted volume move'
 
     def test_rejected_step_preserves_cell(self):
         """Force rejection by making volume expansion very costly."""
@@ -136,19 +145,27 @@ class TestMCBarostatStep:
         assert 0.0 <= barostat.stats.acceptance_rate <= 1.0
 
     def test_positions_scale_with_cell(self):
-        """When accepted, positions should scale by the same factor as the cell."""
+        """When accepted, positions should scale by the same factor as the cell.
+
+        RF21: loop until at least one acceptance so the invariant is actually
+        exercised (no vacuous pass).
+        """
         # P=0, flat potential, tiny move -> high acceptance
         barostat = MCBarostat(MCBarostatParams(pressure_atm=0.0, max_volume_change_frac=0.02))
         rng = np.random.default_rng(5)
         calc = _FlatCalculator()
 
-        cell = np.diag([10.0, 10.0, 10.0])
-        positions = np.array([[5.0, 5.0, 5.0], [2.0, 3.0, 4.0]], dtype=float)
-        orig_pos = positions.copy()
-        orig_box = cell[0, 0]
+        orig_pos = np.array([[5.0, 5.0, 5.0], [2.0, 3.0, 4.0]], dtype=float)
+        orig_box = 10.0
 
-        accepted, _, _ = barostat.try_step(positions, ['C', 'C'], cell, 0.0, calc, rng, 300.0)
+        n_accepted = 0
+        for _ in range(50):
+            cell = np.diag([orig_box, orig_box, orig_box]).astype(float)
+            positions = orig_pos.copy()
+            accepted, _, _ = barostat.try_step(positions, ['C', 'C'], cell, 0.0, calc, rng, 300.0)
+            if accepted:
+                n_accepted += 1
+                scale = cell[0, 0] / orig_box
+                np.testing.assert_allclose(positions, orig_pos * scale, rtol=1e-10)
 
-        if accepted:
-            scale = cell[0, 0] / orig_box
-            np.testing.assert_allclose(positions, orig_pos * scale, rtol=1e-10)
+        assert n_accepted > 0, 'expected at least one accepted volume move'

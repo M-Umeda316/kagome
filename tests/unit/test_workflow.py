@@ -201,43 +201,48 @@ class TestPolymerizationWorkflow:
         assert ex['candidate_r_min'] == 0.5
         assert ex['candidate_r_max'] == 5.0
 
-    def test_with_masses(self):
+    @staticmethod
+    def _run_simple(integrator=None, masses=None, seed=7):
         template, groups = _make_simple_setup()
         config = PolymerizationConfig(
             biased_steps=5,
             unbiased_steps=5,
             n_cycles=1,
-            seed=7,
+            seed=seed,
         )
         calc = ToyCalculator()
         state = SimulationState(
             positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
             velocities=np.zeros((2, 3)),
             species=['C', 'C'],
-            masses=masses_from_species(['C', 'C']),
+            masses=masses,
         )
-        wf = PolymerizationWorkflow(config, calc, template, groups)
-        logs = wf.run(state)
-        assert state.step == 10
+        wf = PolymerizationWorkflow(config, calc, template, groups, integrator=integrator)
+        wf.run(state)
+        return state
+
+    def test_with_masses(self):
+        # RF21: masses must actually affect the dynamics (F/m), not just run.
+        s_mass = self._run_simple(masses=masses_from_species(['C', 'C']))
+        s_none = self._run_simple(masses=None)
+        assert s_mass.step == 10 and s_none.step == 10
+        # 12 amu vs unit-mass path integrate F/m differently -> different trajectory
+        assert not np.allclose(s_mass.positions, s_none.positions)
 
     def test_with_langevin(self):
-        template, groups = _make_simple_setup()
-        config = PolymerizationConfig(
-            biased_steps=5,
-            unbiased_steps=5,
-            n_cycles=1,
-            seed=7,
-        )
-        calc = ToyCalculator()
-        langevin = LangevinIntegrator(LangevinParams(temperature_K=300.0))
-        state = SimulationState(
-            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
-            velocities=np.zeros((2, 3)),
-            species=['C', 'C'],
-        )
-        wf = PolymerizationWorkflow(config, calc, template, groups, integrator=langevin)
-        logs = wf.run(state)
-        assert state.step == 10
+        # RF21: Langevin thermostat must change the trajectory vs NVE Verlet and
+        # remain reproducible under a fixed seed.
+        masses = masses_from_species(['C', 'C'])
+        langevin = LangevinIntegrator(LangevinParams(temperature_K=300.0, friction_per_fs=0.05))
+        s_lan = self._run_simple(integrator=langevin, masses=masses)
+        s_vv = self._run_simple(integrator=None, masses=masses)
+        assert s_lan.step == 10
+        # stochastic thermostat + friction -> diverges from deterministic Verlet
+        assert not np.allclose(s_lan.positions, s_vv.positions)
+        # same seed -> reproducible
+        langevin2 = LangevinIntegrator(LangevinParams(temperature_K=300.0, friction_per_fs=0.05))
+        s_lan2 = self._run_simple(integrator=langevin2, masses=masses)
+        np.testing.assert_array_equal(s_lan.positions, s_lan2.positions)
 
     def test_with_bond_tracker(self, tmp_path):
         template, groups = _make_simple_setup()
