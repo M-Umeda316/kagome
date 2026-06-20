@@ -383,7 +383,14 @@ def main() -> None:
             n_radicals = len(groups['radical_C'].atom_indices)
             production_spin = n_radicals + 1
             calc.set_spin(production_spin)
-            logger.info('Spin switched: 1 → %d (N_radicals=%d)', production_spin, n_radicals)
+            if getattr(calc, 'supports_spin', False):
+                logger.info('Spin switched: 1 → %d (N_radicals=%d)', production_spin, n_radicals)
+            else:
+                logger.warning(
+                    'Backend %s ignores spin; production spin %d NOT applied '
+                    '(N_radicals=%d) — results assume the backend is spin-agnostic.',
+                    calc.name, production_spin, n_radicals,
+                )
 
         config = PolymerizationConfig(
             timestep_fs=config.timestep_fs,

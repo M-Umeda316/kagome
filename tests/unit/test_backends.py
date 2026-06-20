@@ -1,4 +1,6 @@
 """Tests for calculator backends."""
+import logging
+
 import numpy as np
 import pytest
 
@@ -22,6 +24,44 @@ class TestToyCalculator:
 
     def test_name(self):
         assert ToyCalculator().name == 'toy'
+
+    def test_model_id_defaults_to_name(self):
+        assert ToyCalculator().model_id == 'toy'
+
+
+class TestSpinAndPeriodicGuards:
+    """RF20: spin capability is explicit; spin-agnostic backends warn; periodic
+    OrbMol-v2 fails clearly when nvalchemiops is unavailable."""
+
+    def test_toy_supports_spin_false(self):
+        assert ToyCalculator().supports_spin is False
+
+    def test_set_spin_warns_when_unsupported(self, caplog):
+        calc = ToyCalculator()
+        with caplog.at_level(logging.WARNING):
+            calc.set_spin(3)
+        assert 'ignores spin' in caplog.text
+
+    def test_orb_supports_spin_true(self):
+        pytest.importorskip('ase')
+        from src.backends.orb_backend import OrbCalculatorAdapter
+        adapter = OrbCalculatorAdapter(model=object(), atoms_adapter=object())
+        assert adapter.supports_spin is True
+
+    def test_orb_periodic_guard_raises_without_nvalchemiops(self, monkeypatch):
+        pytest.importorskip('ase')
+        import importlib.util
+        from src.backends.orb_backend import OrbCalculatorAdapter
+
+        adapter = OrbCalculatorAdapter(model=object(), atoms_adapter=object())
+        real = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util, 'find_spec',
+            lambda name, *a, **k: None if name == 'nvalchemiops' else real(name, *a, **k),
+        )
+        cell = np.diag([10.0, 10.0, 10.0]).astype(float)
+        with pytest.raises(RuntimeError, match='nvalchemiops'):
+            adapter.compute(np.zeros((1, 3)), ['C'], cell=cell)
 
 
 class TestASEAdapter:

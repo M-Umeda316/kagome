@@ -1,10 +1,13 @@
 """Abstract calculator interface for MLIP backends."""
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 class Calculator(ABC):
@@ -38,8 +41,23 @@ class Calculator(ABC):
         """
         return self.name
 
+    @property
+    def supports_spin(self) -> bool:
+        """Whether this backend actually applies spin multiplicity (RF20).
+
+        Default False (spin-agnostic, e.g. MACE-MP-0). Callers can branch on this
+        instead of assuming ``set_spin`` took effect.
+        """
+        return False
+
     def set_spin(self, spin: int) -> None:
         """Update the system spin multiplicity (2S+1).
 
-        No-op by default; override in backends that support spin (e.g. OrbMol-v2).
+        Default: no-op that WARNS, so a caller expecting spin to take effect has
+        an audit trail rather than a silently ignored request (RF20). Override in
+        spin-aware backends (e.g. OrbMol-v2) — and set ``supports_spin = True``.
         """
+        logger.warning(
+            '%s ignores spin multiplicity (supports_spin=False); requested '
+            'spin=%d has no effect.', type(self).__name__, spin,
+        )

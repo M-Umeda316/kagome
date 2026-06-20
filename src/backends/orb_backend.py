@@ -108,6 +108,7 @@ class OrbCalculatorAdapter(Calculator):
         self._charge = charge
         self._spin = spin
         self._model_id = model_id or name
+        self._pbc_checked = False
 
         try:
             from ase import Atoms
@@ -123,8 +124,28 @@ class OrbCalculatorAdapter(Calculator):
     def model_id(self) -> str:
         return self._model_id
 
+    @property
+    def supports_spin(self) -> bool:
+        return True
+
     def set_spin(self, spin: int) -> None:
         self._spin = spin
+
+    def _check_periodic_support(self) -> None:
+        """Fail early and clearly if a periodic run needs nvalchemiops but it is
+        unavailable (blocked_pending_review; torch.compile failures on Windows).
+
+        Only fires when the dependency is genuinely missing, so a properly
+        configured periodic run is unaffected (RF20)."""
+        import importlib.util
+        if importlib.util.find_spec('nvalchemiops') is None:
+            raise RuntimeError(
+                'Periodic OrbMol-v2 (cell != None) requires nvalchemiops for PME, '
+                'which is blocked_pending_review (license unconfirmed) and triggers '
+                'torch.compile failures on Windows. Run non-periodic (cell=None), '
+                'or resolve nvalchemiops first. See specs/decisions.md and '
+                'specs/approved_dependencies.yaml.'
+            )
 
     def compute(
         self,
@@ -132,6 +153,9 @@ class OrbCalculatorAdapter(Calculator):
         species: list[str],
         cell: NDArray[np.floating] | None = None,
     ) -> tuple[float, NDArray[np.floating]]:
+        if cell is not None and not self._pbc_checked:
+            self._pbc_checked = True
+            self._check_periodic_support()
         atoms = self._Atoms(
             symbols=species,
             positions=positions,
