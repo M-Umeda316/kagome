@@ -16,11 +16,84 @@ from src.reactive.selection import (
     select_non_overlapping,
 )
 from src.workflows.polymerization import (
+    DefaultPostCycleUpdater,
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
     masses_from_species,
 )
+
+
+class _FakeTracker:
+    """Minimal BondTracker stand-in returning preset confirmed events."""
+
+    def __init__(self, formations, dissociations):
+        self._f = formations
+        self._d = dissociations
+
+    def confirmed_formations(self):
+        return self._f
+
+    def confirmed_dissociations(self):
+        return self._d
+
+
+class TestDefaultPostCycleUpdater:
+    """RF15: confirmed dissociations must free leaving-group atoms from groups so
+    they are not re-selected (step-growth condensation topology must advance)."""
+
+    @staticmethod
+    def _groups():
+        return {
+            'amine_N': ReactiveGroup('amine_N', [0, 10]),
+            'carboxyl_C': ReactiveGroup('carboxyl_C', [2, 12]),
+            'amine_H': ReactiveGroup('amine_H', [1, 11]),
+            'carboxyl_OH': ReactiveGroup('carboxyl_OH', [3, 13]),
+        }
+
+    @staticmethod
+    def _state():
+        return SimulationState(
+            positions=np.zeros((14, 3)), velocities=np.zeros((14, 3)),
+            species=['C'] * 14,
+        )
+
+    def test_consumes_formations_and_dissociations(self):
+        groups = self._groups()
+        formations = [BondEvent(
+            step=1, cycle=0, atom_a=0, atom_b=2,
+            event_type='confirmed_formation', distance=1.5,
+        )]
+        dissociations = [
+            BondEvent(step=1, cycle=0, atom_a=0, atom_b=1,
+                      event_type='confirmed_dissociation', distance=3.0),
+            BondEvent(step=1, cycle=0, atom_a=2, atom_b=3,
+                      event_type='confirmed_dissociation', distance=3.0),
+        ]
+        upd = DefaultPostCycleUpdater()
+        upd.update(groups, _FakeTracker(formations, dissociations), self._state())
+
+        # reacted centres consumed by the amide formation
+        assert 0 not in groups['amine_N'].atom_indices
+        assert 2 not in groups['carboxyl_C'].atom_indices
+        # leaving groups freed by dissociation (the RF15 fix)
+        assert 1 not in groups['amine_H'].atom_indices
+        assert 3 not in groups['carboxyl_OH'].atom_indices
+        # the other monomer's termini remain — chain growth proceeds naturally
+        assert 10 in groups['amine_N'].atom_indices
+        assert 12 in groups['carboxyl_C'].atom_indices
+        assert upd.processed_formations == 1
+        assert upd.processed_dissociations == 2
+
+    def test_dissociation_counter_prevents_double_processing(self):
+        groups = self._groups()
+        diss = [BondEvent(step=1, cycle=0, atom_a=0, atom_b=1,
+                          event_type='confirmed_dissociation', distance=3.0)]
+        tracker = _FakeTracker([], diss)
+        upd = DefaultPostCycleUpdater()
+        upd.update(groups, tracker, self._state())
+        upd.update(groups, tracker, self._state())  # same events again
+        assert upd.processed_dissociations == 1
 
 
 def _make_simple_setup():

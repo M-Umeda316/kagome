@@ -140,14 +140,37 @@ class PostCycleUpdater(Protocol):
 
 
 class DefaultPostCycleUpdater:
-    """Remove reacted atoms from their groups after confirmed formation."""
+    """Remove reacted atoms from their groups after confirmed formation AND
+    dissociation.
+
+    For step-growth condensation (nylon-6,6, Table S2) the leaving groups
+    (amine_H, carboxyl_OH) and reacted centres are freed by V^d *dissociation*
+    events; without consuming those events the same atoms stay selectable in
+    later cycles and the condensation topology never advances (RF15). Chain
+    extension itself needs no special handling here: build_nylon66_system
+    registers *both* termini of every monomer, so growth continues on the
+    remaining ends. See specs/decisions.md 2026-06-20 RF15.
+    """
 
     def __init__(self) -> None:
         self._processed_formations: int = 0
+        self._processed_dissociations: int = 0
 
     @property
     def processed_formations(self) -> int:
         return self._processed_formations
+
+    @property
+    def processed_dissociations(self) -> int:
+        return self._processed_dissociations
+
+    @staticmethod
+    def _remove_pair(groups: dict[str, ReactiveGroup], ev) -> None:
+        for group in groups.values():
+            if ev.atom_a in group.atom_indices:
+                group.remove_atom(ev.atom_a)
+            if ev.atom_b in group.atom_indices:
+                group.remove_atom(ev.atom_b)
 
     def update(
         self,
@@ -159,12 +182,15 @@ class DefaultPostCycleUpdater:
             return
         formations = tracker.confirmed_formations()
         for ev in formations[self._processed_formations:]:
-            for group in groups.values():
-                if ev.atom_a in group.atom_indices:
-                    group.remove_atom(ev.atom_a)
-                if ev.atom_b in group.atom_indices:
-                    group.remove_atom(ev.atom_b)
+            self._remove_pair(groups, ev)
         self._processed_formations = len(formations)
+
+        # Consume dissociations so freed leaving groups / reacted centres are not
+        # re-selected next cycle (remove_atom is idempotent if also consumed above).
+        dissociations = tracker.confirmed_dissociations()
+        for ev in dissociations[self._processed_dissociations:]:
+            self._remove_pair(groups, ev)
+        self._processed_dissociations = len(dissociations)
 
 
 class VinylChainPropagationUpdater:

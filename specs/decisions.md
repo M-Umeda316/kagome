@@ -908,3 +908,11 @@ Use this template for each decision.
 - Alternatives considered: (a) ブロックリストのみ維持 — 未登録依存を見逃す（現状の穴）。(b) MACE-OFF をトークン（'off23' 等）で広く grep — ブロック用ガードのコード自身に誤反応するため不採用、呼び出しパターン 'mace_off(' に限定。(c) openff-units を blocked 扱い — 実体は OpenFF スタックの MIT パッケージであり過剰。
 - Scientific risk: なし（ガードレール・記録のみ、数値計算に非干渉）。
 - Licensing/commercial impact: 商用安全性の網羅性が向上。未承認依存の混入と ASL 重み（MACE-OFF23）の使用を CI/実行時の両面で阻止。openff-units の upstream LICENSE は release 前に最終確認すること（YAML notes に明記）。
+
+## 2026-06-20: RF15 — 縮合系の解離イベントで遊離原子を群から消費する
+- Context: `DefaultPostCycleUpdater` は `tracker.confirmed_formations()` のみを処理し反応原子を群から除去していた。nylon-6,6 縮合（Table S2）では amine_N–amine_H (i–k) と carboxyl_C–carboxyl_OH (j–l) が V^d（is_formation=False）で解離するが、`confirmed_dissociations()` は群更新で一切消費されていなかった。結果、解離して遊離した amine_H / carboxyl_OH（水の脱離基）がサイクル横断で群に残り再選択され得た。
+- Paper anchor: 本文 §2.2（biased→unbiased→トポロジ更新のサイクル）、SI Table S2（nylon Condensation: i–j 形成 V^f、i–k/j–l 解離 V^d、k–l 水形成 V^f）。CLAUDE.md「Distinguish bond formation bias from bond dissociation bias」。
+- Decision: (1) `DefaultPostCycleUpdater` を拡張し、`confirmed_formations()` に加えて `confirmed_dissociations()` も処理する。各確定解離イベントの両原子（atom_a/atom_b）を所属群から除去する（`_remove_pair` に共通化）。`processed_dissociations` カウンタで二重処理を防止。`remove_atom` は不在時 ValueError を握り潰すため、形成側と解離側で同一原子を二重に消そうとしても冪等。(2) **nylon に専用 updater（NylonCondensationUpdater）は新設しない**。`build_nylon66_system` は各ジアミン/二酸の**両末端**を初期から amine_N/carboxyl_C 群に登録しているため、片端が反応しても残る末端で鎖延長が自然に進行する（vinyl のラジカル移動のような「新末端を新原子へ昇格する」処理は不要）。これは handoff-plan-v6 の RF15 案（NylonCondensationUpdater 追加）からの意図的な簡素化で、コード実態に即した最小修正。(3) vinyl 経路（`VinylChainPropagationUpdater`）は変更しない。vinyl テンプレートに解離ペアは無く `confirmed_dissociations()` は常に空のため、数値はビット一致のまま。
+- Alternatives considered: (a) 専用 NylonCondensationUpdater で末端昇格 — 両末端が既登録のため冗長で、誤った再分類リスクを増やす。(b) 解離の atom_a/atom_b のうち脱離基側のみ除去 — どちらが脱離基かはテンプレート依存で一般化困難。両方除去で安全（反応中心 amine_N/carboxyl_C は amide 形成で消費されるため除去は無害かつ冪等）。(c) 現状維持 — 解離原子が再選択され縮合トポロジが進行しない（既知バグ）。
+- Scientific risk: nylon の反応経路が変わる（解離原子が次サイクルで再選択されなくなる＝正しい挙動）。vinyl は不変（決定論テストでビット一致を確認）。一般の「解離後も両原子が反応性を保つ」機構が将来必要になった場合は、PairSpec に脱離基フラグを追加して `_remove_pair` を選択的にする。
+- Licensing/commercial impact: None.
