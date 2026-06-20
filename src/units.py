@@ -16,9 +16,10 @@ KB = 0.001987204
 FORCE_CONV = 4.184e-4
 
 # Pressure: 1 atm in kcal/(mol·Å³)
-# 1 kcal/(mol·Å³) = (4184/N_A) J / (1e-10)³ m³ ≈ 6.947e9 Pa = 6.947 GPa
-# 1 atm = 101325 Pa → 101325 / 6.947e9 ≈ 1.4596e-5 kcal/(mol·Å³)
-ATM_TO_KCAL_MOL_A3 = 1.4596e-5
+# 1 kcal/(mol·Å³) = (4184/N_A) J / (1e-10)³ m³ = 6.9477e9 Pa = 6.9477 GPa
+# 1 atm = 101325 Pa → 101325 / 6.9477e9 = 1.4584e-5 kcal/(mol·Å³)
+# (RF19: prior literal 1.4596e-5 was a transcription error, ~0.08% high.)
+ATM_TO_KCAL_MOL_A3 = 1.4584e-5
 
 # 1 eV = 23.060548 kcal/mol (NIST CODATA 2018)
 EV_TO_KCAL_MOL = 23.060548
