@@ -294,8 +294,19 @@ class PolymerizationWorkflow:
         rng = np.random.default_rng(self.config.seed)
 
         try:
+            if writer:
+                writer.write_frame(TrajectoryFrame(
+                    step=state.step,
+                    time_fs=0.0,
+                    phase='initial',
+                    cycle=-1,
+                    energy_base=0.0,
+                    energy_bias=0.0,
+                    energy_total=0.0,
+                    positions=state.positions.tolist(),
+                ))
             if self.config.minimize:
-                self._minimize(state)
+                self._minimize(state, writer)
             if self.config.equil_steps > 0:
                 self._run_equilibration_phase(state, rng, writer)
 
@@ -322,7 +333,11 @@ class PolymerizationWorkflow:
 
         return self.logs
 
-    def _minimize(self, state: SimulationState) -> None:
+    def _minimize(
+        self,
+        state: SimulationState,
+        writer: TrajectoryWriter | None = None,
+    ) -> None:
         """Relax close contacts in the initial structure before dynamics.
 
         Paper anchor: PDF p.20 — production reactive MD follows equilibration.
@@ -333,12 +348,28 @@ class PolymerizationWorkflow:
             'Pre-TDBB energy minimization (FIRE, fmax=%.2f, max_steps=%d)...',
             self.config.minimize_fmax, self.config.minimize_max_steps,
         )
+        save_interval = max(1, self.config.save_interval)
+
+        def _on_step(step: int, pos, energy: float, fmax: float) -> None:
+            if writer and step % save_interval == 0:
+                writer.write_frame(TrajectoryFrame(
+                    step=step,
+                    time_fs=0.0,
+                    phase='minimize',
+                    cycle=-1,
+                    energy_base=energy,
+                    energy_bias=0.0,
+                    energy_total=energy,
+                    positions=pos.tolist(),
+                ))
+
         result = fire_minimize(
             state.positions, state.species, state.cell, self.calculator,
             FireParams(
                 fmax_kcal_mol_A=self.config.minimize_fmax,
                 max_steps=self.config.minimize_max_steps,
             ),
+            on_step=_on_step,
         )
         state.positions[:] = result.positions
 

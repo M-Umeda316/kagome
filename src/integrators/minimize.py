@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -61,6 +62,7 @@ def fire_minimize(
     cell: NDArray[np.floating] | None,
     calculator: Calculator,
     params: FireParams | None = None,
+    on_step: Callable[[int, NDArray, float, float], None] | None = None,
 ) -> MinimizeResult:
     """Relax ``positions`` toward a local energy minimum via FIRE.
 
@@ -68,6 +70,9 @@ def fire_minimize(
     (FIRE is a relaxation, not physical dynamics); a per-step displacement clamp
     (``maxstep_A``) keeps the very first steps stable even when the initial
     structure has severe clashes.
+
+    on_step: optional callback(step, positions, energy, fmax) invoked after
+    each FIRE iteration.
     """
     p = params or FireParams()
     pos = np.array(positions, dtype=np.float64, copy=True)
@@ -79,6 +84,9 @@ def fire_minimize(
 
     energy, forces = calculator.compute(pos, species, cell)
     fmax = float(np.sqrt((forces ** 2).sum(axis=1).max()))
+
+    if on_step is not None:
+        on_step(0, pos, energy, fmax)
 
     converged = fmax < p.fmax_kcal_mol_A
     step = 0
@@ -114,6 +122,9 @@ def fire_minimize(
         fmax = float(np.sqrt((forces ** 2).sum(axis=1).max()))
         converged = fmax < p.fmax_kcal_mol_A
         step += 1
+
+        if on_step is not None:
+            on_step(step, pos, energy, fmax)
 
     logger.info(
         'FIRE minimize: %d steps, fmax=%.3f kcal/mol/Å (target %.3f), '

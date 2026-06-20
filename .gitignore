@@ -8,3 +8,5 @@ runs/
 *.png
 *.pdf
 .claude/plans/
+models/*.ckpt
+models/*.model

@@ -12,12 +12,18 @@ which requires cl.exe.  TORCHDYNAMO_DISABLE=1 bypasses this.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
 from src.backends.base import Calculator
 from src.units import EV_TO_KCAL_MOL
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_LOCAL_MODELS = {
+    'orbmol_v2': _PROJECT_ROOT / 'models' / 'orbmol-v2-teqabfhg-20260523.ckpt',
+}
 
 
 def create_orb_calculator(
@@ -37,9 +43,6 @@ def create_orb_calculator(
     """
     os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
     os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
-    # Reduce CUDA allocator fragmentation on long runs where the neighbour-graph
-    # size varies per step (else reserved VRAM creeps up until the run hangs).
-    # Only effective if set before torch is first imported.
     os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
     try:
@@ -54,7 +57,13 @@ def create_orb_calculator(
     if loader is None:
         raise ValueError(f'Unknown orb model: {model!r}')
 
-    orbff, adapter = loader(device=device, compile=compile)
+    local_path = _LOCAL_MODELS.get(model)
+    if local_path and local_path.exists():
+        orbff, adapter = loader(
+            weights_path=str(local_path), device=device, compile=compile,
+        )
+    else:
+        orbff, adapter = loader(device=device, compile=compile)
     orbff.eval()
     return OrbCalculatorAdapter(
         orbff, adapter,
