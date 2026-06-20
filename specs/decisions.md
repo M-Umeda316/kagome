@@ -479,7 +479,7 @@ Use this template for each decision.
 - T-S1.4: spin invariant validated — exactly one chain-end radical throughout; spin held at 2. This is the explicit boundary with S3 (multiple simultaneous radicals → ill-defined global spin).
 - Acceptance criteria (handoff-plan-v4 S1) all met: propagation_events ≥ 2 (got 4); bonds stable post-relaxation (radical migration confirms retention); radical migrates to each new chain end; doublet throughout; reproduction command recorded (script + handoff-plan-v4).
 - Caveat (carried to S2): additions here are made deterministic by directed placement + widened window; melt-driven, undirected formation from the paper [3,6] window is S2 (a sampling problem, not blocked).
-- Next: S2 (melt-driven formations) and/or S3 (multi-radical spin). See specs/handoff-plan-v4.md.
+- Next: S2 (melt-driven formations) and/or S3 (multi-radical spin). See specs/archive/handoff-plan-v4.md.
 
 ## 2026-06-17: S2 sweep2 — lower density (0.3 g/mL) also fails; candidate window [3,6] closed as PES-mismatched for OrbMol-v2
 

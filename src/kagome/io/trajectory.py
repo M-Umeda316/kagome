@@ -13,6 +13,8 @@ from typing import Any
 
 @dataclass
 class TrajectoryFrame:
+    """1 タイムステップの状態スナップショット (JSONL の 1 行に対応)。"""
+
     step: int
     time_fs: float
     phase: str

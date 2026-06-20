@@ -15,6 +15,8 @@ from kagome.units import FORCE_CONV, KB, force_to_accel
 
 @dataclass
 class LangevinParams:
+    """Langevin サーモスタットのパラメータ (論文 SI: coupling 1.0 ps^-1)。"""
+
     temperature_K: float = 300.0
     friction_per_fs: float = 0.001
 

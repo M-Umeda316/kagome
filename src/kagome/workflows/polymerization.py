@@ -61,6 +61,12 @@ def _pair_distance(
 
 @dataclass
 class SimulationState:
+    """MD シミュレーションの瞬間状態。
+
+    ワークフロー全体を通じて更新され、積分器・バックエンド・ワークフローの
+    間で受け渡される中心データ構造。
+    """
+
     positions: NDArray[np.floating]
     velocities: NDArray[np.floating]
     species: list[str]
@@ -71,19 +77,25 @@ class SimulationState:
 
 @dataclass
 class CycleLog:
+    """1 サイクル中の 1 フェーズ (biased/unbiased) の診断情報。"""
+
     cycle: int
     phase: str
     steps: int
     n_candidates: int = 0
     n_selected: int = 0
     bias_energy: float = 0.0
-    # Closest any biased formation pair got during the phase (Å). Evidence for
-    # whether [3,6]-window pairs reach the bias-capture shell / bonding distance.
     min_pair_distance: float = float('inf')
 
 
 @dataclass
 class PolymerizationConfig:
+    """重合ワークフローの全パラメータ。
+
+    TDBB パラメータ (tdbb)、積分ステップ数、前処理 (minimize/equil) を含む。
+    run スクリプトから CLI 引数を経由して構築される。
+    """
+
     timestep_fs: float = 0.25
     biased_steps: int = 2000
     unbiased_steps: int = 2000
@@ -91,9 +103,6 @@ class PolymerizationConfig:
     tdbb: TDBBParams = field(default_factory=TDBBParams)
     seed: int = 7
     save_interval: int = 0
-    # Pre-TDBB relaxation (paper anchor: PDF p.20 — equilibration precedes
-    # reactive production).  Disabled by default to preserve legacy behaviour;
-    # run scripts opt in.
     minimize: bool = False
     minimize_fmax: float = 1.0
     minimize_max_steps: int = 500
@@ -308,6 +317,11 @@ class PolymerizationWorkflow:
         config_path: str = '',
         n_monomers: int | None = None,
     ) -> list[CycleLog]:
+        """biased/unbiased 交互ループを n_cycles 回実行する。
+
+        output_dir を指定すると trajectory.jsonl, bonds.jsonl, manifest.json,
+        summary.json を出力する。戻り値は各フェーズの CycleLog リスト。
+        """
         n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
 
         if output_dir:

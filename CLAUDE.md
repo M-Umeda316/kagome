@@ -34,11 +34,17 @@ That means:
 ## Repository map
 - `paper/`: structured notes from the paper
 - `specs/`: requirements, decisions, acceptance criteria, experiment matrix, dependency licenses
+- `specs/archive/`: superseded handoff plans (v1-v4, 参照用に保持)
 - `configs/`: all reproducible experiment configurations
 - `src/kagome/boost/`: time-dependent bond boosting implementation
 - `src/kagome/reactive/`: reactive group definitions and candidate selection
 - `src/kagome/workflows/`: polymerization and curing loops
 - `src/kagome/backends/`: MLIP/calculator adapters
+- `src/kagome/integrators/`: Velocity Verlet, Langevin, MC barostat, FIRE minimizer
+- `src/kagome/analysis/`: conversion, density profiles, Carothers analysis
+- `src/kagome/chem/`: molecule builders (RDKit)
+- `src/kagome/io/`: trajectory I/O
+- `src/kagome/prep/`: classical structure preparation (OpenMM/OpenFF)
 - `scripts/`: entry points, checks, reporting, figure generation
 - `.claude/agents/`: specialized sub-agents
 - `.claude/skills/`: reusable workflows

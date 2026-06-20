@@ -28,11 +28,13 @@ def is_dissociated(r: float, r0: float, threshold_fraction: float = 1.0) -> bool
 
 @dataclass
 class BondEvent:
+    """結合イベントの記録 (attempt/confirm, formation/dissociation)。"""
+
     step: int
     cycle: int
     atom_a: int
     atom_b: int
-    event_type: str  # attempted_formation, attempted_dissociation, confirmed_formation, confirmed_dissociation
+    event_type: str
     distance: float
     r0: float = 0.0
 

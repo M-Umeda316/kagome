@@ -90,11 +90,11 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 - First confirmed bond: scripts/demo_radical_formation.py forms+retains a C–C bond (final 1.62 Å). Full TDBB chain validated.
 - formations=0 in melt runs was: closed-shell surrogate (no radical channel) + sampling (bias has ~0 force beyond ~2.6 Å, so pairs must diffuse inward). See specs/decisions.md 2026-06-15 entries.
 
-## Phase 7: Toward polymerization reproduction — see specs/handoff-plan-v4.md
-Remaining scope S1–S6 (single-chain propagation → melt sampling → multi-radical spin → paper fidelity → figures → hardware). Detailed roadmap and the S1 work plan are in **specs/handoff-plan-v4.md**.
+## Phase 7: Toward polymerization reproduction
+Remaining scope S1-S6 (single-chain propagation -> melt sampling -> multi-radical spin -> paper fidelity -> figures -> hardware). Historical roadmap is in `specs/archive/handoff-plan-v4.md`.
 - [x] S1: single-chain propagation demo — DONE. scripts/demo_chain_propagation.py + tests/unit/test_propagation.py. Pentamer built (propagation_events=4), radical migrated 1→12→24→36→48, doublet invariant held. See decisions.md 2026-06-15 "S1 DONE".
-- [ ] S2: melt-driven formations from the [3,6] window (run-until-reaction length, cycles)
-- [ ] S3: multi-radical system-spin handling for OrbMol-v2 (open modeling question)
-- [ ] S4: paper-fidelity (ij+ik+jl multi-pair criterion; AIBN decomposition / Activation)
-- [ ] S5: figures — conversion α(t) (Eq.11), Carothers, depth-resolved density (Eq.12) vs paper
-- [ ] S6: hardware for full 200+10 (>=24 GB GPU) or stay at 100+5
+- [x] S2: melt-driven formations from the [3,6] window — DONE. OrbMol-v2, f2=5, 20+1, formations=2 (seed 7) / 1 (seed 42). α_max=9.5%, kp_eff=1.58e-06. See figure-comparison.md.
+- [x] S3: multi-radical system-spin handling — DONE. High-spin approximation (spin=2*n_radicals). 2-radical 20+2, formations=6, α_max=27.3%. See figure-comparison.md.
+- [x] S4: AIBN activation + chain polymerization — DONE. V^d bias C-N homolysis (f2=0.3, f1_max=250), activation_dissociations=2, confirmed_formations=1. See figure-comparison.md / decisions.md.
+- [~] S5: figures — partially done. Energy, conversion, temperature plots generated for S2-S4. Depth-resolved density (界面/硬化系用) と Carothers DPn (ステップ成長用) は vinyl 系では非適用。
+- [ ] S6: hardware for full 200+10 (>=24 GB GPU) or stay at 100+5. See specs/s6-environment-setup.md.

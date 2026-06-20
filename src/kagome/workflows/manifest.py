@@ -11,6 +11,12 @@ from typing import Any
 
 @dataclass
 class RunManifest:
+    """実験のプロベナンスを記録するマニフェスト。
+
+    CLAUDE.md 非交渉要件: seed, config_path, git_sha, backend, output_dir を
+    すべての実験で記録する。save() で JSON にシリアライズ。
+    """
+
     config_path: str
     seed: int
     backend: str
