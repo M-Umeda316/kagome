@@ -26,12 +26,14 @@ def dpn_from_bonds(
 ) -> float:
     """Compute DPn from bond count and initial functional group count.
 
-    For equimolar A-A + B-B step-growth (e.g., nylon-6,6):
+    Equimolar A-A + B-B step-growth only (e.g., nylon-6,6, N_A = N_B):
       p = n_bonds / (n_functional_groups / 2)
       DPn = 1 / (1 - p)
 
-    n_functional_groups: total reactive sites (e.g., 2*n_diamines*2 for NH2 ends,
-    but only one type limits; for equimolar, N_A = N_B = n_functional_groups / 2).
+    Stoichiometric imbalance (r != 1) and monofunctional end-capping are NOT
+    modeled here. ``n_functional_groups`` is the total number of reactive end
+    groups (A + B); for equimolar systems each type contributes
+    ``n_functional_groups / 2``.
     """
     if n_functional_groups <= 0:
         return 1.0

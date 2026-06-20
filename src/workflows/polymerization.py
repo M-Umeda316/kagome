@@ -44,6 +44,19 @@ ATOMIC_MASSES: dict[str, float] = {
 }
 
 
+def _pair_distance(
+    positions: NDArray[np.floating],
+    idx_a: int,
+    idx_b: int,
+    cell: NDArray[np.floating] | None,
+) -> float:
+    """Minimum-image distance (Å) between two atoms. Single source for the
+    several diagnostic distance recomputations in this module (RF24)."""
+    return float(np.linalg.norm(
+        minimum_image(positions[idx_b] - positions[idx_a], cell)
+    ))
+
+
 @dataclass
 class SimulationState:
     positions: NDArray[np.floating]
@@ -532,8 +545,7 @@ class PolymerizationWorkflow:
             last_bias_energy = bias_energy
 
             for _p in form_pairs:
-                _r = float(np.linalg.norm(minimum_image(
-                    state.positions[_p.idx_b] - state.positions[_p.idx_a], state.cell)))
+                _r = _pair_distance(state.positions, _p.idx_a, _p.idx_b, state.cell)
                 if _r < min_form_dist:
                     min_form_dist = _r
 
@@ -659,8 +671,7 @@ class PolymerizationWorkflow:
             len(candidates), len(selected), len(pairs),
         )
         for i, p in enumerate(pairs):
-            r = float(np.linalg.norm(minimum_image(
-                state.positions[p.idx_b] - state.positions[p.idx_a], state.cell)))
+            r = _pair_distance(state.positions, p.idx_a, p.idx_b, state.cell)
             logger.info('  V^d pair %d: atoms (%d, %d) r=%.2f A', i, p.idx_a, p.idx_b, r)
 
         boost = BoostState()
@@ -699,8 +710,7 @@ class PolymerizationWorkflow:
             )
 
             for p in pairs:
-                r = float(np.linalg.norm(minimum_image(
-                    state.positions[p.idx_b] - state.positions[p.idx_a], state.cell)))
+                r = _pair_distance(state.positions, p.idx_a, p.idx_b, state.cell)
                 if (step_in_phase + 1) % 500 == 0 or step_in_phase == 0:
                     logger.info(
                         'Activation step %d: (%d,%d) r=%.3f A, f1_d=%.1f, bias_E=%.1f',

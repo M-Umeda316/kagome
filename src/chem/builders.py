@@ -10,6 +10,13 @@ def box_from_density(
 ) -> float:
     """Cubic box edge length (Å) for given molecule counts at a target density.
 
+    ``counts`` is keyed by SMILES; because it is a dict, two entries with the
+    same SMILES string are necessarily the same key and their counts collapse
+    into one. This is intended — identical SMILES denote the same molecule, so
+    the molar mass contribution is summed via the ``* n`` count. Callers that
+    need to distinguish chemically identical but separately-tracked species must
+    aggregate the count before calling (a single key with the total ``n``).
+
     Paper anchor: Supporting Information S-3..S-4 — vinyl and nylon initial
     configurations are generated at 0.5 g/mL. The formation bias is governed by
     near-contact events (PDF p.7, S-7), so reproducing the paper density is a
