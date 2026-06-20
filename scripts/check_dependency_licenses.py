@@ -97,7 +97,7 @@ def _import_names_for(package: str) -> list[str]:
 
 
 # Top-level packages that are not third-party dependencies (stdlib + this repo).
-_SELF_PACKAGES = {'src', 'scripts', 'tests', 'pfpoly'}
+_SELF_PACKAGES = {'src', 'scripts', 'tests', 'kagome'}
 
 
 def check(approved_path: Path, src_dirs: list[Path]) -> int:

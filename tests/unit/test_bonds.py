@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from src.boost.tdbb import PairBias
-from src.reactive.bonds import BondTracker, is_dissociated, is_formed
+from kagome.boost.tdbb import PairBias
+from kagome.reactive.bonds import BondTracker, is_dissociated, is_formed
 
 
 class TestIsDissociated:

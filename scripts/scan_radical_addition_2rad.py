@@ -176,7 +176,7 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.backend == 'orb':
-        from src.backends.orb_backend import create_orb_calculator
+        from kagome.backends.orb_backend import create_orb_calculator
 
     print('=== S3 PES validation: high-spin approximation ===')
     print('System: 2 x CH3 radical + C2H4')
@@ -188,7 +188,7 @@ def main() -> None:
         calc_s3 = create_orb_calculator(device=args.device, spin=3)
         calc_1rad = create_orb_calculator(device=args.device, spin=2)
     else:
-        from src.backends.mace_backend import create_mace_calculator
+        from kagome.backends.mace_backend import create_mace_calculator
         calc_s1 = create_mace_calculator(device=args.device)
         calc_s3 = calc_s1
         calc_1rad = calc_s1

@@ -4,18 +4,18 @@ import json
 import numpy as np
 import pytest
 
-from src.backends.toy import ToyCalculator
-from src.boost.tdbb import PairBias, TDBBParams
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.io.readers import read_trajectory
-from src.reactive.bonds import BondEvent, BondTracker
-from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
-from src.reactive.selection import (
+from kagome.backends.toy import ToyCalculator
+from kagome.boost.tdbb import PairBias, TDBBParams
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.io.readers import read_trajectory
+from kagome.reactive.bonds import BondEvent, BondTracker
+from kagome.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
+from kagome.reactive.selection import (
     find_candidates,
     score_candidates,
     select_non_overlapping,
 )
-from src.workflows.polymerization import (
+from kagome.workflows.polymerization import (
     DefaultPostCycleUpdater,
     PolymerizationConfig,
     PolymerizationWorkflow,
@@ -742,7 +742,7 @@ class TestNylonMixedBias:
 
     def test_bias_forces_have_correct_direction(self):
         """Formation pairs attract (toward r0), dissociation pairs repel."""
-        from src.boost.tdbb import BoostState, TDBBParams, total_bias
+        from kagome.boost.tdbb import BoostState, TDBBParams, total_bias
 
         template, groups, positions = self._make_nylon_setup()
         config = PolymerizationConfig(
@@ -770,7 +770,7 @@ class TestIntegratorTemperature:
 
     def test_langevin_returns_target_temperature(self):
         """Langevin integrator: returns thermostat target temperature."""
-        from src.workflows.polymerization import _integrator_temperature
+        from kagome.workflows.polymerization import _integrator_temperature
         langevin = LangevinIntegrator(LangevinParams(temperature_K=500.0))
         state = SimulationState(
             positions=np.array([[0.0, 0.0, 0.0]]),
@@ -782,8 +782,8 @@ class TestIntegratorTemperature:
 
     def test_verlet_returns_kinetic_temperature(self):
         """Verlet integrator: returns instantaneous kinetic temperature, not 300 K."""
-        from src.integrators.verlet import VelocityVerletIntegrator
-        from src.workflows.polymerization import _integrator_temperature
+        from kagome.integrators.verlet import VelocityVerletIntegrator
+        from kagome.workflows.polymerization import _integrator_temperature
         verlet = VelocityVerletIntegrator()
         state = SimulationState(
             positions=np.array([[0.0, 0.0, 0.0]]),
@@ -797,8 +797,8 @@ class TestIntegratorTemperature:
 
     def test_verlet_zero_velocity_gives_zero_temperature(self):
         """Verlet with zero velocities gives T=0, not the old 300 K fallback."""
-        from src.integrators.verlet import VelocityVerletIntegrator
-        from src.workflows.polymerization import _integrator_temperature
+        from kagome.integrators.verlet import VelocityVerletIntegrator
+        from kagome.workflows.polymerization import _integrator_temperature
         verlet = VelocityVerletIntegrator()
         state = SimulationState(
             positions=np.array([[0.0, 0.0, 0.0]]),

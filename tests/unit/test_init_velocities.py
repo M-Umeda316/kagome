@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from src.integrators.init_velocities import instant_temperature_K, maxwell_boltzmann_velocities
-from src.units import FORCE_CONV, KB
+from kagome.integrators.init_velocities import instant_temperature_K, maxwell_boltzmann_velocities
+from kagome.units import FORCE_CONV, KB
 
 
 class TestMaxwellBoltzmannVelocities:

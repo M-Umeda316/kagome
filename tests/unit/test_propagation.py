@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.backends.toy import ToyCalculator
-from src.reactive.bonds import BondEvent, BondTracker
-from src.reactive.groups import PairSpec, ReactionTemplate, ReactiveGroup
-from src.workflows.polymerization import (
+from kagome.backends.toy import ToyCalculator
+from kagome.reactive.bonds import BondEvent, BondTracker
+from kagome.reactive.groups import PairSpec, ReactionTemplate, ReactiveGroup
+from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,

@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import pytest
 
-from src.backends.toy import ToyCalculator
+from kagome.backends.toy import ToyCalculator
 
 
 class TestToyCalculator:
@@ -44,14 +44,14 @@ class TestSpinAndPeriodicGuards:
 
     def test_orb_supports_spin_true(self):
         pytest.importorskip('ase')
-        from src.backends.orb_backend import OrbCalculatorAdapter
+        from kagome.backends.orb_backend import OrbCalculatorAdapter
         adapter = OrbCalculatorAdapter(model=object(), atoms_adapter=object())
         assert adapter.supports_spin is True
 
     def test_orb_periodic_guard_raises_without_nvalchemiops(self, monkeypatch):
         pytest.importorskip('ase')
         import importlib.util
-        from src.backends.orb_backend import OrbCalculatorAdapter
+        from kagome.backends.orb_backend import OrbCalculatorAdapter
 
         adapter = OrbCalculatorAdapter(model=object(), atoms_adapter=object())
         real = importlib.util.find_spec
@@ -73,7 +73,7 @@ class TestASEAdapter:
     @pytest.mark.usefixtures('_skip_no_ase')
     def test_adapter_with_lj(self):
         from ase.calculators.lj import LennardJones
-        from src.backends.ase_adapter import ASECalculatorAdapter
+        from kagome.backends.ase_adapter import ASECalculatorAdapter
 
         calc = ASECalculatorAdapter(LennardJones(), name='ase-lj')
         positions = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -93,7 +93,7 @@ class TestMACEBackend:
     @pytest.mark.usefixtures('_skip_no_mace')
     @pytest.mark.slow
     def test_mace_compute(self):
-        from src.backends.mace_backend import create_mace_calculator
+        from kagome.backends.mace_backend import create_mace_calculator
 
         calc = create_mace_calculator(model='small', device='cpu')
         positions = np.array([
@@ -118,7 +118,7 @@ class TestOrbBackend:
     @pytest.mark.usefixtures('_skip_no_orb')
     @pytest.mark.slow
     def test_orb_compute(self):
-        from src.backends.orb_backend import create_orb_calculator
+        from kagome.backends.orb_backend import create_orb_calculator
 
         calc = create_orb_calculator(device='cpu')
         positions = np.array([

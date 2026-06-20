@@ -11,11 +11,11 @@ from pathlib import Path
 
 import numpy as np
 
-from src.backends.toy import ToyCalculator
-from src.boost.tdbb import TDBBParams
-from src.reactive.bonds import BondTracker
-from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
-from src.workflows.polymerization import (
+from kagome.backends.toy import ToyCalculator
+from kagome.boost.tdbb import TDBBParams
+from kagome.reactive.bonds import BondTracker
+from kagome.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
+from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,

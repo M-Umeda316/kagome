@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
-from src.reactive.selection import (
+from kagome.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
+from kagome.reactive.selection import (
     Candidate,
     audited_selection,
     find_candidates,

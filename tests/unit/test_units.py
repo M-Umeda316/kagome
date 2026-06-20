@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.units import (
+from kagome.units import (
     ATM_TO_KCAL_MOL_A3,
     EV_TO_KCAL_MOL,
     FORCE_CONV,

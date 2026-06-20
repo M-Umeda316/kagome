@@ -214,7 +214,7 @@ CLAUDE.md 商用ガードレール「New dependencies require an explicit licens
 
 ## Steps
 1. `check_dependency_licenses.py` に**許可リスト検査**を追加:
-   import スキャン結果のうち、標準ライブラリ・自前 package（`src`/`scripts`/`pfpoly`）・既知の安全集合を除いた
+   import スキャン結果のうち、標準ライブラリ・自前 package（`src`/`scripts`/`kagome`）・既知の安全集合を除いた
    トップレベル module が registry の `approved` に無ければ列挙して exit 1。
    既存のブロックリスト検査は temporso維持（多層防御）。誤検知を避けるため除外集合は明示的に定義。
 2. `specs/approved_dependencies.yaml` と `specs/dependency-license-matrix.md` に

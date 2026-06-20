@@ -20,12 +20,12 @@ try:
 except ImportError:
     raise ImportError(
         'matplotlib is required for figure generation. '
-        'Install with: pip install pfpoly[plot]'
+        'Install with: pip install kagome[plot]'
     )
 
-from src.analysis.conversion import conversion_timeseries, fit_conversion_exponential
-from src.analysis.density import reaction_density_profile
-from src.io.readers import read_bond_events, read_trajectory
+from kagome.analysis.conversion import conversion_timeseries, fit_conversion_exponential
+from kagome.analysis.density import reaction_density_profile
+from kagome.io.readers import read_bond_events, read_trajectory
 
 
 def plot_energy_vs_step(

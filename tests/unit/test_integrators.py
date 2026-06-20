@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-from src.integrators.verlet import VelocityVerletIntegrator
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.units import FORCE_CONV, KB
+from kagome.integrators.verlet import VelocityVerletIntegrator
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.units import FORCE_CONV, KB
 
 
 class TestWrapPositions:

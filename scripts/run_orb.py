@@ -18,12 +18,12 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 import numpy as np
 
 from scripts._systems import build_ethylene_box, build_template_and_groups
-from src.backends.orb_backend import create_orb_calculator
-from src.boost.tdbb import TDBBParams
-from src.integrators.init_velocities import maxwell_boltzmann_velocities
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.reactive.bonds import BondTracker
-from src.workflows.polymerization import (
+from kagome.backends.orb_backend import create_orb_calculator
+from kagome.boost.tdbb import TDBBParams
+from kagome.integrators.init_velocities import maxwell_boltzmann_velocities
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.reactive.bonds import BondTracker
+from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,

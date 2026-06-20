@@ -34,11 +34,11 @@ import numpy as np
 
 from scripts._systems import build_vinyl_aibn_system
 from scripts.scan_radical_addition import _rotation_align, _unit
-from src.boost.tdbb import TDBBParams
-from src.integrators.init_velocities import maxwell_boltzmann_velocities
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.reactive.bonds import BondTracker
-from src.workflows.polymerization import (
+from kagome.boost.tdbb import TDBBParams
+from kagome.integrators.init_velocities import maxwell_boltzmann_velocities
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.reactive.bonds import BondTracker
+from kagome.workflows.polymerization import (
     PolymerizationConfig, PolymerizationWorkflow, SimulationState, masses_from_species,
 )
 
@@ -112,7 +112,7 @@ def main() -> None:
         al = next(a for a in groups['vinyl_alpha_C'].atom_indices if a in atoms)
         mono_atoms_by_alpha[al] = atoms
 
-    from src.backends.orb_backend import create_orb_calculator
+    from kagome.backends.orb_backend import create_orb_calculator
     calc = create_orb_calculator(device=args.device, spin=2)  # single chain -> doublet
 
     masses = masses_from_species(sp)
@@ -168,7 +168,7 @@ def main() -> None:
 
     # Provenance (RF17): this demo drives wf.run() per segment without output_dir,
     # so emit a manifest here so the run is traceable to seed/backend/weights/config.
-    from src.workflows.manifest import RunManifest, _normalize_value
+    from kagome.workflows.manifest import RunManifest, _normalize_value
     manifest_extra = _normalize_value(asdict(cfg))
     manifest_extra.update(
         backend=calc.name,

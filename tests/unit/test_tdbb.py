@@ -5,7 +5,7 @@ Validates against paper equations 2-5, 8.
 import numpy as np
 import pytest
 
-from src.boost.tdbb import (
+from kagome.boost.tdbb import (
     BoostState,
     PairBias,
     TDBBParams,

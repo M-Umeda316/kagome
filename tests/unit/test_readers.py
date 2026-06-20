@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.io.readers import read_bond_events
+from kagome.io.readers import read_bond_events
 
 
 class TestReadBondEvents:
@@ -53,8 +53,8 @@ class TestReadBondEvents:
 
     def test_roundtrip_with_bond_tracker(self, tmp_path):
         import numpy as np
-        from src.boost.tdbb import PairBias
-        from src.reactive.bonds import BondTracker
+        from kagome.boost.tdbb import PairBias
+        from kagome.reactive.bonds import BondTracker
 
         tracker = BondTracker(threshold_fraction=1.3)
         pairs = [PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0)]

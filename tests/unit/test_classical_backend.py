@@ -12,8 +12,8 @@ pytest.importorskip('openmm')
 pytest.importorskip('openff.toolkit')
 
 from scripts._systems import _INITIATOR_SMILES, _MONOMER_SMILES, build_vinyl_aibn_system
-from src.backends.classical_backend import create_classical_calculator
-from src.prep.openmm_equilibrate import MoleculeSpec
+from kagome.backends.classical_backend import create_classical_calculator
+from kagome.prep.openmm_equilibrate import MoleculeSpec
 
 
 def _tiny_system():
@@ -44,7 +44,7 @@ def test_compute_returns_finite_energy_and_forces() -> None:
 
 
 def test_compress_box_shrinks_with_classical_calculator() -> None:
-    from src.integrators.minimize import FireParams, compress_box
+    from kagome.integrators.minimize import FireParams, compress_box
 
     positions, species, cell, specs = _tiny_system()
     calc = create_classical_calculator(specs, platform='CPU')

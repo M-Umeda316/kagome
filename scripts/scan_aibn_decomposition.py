@@ -14,7 +14,7 @@ The PES crossing point and barrier height determine whether V^d
 Paper anchor: Table S1 — Activation row uses V^d on the C-N azo bond.
 
 Usage:
-    conda run -n pfpoly-gpu python scripts/scan_aibn_decomposition.py --device cuda
+    conda run -n kagome-gpu python scripts/scan_aibn_decomposition.py --device cuda
 """
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def main() -> None:
 
     r_list = [round(r, 2) for r in np.arange(1.4, 3.6, 0.2)]
 
-    from src.backends.orb_backend import create_orb_calculator
+    from kagome.backends.orb_backend import create_orb_calculator
 
     # Spin=1 (singlet, intact AIBN)
     calc_s1 = create_orb_calculator(device=args.device, spin=1)

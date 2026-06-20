@@ -33,13 +33,13 @@ from scripts._systems import (
     box_from_density,
     build_nylon66_system,
 )
-from src.backends.base import Calculator
-from src.boost.tdbb import TDBBParams
-from src.integrators.init_velocities import maxwell_boltzmann_velocities
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.integrators.mc_barostat import MCBarostat, MCBarostatParams
-from src.reactive.bonds import BondTracker
-from src.workflows.polymerization import (
+from kagome.backends.base import Calculator
+from kagome.boost.tdbb import TDBBParams
+from kagome.integrators.init_velocities import maxwell_boltzmann_velocities
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.integrators.mc_barostat import MCBarostat, MCBarostatParams
+from kagome.reactive.bonds import BondTracker
+from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
@@ -52,10 +52,10 @@ logger = logging.getLogger(__name__)
 
 def _create_backend(backend: str, device: str, model: str) -> Calculator:
     if backend == 'orb':
-        from src.backends.orb_backend import create_orb_calculator
+        from kagome.backends.orb_backend import create_orb_calculator
         return create_orb_calculator(device=device)
     else:
-        from src.backends.mace_backend import create_mace_calculator
+        from kagome.backends.mace_backend import create_mace_calculator
         return create_mace_calculator(model=model, device=device)
 
 
@@ -159,9 +159,9 @@ def main() -> None:
                 raise RuntimeError(
                     'Could not place nylon even at dilute density 0.10 g/mL.'
                 )
-            from src.backends.classical_backend import make_compress_calculator
-            from src.integrators.minimize import compress_box
-            from src.prep.openmm_equilibrate import MoleculeSpec
+            from kagome.backends.classical_backend import make_compress_calculator
+            from kagome.integrators.minimize import compress_box
+            from kagome.prep.openmm_equilibrate import MoleculeSpec
             # Placement order in build_nylon66_system: diamines first (seed),
             # then diacids (seed+1). MoleculeSpec order/seeds must match (RF23).
             specs = [

@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 
 from scripts._systems import _MONOMER_SMILES, _rdkit_3d, _rdkit_mol
-from src.prep.openmm_equilibrate import ClassicalPrepConfig, MoleculeSpec
-from src.prep.structure_io import PreparedStructure
-from src.units import (
+from kagome.prep.openmm_equilibrate import ClassicalPrepConfig, MoleculeSpec
+from kagome.prep.structure_io import PreparedStructure
+from kagome.units import (
     ANGSTROM_PER_NM,
     KCAL_PER_KJ,
     KJ_PER_KCAL,

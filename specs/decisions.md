@@ -159,7 +159,7 @@ Use this template for each decision.
 - Context: Integrators were computing accel = F/m without unit conversion. Forces are in kcal/(mol·Å), masses in amu, time in fs. The missing factor (≈4.184e-4) caused ~2390× overestimation of force-driven acceleration, making dynamics non-physical when combining force-driven and thermostat-driven motion.
 - Paper anchor: Section 2 — MD simulations with timestep 0.25 fs, physical masses, NVT ensemble.
 - Decision: Introduce `src/units.py` with FORCE_CONV = 4.184e-4 [Å/fs² per kcal/(mol·Å·amu)]. All integrators multiply F/m by FORCE_CONV. Langevin c2 thermal noise scale includes FORCE_CONV. Kinetic energy conversion: KE[kcal/mol] = 0.5·m·v² / FORCE_CONV.
-- Alternatives considered: (a) Convert forces to eV/Å at the backend boundary — rejected, pfpoly's internal unit is kcal/mol. (b) Dimensionless reduced units — rejected, real-unit MD required for paper reproduction.
+- Alternatives considered: (a) Convert forces to eV/Å at the backend boundary — rejected, kagome's internal unit is kcal/mol. (b) Dimensionless reduced units — rejected, real-unit MD required for paper reproduction.
 - Scientific risk: None — this is a bug fix, not an approximation. Previous MACE E2E runs produced non-physical trajectories and must be re-run.
 - Licensing/commercial impact: None.
 - Follow-up: None.
@@ -878,10 +878,10 @@ Use this template for each decision.
 - Licensing/commercial impact: None.
 
 ## 2026-06-19: RF11 — パッケージング構造の整理（最小対応: 逆方向依存解消 + packages.find 制限）
-- Context: 配布名 `pfpoly` (pyproject.toml) と import 名 `src.*` が不一致。`src/prep/openmm_equilibrate.py` が `from scripts._systems import _rdkit_mol, box_from_density` でライブラリ層→スクリプト層の逆方向依存。`pyproject.toml` の `packages.find where=["."]` が `scripts`/`tests` もパッケージ化。egg-info がルートと `src/` に重複。
+- Context: 配布名 `kagome` (pyproject.toml) と import 名 `src.*` が不一致。`src/prep/openmm_equilibrate.py` が `from scripts._systems import _rdkit_mol, box_from_density` でライブラリ層→スクリプト層の逆方向依存。`pyproject.toml` の `packages.find where=["."]` が `scripts`/`tests` もパッケージ化。egg-info がルートと `src/` に重複。
 - Paper anchor: N/A（実装/配布の健全性）。
 - Decision: (1) `_rdkit_mol` と `box_from_density` を `src/chem/builders.py`（新設）に移動。`scripts/_systems.py` は re-export で後方互換を維持。`src/prep/openmm_equilibrate.py` は `src.chem.builders` から import するよう修正し逆方向依存を解消。(2) `pyproject.toml` に `include = ["src*"]` を追加し、`scripts`/`tests` のパッケージ化を防止。(3) `src/` 配下の重複 egg-info を削除（.gitignore 済みのためローカルのみ）。(4) `src/` → `pfpoly/` リネーム（フル import 名統一）は影響範囲が広いため別タスク・別 PR とする。
-- Alternatives considered: (a) `src/` を `pfpoly/` にリネームし全 import を統一 — 理想的だが `from src.` が全コード/テストに散在しており変更面積が大きい。別 PR で段階的に実施すべき。(b) 現状維持 — 逆方向依存が残る。
+- Alternatives considered: (a) `src/` を `kagome/` にリネームし全 import を統一 — 理想的だが `from src.` が全コード/テストに散在しており変更面積が大きい。別 PR で段階的に実施すべき。(b) 現状維持 — 逆方向依存が残る。
 - Scientific risk: なし。コード移動のみ、関数の実装は不変。
 - Licensing/commercial impact: None.
 
@@ -955,7 +955,7 @@ Use this template for each decision.
 ## 2026-06-20: WSL 単一env で古典FFを Calculator 化し compress の既定バックエンドにする
 - Context: 論文密度(0.5 g/mL)への高密度化は ML(OrbMol-v2)でも古典FFでも可能だが、ML 圧縮は 20段×200 FIRE = 数千回の forward+backward で GPU 時間を大きく消費する。D-4（2026-06-14）では古典prep を別env(pfpoly-prep)に分離していたが、その理由（openff-nagl が第2の PyTorch を引き込み production torch と衝突）は Windows 固有だった。`environment_wsl.yml` を確認したところ、WSL の pfpoly-gpu は **OpenFF(toolkit 0.18.1/interchange/Sage 2026.01/nagl)+OpenMM 8.5.2 と OrbMol-v2 を同一env で共存**させており、衝突は解消済み。ユーザ要望は「前処理を別コマンドにせず、一貫した単一経路のまま古典FFを圧縮の標準にする」。
 - Paper anchor: SI S-3 の初期密度 0.5 g/mL（compress の目標）。compress_box docstring「非物理的な準備デバイスで後段の biased/unbiased 動力学をバイアスしない」。古典prep の既存実装 src/prep/openmm_equilibrate.py（D-3「simple」プロトコル: minimize→compress→NVT）。
-- Decision: (1) 古典FF（OpenMM+OpenFF Sage+Gasteiger 電荷）を pfpoly の `Calculator` インターフェース（compute(positions, species, cell)→(E[kcal/mol], F[kcal/mol/Å])）として実装する新バックエンド `src/backends/classical_backend.py` を追加。古典FFは結合情報が必須のため、Calculator は `molecule_specs`（topology）で構築する topology-aware 設計とし、`compute` は座標と周期箱(cell)のみ更新して OpenMM Context から E/F を取得。これにより既存の `compress_box` をそのまま再利用できる。(2) 実行スクリプト（run_vinyl_aibn.py / run_nylon66.py / scripts/profile_vram.py）に `--compress-backend {classical,ml}` を追加し**既定を classical** にする。MD 本体は従来どおり OrbMol-v2。(3) D-4 の env 分離は Windows 固有の制約であり、WSL 単一env では古典prep を in-process 実行してよい、と D-4 のスコープを更新する（pfpoly-prep 別env 経路は Windows 用フォールバックとして温存）。
+- Decision: (1) 古典FF（OpenMM+OpenFF Sage+Gasteiger 電荷）を kagome の `Calculator` インターフェース（compute(positions, species, cell)→(E[kcal/mol], F[kcal/mol/Å])）として実装する新バックエンド `src/backends/classical_backend.py` を追加。古典FFは結合情報が必須のため、Calculator は `molecule_specs`（topology）で構築する topology-aware 設計とし、`compute` は座標と周期箱(cell)のみ更新して OpenMM Context から E/F を取得。これにより既存の `compress_box` をそのまま再利用できる。(2) 実行スクリプト（run_vinyl_aibn.py / run_nylon66.py / scripts/profile_vram.py）に `--compress-backend {classical,ml}` を追加し**既定を classical** にする。MD 本体は従来どおり OrbMol-v2。(3) D-4 の env 分離は Windows 固有の制約であり、WSL 単一env では古典prep を in-process 実行してよい、と D-4 のスコープを更新する（pfpoly-prep 別env 経路は Windows 用フォールバックとして温存）。
 - Alternatives considered: (a) 既存 equilibrate_structure をインライン呼び出し — テスト済みコード再利用で最小リスクだが、compress_box とは別経路になり ML/classical で圧縮ロジックが二重化。Calculator 化なら compress_box に一本化でき将来の一貫性が高いと判断（ユーザ選択）。(b) soft-sphere/WCA パッカー — 依存ゼロ・最速だが「真の古典FF」でなく、ユーザ要望（古典FFを標準）に合わない。(c) ML 圧縮のまま — GPU 時間が大きく、古典で十分な準備工程に MLIP を浪費。
 - Scientific risk: 低〜中。compress は準備デバイスで後段動力学をバイアスしないため、古典FFでも ML でも最終構造は後段の ML 再平衡で上書きされる（D-2/D-4）。リスクはエンジニアリング面（OpenMM の PME カットオフ < 箱半長 の制約: 目標箱 ~18–20Å に対し Sage 既定 0.9nm カットオフが境界。既存 equilibrate_structure も同目標へ圧縮できているため precedent あり）。原子順序不変条件（topology が builder と同順）は `_build_openff_topology` の検証で担保。
 - Licensing/commercial impact: なし。OpenMM(MIT core / LGPL GPU, import-only)・OpenFF stack(MIT)・Sage(CC-BY-4.0, 帰属要)・RDKit Gasteiger(BSD) はいずれも承認済み（approved_dependencies.yaml）。新規依存の追加なし。

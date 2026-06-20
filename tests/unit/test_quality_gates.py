@@ -108,7 +108,7 @@ def test_license_check_allows_stdlib_and_self_packages(tmp_path):
     src_dir.mkdir()
     (src_dir / 'mod.py').write_text(
         'import os\nimport sys\nfrom pathlib import Path\n'
-        'import numpy\nfrom src.boost import tdbb\n',
+        'import numpy\nfrom kagome.boost import tdbb\n',
         encoding='utf-8',
     )
     assert check_licenses(yaml_file, [src_dir]) == 0

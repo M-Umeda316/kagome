@@ -4,8 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from src.integrators.mc_barostat import MCBarostat, MCBarostatParams
-from src.units import ATM_TO_KCAL_MOL_A3, KB
+from kagome.integrators.mc_barostat import MCBarostat, MCBarostatParams
+from kagome.units import ATM_TO_KCAL_MOL_A3, KB
 
 
 class _FixedRng:

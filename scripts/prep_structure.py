@@ -8,9 +8,9 @@ reuse the same equilibrated structure across many production seeds/parameters:
 it writes a PreparedStructure JSON that ``--load-structure`` consumes, and it
 adds a classical NVT thermalization the inline compress path does not.
 
-Environment: on WSL/Linux the production env (``pfpoly-gpu``) already contains
+Environment: on WSL/Linux the production env (``kagome-gpu``) already contains
 both the OpenFF/OpenMM classical stack and OrbMol-v2, so run this script there
-directly — no separate env is needed. The dedicated ``pfpoly-prep`` env is a
+directly — no separate env is needed. The dedicated ``kagome-prep`` env is a
 Windows-only fallback (on Windows openff-nagl pulls a second PyTorch that
 collides with the production torch). See specs/decisions.md 2026-06-14
 "Decouple initial-structure preparation" (D-4) and its 2026-06-20 WSL addendum.
@@ -25,7 +25,7 @@ Usage (from the repo root):
         --output runs/prep/paper200_structure.json
 
     # Windows fallback (separate classical env):
-    conda run -n pfpoly-prep python scripts/prep_structure.py ...
+    conda run -n kagome-prep python scripts/prep_structure.py ...
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ from scripts._systems import (
     box_from_density,
     build_vinyl_aibn_system,
 )
-from src.prep.openmm_equilibrate import (
+from kagome.prep.openmm_equilibrate import (
     ClassicalPrepConfig,
     MoleculeSpec,
     equilibrate_structure,

@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from src.analysis.density import reaction_density_profile
-from src.reactive.bonds import BondEvent
+from kagome.analysis.density import reaction_density_profile
+from kagome.reactive.bonds import BondEvent
 
 
 class TestReactionDensityProfile:

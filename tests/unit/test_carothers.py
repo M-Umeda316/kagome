@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import pytest
 
-from src.analysis.carothers import dpn_carothers, dpn_from_bonds
+from kagome.analysis.carothers import dpn_carothers, dpn_from_bonds
 
 
 class TestDpnCarothers:

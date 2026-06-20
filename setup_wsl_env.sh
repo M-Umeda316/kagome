@@ -57,8 +57,8 @@ pip install \
 echo "=== 開発ツールをインストール中 ==="
 pip install pytest
 
-# ── pfpoly 本体を editable install ────────────────────────────────────────
-echo "=== pfpoly を editable install 中 ==="
+# ── kagome 本体を editable install ────────────────────────────────────────
+echo "=== kagome を editable install 中 ==="
 PFPOLY_DIR="/mnt/c/Users/shanu/Documents/Python/pfpoly"
 pip install -e "$PFPOLY_DIR"
 

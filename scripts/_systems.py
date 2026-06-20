@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
+from kagome.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
 
 # ── SMILES constants ─────────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ _INITIATOR_SMILES = 'CC(C)C#N'   # isobutyronitrile (closed-shell IBN radical mo
 _DIAMINE_SMILES = 'NCCCCCCN'     # hexamethylenediamine
 _DIACID_SMILES = 'OC(=O)CCCCC(=O)O'  # adipic acid
 
-from src.chem.builders import box_from_density, _rdkit_mol  # noqa: F401 — re-export
+from kagome.chem.builders import box_from_density, _rdkit_mol  # noqa: F401 — re-export
 
 
 def build_ethylene_box(

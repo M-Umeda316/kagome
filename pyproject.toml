@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pfpoly"
+name = "kagome"
 version = "0.1.0"
-description = "Commercial-safe starter for reproducing TDBB-based polymerization workflows"
+description = "KAGOME: Kinetic Accelerated Growth Orchestrated by Molecular Engine"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -35,11 +35,11 @@ rdkit = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
+include = ["kagome*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

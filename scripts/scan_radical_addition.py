@@ -126,10 +126,10 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.backend == 'orb':
-        from src.backends.orb_backend import create_orb_calculator
+        from kagome.backends.orb_backend import create_orb_calculator
         calc = create_orb_calculator(device=args.device, spin=args.spin)
     else:
-        from src.backends.mace_backend import create_mace_calculator
+        from kagome.backends.mace_backend import create_mace_calculator
         calc = create_mace_calculator(device=args.device)
 
     (rp, rsp, rc, lobe), (ep, esp, c0, normal) = _build_fragments()

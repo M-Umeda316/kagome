@@ -1,24 +1,53 @@
-# Polymerization Reproduction Starter
+# KAGOME
 
-This repository is a Claude Code starter for reproducing a polymerization/crosslinking workflow based on a time-dependent bond boosting method with commercial-use guardrails.
+**Kinetic Accelerated Growth Orchestrated by Molecular Engine**
 
-## Purpose
-- Reproduce the paper's TDBB-centered workflow
-- Keep the MLIP backend swappable
-- Avoid default reliance on license-unclear model providers
-- Make every result traceable to config, code, and seed
+A reproducible, commercial-safe implementation of time-dependent bond boosting (TDBB) for polymerization and curing simulations with machine-learning interatomic potentials.
 
-## Suggested first steps
-1. Fill `paper/claims.yaml` from the paper PDF.
-2. Confirm commercial status of candidate backends in `specs/dependency-license-matrix.md`.
-3. Implement `src/boost/tdbb.py` first.
-4. Add candidate selection logic in `src/reactive/selection.py`.
-5. Wire a toy backend for integration testing.
-6. Add OpenMM integration once interfaces stabilize.
+## Features
+- TDBB workflow faithful to the original paper
+- Swappable MLIP backends (OrbMol-v2, MACE-MP-0, ASE adapters, classical FF)
+- Deterministic seeds and full run manifests for reproducibility
+- Commercial-use guardrails with explicit dependency license tracking
 
-## Minimal commands
+## Installation
+
 ```bash
-python scripts/validate_configs.py
-python scripts/check_dependency_licenses.py --approved specs/approved_dependencies.yaml
-pytest -q tests/unit
+pip install -e ".[dev]"
 ```
+
+## Quick start
+
+```bash
+# Smoke test with toy backend
+python scripts/run_smoke.py
+
+# Unit tests
+pytest -q tests/unit
+
+# License check
+python scripts/check_dependency_licenses.py --approved specs/approved_dependencies.yaml
+```
+
+## Project structure
+
+```
+src/kagome/
+  boost/          # Time-dependent bond boosting (TDBB)
+  reactive/       # Reactive group definitions and candidate selection
+  workflows/      # Polymerization and curing loops
+  backends/       # MLIP/calculator adapters
+  integrators/    # Velocity Verlet, Langevin, MC barostat, FIRE minimizer
+  analysis/       # Conversion, density profiles, Carothers analysis
+  chem/           # Molecule builders (RDKit)
+  io/             # Trajectory I/O
+  prep/           # Classical structure preparation (OpenMM/OpenFF)
+scripts/          # Entry points, scans, figure generation
+configs/          # Experiment configurations
+specs/            # Requirements, decisions, dependency licenses
+paper/            # Structured notes from the source paper
+```
+
+## License
+
+See `specs/dependency-license-matrix.md` for third-party dependency status.

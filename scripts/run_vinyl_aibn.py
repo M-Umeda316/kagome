@@ -32,13 +32,13 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import numpy as np
 
 from scripts._systems import build_vinyl_aibn_system, build_full_aibn_system, build_activation_template
-from src.backends.base import Calculator
-from src.boost.tdbb import TDBBParams
-from src.integrators.init_velocities import maxwell_boltzmann_velocities
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.integrators.mc_barostat import MCBarostat, MCBarostatParams
-from src.reactive.bonds import BondTracker
-from src.workflows.polymerization import (
+from kagome.backends.base import Calculator
+from kagome.boost.tdbb import TDBBParams
+from kagome.integrators.init_velocities import maxwell_boltzmann_velocities
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.integrators.mc_barostat import MCBarostat, MCBarostatParams
+from kagome.reactive.bonds import BondTracker
+from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
@@ -51,10 +51,10 @@ logger = logging.getLogger(__name__)
 
 def _create_backend(backend: str, device: str, model: str, spin: int = 1) -> Calculator:
     if backend == 'orb':
-        from src.backends.orb_backend import create_orb_calculator
+        from kagome.backends.orb_backend import create_orb_calculator
         return create_orb_calculator(device=device, spin=spin)
     else:
-        from src.backends.mace_backend import create_mace_calculator
+        from kagome.backends.mace_backend import create_mace_calculator
         return create_mace_calculator(model=model, device=device)
 
 
@@ -227,9 +227,9 @@ def main() -> None:
                     continue
             if place_edge is None:
                 raise RuntimeError('Could not place the system even at dilute density 0.10 g/mL.')
-            from src.integrators.minimize import compress_box
-            from src.backends.classical_backend import make_compress_calculator
-            from src.prep.openmm_equilibrate import MoleculeSpec
+            from kagome.integrators.minimize import compress_box
+            from kagome.backends.classical_backend import make_compress_calculator
+            from kagome.prep.openmm_equilibrate import MoleculeSpec
             # Placement order in build_full_aibn_system: AIBN first (seed), then
             # monomers (seed+1). MoleculeSpec order/seeds must match (RF23).
             specs = [
@@ -255,7 +255,7 @@ def main() -> None:
             )
 
         if args.load_structure is not None:
-            from src.prep.structure_io import PreparedStructure
+            from kagome.prep.structure_io import PreparedStructure
 
             prepared = PreparedStructure.load(args.load_structure)
             meta_edge = box_from_density(counts, 0.10)
@@ -306,9 +306,9 @@ def main() -> None:
                     raise RuntimeError(
                         'Could not place the system even at dilute density 0.10 g/mL.'
                     )
-                from src.integrators.minimize import compress_box
-                from src.backends.classical_backend import make_compress_calculator
-                from src.prep.openmm_equilibrate import MoleculeSpec
+                from kagome.integrators.minimize import compress_box
+                from kagome.backends.classical_backend import make_compress_calculator
+                from kagome.prep.openmm_equilibrate import MoleculeSpec
                 # Placement order in build_vinyl_aibn_system: initiators first
                 # (seed), then monomers (seed+1). MoleculeSpec order/seeds must
                 # match so the classical topology aligns with coords (RF23).

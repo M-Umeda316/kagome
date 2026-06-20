@@ -260,7 +260,7 @@ dependencies:
       - opt-einsum-fx==0.1.4
       - orb-models==0.7.0
       - orjson==3.11.9
-      - pfpoly==0.1.0
+      - kagome==0.1.0
       - pluggy==1.6.0
       - prettytable==3.17.0
       - proto-plus==1.28.0

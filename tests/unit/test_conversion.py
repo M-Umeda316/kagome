@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-from src.analysis.conversion import conversion, conversion_timeseries, fit_conversion_exponential, monomer_site_count
-from src.reactive.bonds import BondEvent
-from src.reactive.groups import ReactiveGroup
+from kagome.analysis.conversion import conversion, conversion_timeseries, fit_conversion_exponential, monomer_site_count
+from kagome.reactive.bonds import BondEvent
+from kagome.reactive.groups import ReactiveGroup
 
 
 class TestMonomerSiteCount:

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from src.geometry import minimum_image, wrap_positions
+from kagome.geometry import minimum_image, wrap_positions
 
 
 class TestMinimumImage:

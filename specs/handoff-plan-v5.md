@@ -99,7 +99,7 @@ RF5 のスコア修正とは独立。必要なら別タスクで Table S1 準拠
 | RF8 | activation の解離判定だけ絶対閾値 2.5 Å（規約不統一） | 整合性 | RF3 | 小 | 低 | 弱くあり→要記録 |
 | RF9 | ヘルパ/定数の重複（_accel, EV_TO_KCAL_MOL, 温度計算） | 整理 | — | 小 | 低 | なし |
 | RF10 | `Candidate.pair_distances` の死蔵 | 整理 | RF5 | 小 | 低 | なし |
-| RF11 | パッケージング不整合（配布名 pfpoly / import は src.*、egg-info 2箇所） | 構造 | — | 中 | 中 | なし |
+| RF11 | パッケージング不整合（配布名 kagome / import は src.*、egg-info 2箇所） | 構造 | — | 中 | 中 | なし |
 | RF12 | 幾何が orthorhombic 限定（epoxy/スラブ系の制約） | 文書化 | — | 小 | 低 | なし（記録のみ） |
 | RF13 | NVE+barostat 時の温度フォールバック 300 K 固定 | 整合性 | — | 小 | 低 | 弱くあり |
 
@@ -571,11 +571,11 @@ azo C-N に固有の閾値を使う理由を decisions.md に記録。
 # RF11 — パッケージング構造の整理
 
 ## Finding（事実）
-- 配布名は `pfpoly`（`pyproject.toml:6`）だが、実体は `src/` 配下で import は全て
-  `from src.xxx`（`import pfpoly` は成立しない）。
+- 配布名は `kagome`（`pyproject.toml:6`）だが、実体は `src/` 配下で import は全て
+  `from src.xxx`（`import kagome` は成立しない）。
 - `[tool.setuptools.packages.find] where = ["."]`（同:37-38）だと
   `src`/`scripts`/`tests` がトップレベル package 化する。
-- `pfpoly.egg-info/` がリポジトリ直下と `src/` の2箇所に存在（editable install が複数箇所で走った痕跡）。
+- `kagome.egg-info/` がリポジトリ直下と `src/` の2箇所に存在（editable install が複数箇所で走った痕跡）。
 - `src/prep/openmm_equilibrate.py:86` が `from scripts._systems import _rdkit_mol` を行い、
   **ライブラリ層（src）が scripts 層に依存**する逆方向依存。
 
@@ -592,14 +592,14 @@ N/A（実装/配布の健全性）。decision を1件残す。
 2. **逆方向依存の解消（RF4/RF9 と連携）**: `_rdkit_mol` など src から使う共有ロジックを
    `src/`（例 `src/chem/builders.py`）へ移し、`scripts/_systems.py` はそれを import する向きに反転。
    `src/prep/openmm_equilibrate.py` の `from scripts...` を `from src...` に。
-3. **(任意・大)** import 名を `pfpoly` に統一する場合は `src/` → `pfpoly/` リネーム＋全 import 書換。
+3. **(任意・大)** import 名を `kagome` に統一する場合は `src/` → `pfpoly/` リネーム＋全 import 書換。
    影響が広い（`from src.` が全コード/テストに散在）ため、別タスク・別 PR を推奨。
    当面は「配布名と import 名が異なる」ことを README に明記する最小対応でも可。
 
 ## Acceptance criteria
 - egg-info が1箇所、`pip install -e .` が1経路で再現可能。
 - src → scripts の逆方向 import が無い。
-- （リネームを選んだ場合）`import pfpoly` が成立し全テスト緑。
+- （リネームを選んだ場合）`import kagome` が成立し全テスト緑。
 
 ## Risk
 - 中。import 書換は広範囲。最小対応（egg-info 整理＋逆依存解消）と、フルリネームを

@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from src.workflows.manifest import RunManifest, _normalize_value
+from kagome.workflows.manifest import RunManifest, _normalize_value
 
 
 class TestNormalizeValue:
@@ -110,7 +110,7 @@ class TestGitProvenance:
         assert isinstance(data['git_dirty'], bool)
 
     def test_get_git_dirty_true_when_porcelain_nonempty(self, monkeypatch):
-        import src.workflows.manifest as mod
+        import kagome.workflows.manifest as mod
 
         class _R:
             returncode = 0
@@ -120,7 +120,7 @@ class TestGitProvenance:
         assert mod._get_git_dirty() is True
 
     def test_get_git_dirty_false_when_clean(self, monkeypatch):
-        import src.workflows.manifest as mod
+        import kagome.workflows.manifest as mod
 
         class _R:
             returncode = 0
@@ -130,7 +130,7 @@ class TestGitProvenance:
         assert mod._get_git_dirty() is False
 
     def test_get_git_dirty_false_on_error(self, monkeypatch):
-        import src.workflows.manifest as mod
+        import kagome.workflows.manifest as mod
 
         def _boom(*a, **k):
             raise OSError('no git')

@@ -24,14 +24,14 @@ It records two peaks:
 
 Standalone & one-way friendly
 -----------------------------
-Self-contained: needs only this repo + the pfpoly-gpu env. Writes a JSON report
+Self-contained: needs only this repo + the kagome-gpu env. Writes a JSON report
 and prints a table, so results can be read on the workstation without sending
 anything back.
 
 OOM is a valid result: if a system exceeds VRAM the run is caught, recorded as
 'OOM', memory is freed, and the next system still runs.
 
-Usage (on the RTX 5000 Ada workstation, inside pfpoly-gpu, from repo root)
+Usage (on the RTX 5000 Ada workstation, inside kagome-gpu, from repo root)
 --------------------------------------------------------------------------
 NOTE: run as a module (-m) so the ``scripts`` package resolves under the
 editable install; ``python scripts/profile_vram.py`` will NOT find scripts._systems.
@@ -80,9 +80,9 @@ from scripts._systems import (
     build_nylon66_system,
     build_vinyl_aibn_system,
 )
-from src.integrators.init_velocities import maxwell_boltzmann_velocities
-from src.integrators.langevin import LangevinIntegrator, LangevinParams
-from src.workflows.polymerization import masses_from_species
+from kagome.integrators.init_velocities import maxwell_boltzmann_velocities
+from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
+from kagome.workflows.polymerization import masses_from_species
 
 logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 logger = logging.getLogger('profile_vram')
@@ -279,9 +279,9 @@ def _build_system(spec: SystemSpec, args, calc):
         cell = np.diag([place_edge, place_edge, place_edge]).astype(float)
         return positions, species, cell
 
-    from src.backends.classical_backend import make_compress_calculator
-    from src.integrators.minimize import compress_box
-    from src.prep.openmm_equilibrate import MoleculeSpec
+    from kagome.backends.classical_backend import make_compress_calculator
+    from kagome.integrators.minimize import compress_box
+    from kagome.prep.openmm_equilibrate import MoleculeSpec
 
     specs = [MoleculeSpec(smi, n, rdkit_seed=s) for smi, n, s in molecule_specs]
     compress_calc = make_compress_calculator(
@@ -335,7 +335,7 @@ def _profile_one(spec, args, calc, integrator, total_vram_gb):
         # Optional short relax of close contacts (production minimizes pre-TDBB).
         # fire_minimize does NOT mutate in place — it returns relaxed positions.
         if args.minimize_steps > 0:
-            from src.integrators.minimize import FireParams, fire_minimize
+            from kagome.integrators.minimize import FireParams, fire_minimize
             min_res = fire_minimize(
                 positions, species, cell, calc,
                 params=FireParams(fmax_kcal_mol_A=args.minimize_fmax,
@@ -472,7 +472,7 @@ def main() -> None:
             raise SystemExit(f'unknown system(s): {sorted(unknown)}')
 
     logger.info('Creating OrbMol-v2 backend on %s...', args.device)
-    from src.backends.orb_backend import create_orb_calculator
+    from kagome.backends.orb_backend import create_orb_calculator
     calc = create_orb_calculator(device=args.device)
     integrator = LangevinIntegrator(LangevinParams(temperature_K=300.0))
 

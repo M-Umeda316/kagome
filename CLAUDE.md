@@ -35,10 +35,10 @@ That means:
 - `paper/`: structured notes from the paper
 - `specs/`: requirements, decisions, acceptance criteria, experiment matrix, dependency licenses
 - `configs/`: all reproducible experiment configurations
-- `src/boost/`: time-dependent bond boosting implementation
-- `src/reactive/`: reactive group definitions and candidate selection
-- `src/workflows/`: polymerization and curing loops
-- `src/backends/`: MLIP/calculator adapters
+- `src/kagome/boost/`: time-dependent bond boosting implementation
+- `src/kagome/reactive/`: reactive group definitions and candidate selection
+- `src/kagome/workflows/`: polymerization and curing loops
+- `src/kagome/backends/`: MLIP/calculator adapters
 - `scripts/`: entry points, checks, reporting, figure generation
 - `.claude/agents/`: specialized sub-agents
 - `.claude/skills/`: reusable workflows

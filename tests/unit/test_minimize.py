@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.backends.toy import ToyCalculator
-from src.integrators.minimize import FireParams, compress_box, fire_minimize
+from kagome.backends.toy import ToyCalculator
+from kagome.integrators.minimize import FireParams, compress_box, fire_minimize
 
 
 def test_fire_relaxes_clashing_pair_to_lj_minimum() -> None:

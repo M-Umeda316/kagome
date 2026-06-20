@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from src.io.trajectory import TrajectoryFrame, TrajectoryWriter
-from src.io.readers import read_trajectory
+from kagome.io.trajectory import TrajectoryFrame, TrajectoryWriter
+from kagome.io.readers import read_trajectory
 
 
 def _make_frame(step: int = 0, cycle: int = 0, phase: str = 'biased',

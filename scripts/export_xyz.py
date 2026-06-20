@@ -1,4 +1,4 @@
-"""Convert pfpoly JSONL trajectory to extended XYZ for Winmostar / OVITO / VMD.
+"""Convert kagome JSONL trajectory to extended XYZ for Winmostar / OVITO / VMD.
 
 Usage:
     python scripts/export_xyz.py runs/wsl_mace_gpu/trajectory.jsonl
@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.io.readers import read_trajectory
+from kagome.io.readers import read_trajectory
 
 
 def main() -> None:
