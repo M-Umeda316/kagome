@@ -67,8 +67,14 @@ def main() -> None:
     parser.add_argument('--n-monomers', type=int, default=8)
     parser.add_argument('--n-initiators', type=int, default=2)
     parser.add_argument('--n-cycles', type=int, default=3)
-    parser.add_argument('--biased-steps', type=int, default=500)
-    parser.add_argument('--unbiased-steps', type=int, default=500)
+    # Defaults are exploratory (fast). Paper-faithful is 2000/2000 (PDF p.7);
+    # the S6 production scripts pass 2000 biased / 500 unbiased (decisions.md
+    # S2-S4, validated for OrbMol-v2). Effective values are recorded per run in
+    # manifest.extra, so the default deviation is auditable (RF22).
+    parser.add_argument('--biased-steps', type=int, default=500,
+                        help='exploratory default 500; paper-faithful 2000 (PDF p.7)')
+    parser.add_argument('--unbiased-steps', type=int, default=500,
+                        help='exploratory default 500; paper 2000, S6 production 500')
     parser.add_argument('--box-size', type=float, default=None,
                         help='Box edge (Å). If omitted, computed from --density.')
     parser.add_argument('--density', type=float, default=0.5,

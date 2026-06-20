@@ -17,7 +17,9 @@ from src.geometry import minimum_image
 class TDBBParams:
     """Parameters for TDBB bias potentials.
 
-    Units: distances in Å, energies in kcal/mol, f2 in Å⁻².
+    Units: distances in Å, energies in kcal/mol, f2 in Å⁻², gamma in
+    kcal/(mol·step) (Eq. 5 ramp slope; the paper states gamma=1.0 without a unit,
+    see specs/decisions.md 2026-06-11 'Units convention for gamma').
     """
     f2: float = 10.0
     gamma: float = 1.0
@@ -28,7 +30,14 @@ class TDBBParams:
 
 @dataclass
 class BoostState:
-    """Mutable state for a single biased segment."""
+    """Mutable state for a single biased segment.
+
+    The time variable ``step`` (t in Eq. 5) is measured from the start of each
+    biased segment and resets to 0 when a new biased segment begins — the
+    workflow constructs a fresh BoostState per biased phase. This is a paper
+    interpretation; see specs/decisions.md 2026-06-11 'Time variable t ... resets
+    each biased segment'.
+    """
     step: int = 0
     f1_formation: float = 0.0
     f1_dissociation: float = 0.0

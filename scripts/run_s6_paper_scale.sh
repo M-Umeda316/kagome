@@ -11,6 +11,15 @@
 #   # Or with explicit seed/output-dir:
 #   SEED=42 OUTPUT_DIR=runs/s6_seed42 bash scripts/run_s6_paper_scale.sh
 #
+# For 16 GB GPU (half-scale 100+5), run run_vinyl_aibn.py directly. This mirrors
+# the full-scale flags below; only system size and n-cycles differ (RF22):
+#   python scripts/run_vinyl_aibn.py --seed 7 --output-dir runs/s6_half_scale \
+#       --n-monomers 100 --n-initiators 5 --activation --activation-f2 0.3 \
+#       --activation-f1-max 250 --activation-steps 5000 --f2 5.0 --density 0.5 \
+#       --temperature 333.0 --no-barostat --backend orb --device cuda --n-cycles 30 \
+#       --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 --timestep-fs 1.0 \
+#       --minimize --minimize-fmax 1.0
+#
 # Environment: pfpoly-gpu (or equivalent clone; see docs below)
 # Estimated wall-clock: 12-48 h depending on GPU and n_cycles
 #

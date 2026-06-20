@@ -146,20 +146,26 @@ def main() -> None:
         bond_tracker=tracker,
         barostat=barostat,
     )
+
+    # Reactive-site count for the alpha(t) denominator. Capture BEFORE the run
+    # (the post-cycle updater mutates the groups) and pass it as n_monomers so the
+    # trajectory header matches the figure command — no drift (RF22). Note: nylon
+    # step-growth conversion is canonically the extent of reaction p (Carothers,
+    # src/analysis/carothers.py); alpha(t) here is a secondary view.
+    n_reactive_sites = (
+        len(groups['amine_N'].atom_indices)
+        + len(groups['carboxyl_C'].atom_indices)
+    )
     logs = wf.run(
         state,
         output_dir=args.output_dir,
         config_path='configs/boost/paper_faithful.yaml',
+        n_monomers=n_reactive_sites,
     )
 
     n_form = len(tracker.confirmed_formations())
     n_dissoc = len(tracker.confirmed_dissociations())
     logger.info('Confirmed formations: %d, dissociations: %d', n_form, n_dissoc)
-
-    n_reactive_sites = (
-        len(groups['amine_N'].atom_indices)
-        + len(groups['carboxyl_C'].atom_indices)
-    )
     summary = {
         'total_steps': state.step,
         'n_diamines': args.n_diamines,

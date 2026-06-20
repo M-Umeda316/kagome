@@ -8,12 +8,15 @@
 #   .\scripts\run_s6_paper_scale.ps1 -Seed 42 -OutputDir runs\s6_seed42
 #   .\scripts\run_s6_paper_scale.ps1 -NCycles 100
 #
-# For 16 GB GPU (half-scale 100+5), run run_vinyl_aibn.py directly:
+# For 16 GB GPU (half-scale 100+5), run run_vinyl_aibn.py directly. This mirrors
+# the full-scale flags below (incl. --activation-steps 5000 / --minimize /
+# --minimize-fmax 1.0) so the only differences are system size and n-cycles (RF22):
 #   python scripts\run_vinyl_aibn.py --seed 7 --output-dir runs\s6_half_scale `
 #       --n-monomers 100 --n-initiators 5 --activation --activation-f2 0.3 `
-#       --activation-f1-max 250 --f2 5.0 --density 0.5 --temperature 333.0 `
-#       --no-barostat --backend orb --device cuda --n-cycles 30 `
-#       --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 --timestep-fs 1.0
+#       --activation-f1-max 250 --activation-steps 5000 --f2 5.0 --density 0.5 `
+#       --temperature 333.0 --no-barostat --backend orb --device cuda --n-cycles 30 `
+#       --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 --timestep-fs 1.0 `
+#       --minimize --minimize-fmax 1.0
 #
 # --- Parameter rationale ---
 # n_monomers=200, n_initiators=10  : Paper Table S1, Section 3 (200+10 system)
