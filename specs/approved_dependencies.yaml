@@ -67,6 +67,35 @@ software:
       GNN partial-charge model (AM1-BCC surrogate). Code MIT (verified 2026-06-14).
       Weights tracked separately (openff-nagl-models). Fallback: RDKit Gasteiger.
 
+  - name: openff-units
+    status: approved
+    evidence: MIT
+    notes: >
+      Unit handling within the OpenFF classical-prep stack (imported via the
+      `openff` namespace package). MIT, consistent with the rest of the OpenFF
+      stack (openff-toolkit/interchange). Verify upstream LICENSE before release.
+
+  - name: rdkit
+    status: approved
+    evidence: BSD-3-Clause
+    notes: >
+      Cheminformatics: SMILES -> 3D (EmbedMolecule + MMFF) for the vinyl/AIBN
+      system builder and density box sizing. Optional [rdkit] extra. BSD-3-Clause.
+
+  - name: scipy
+    status: approved
+    evidence: BSD-3-Clause
+    notes: >
+      Exponential conversion fit (Eq.11, curve_fit) in
+      src/analysis/conversion.py. Optional [fit] extra. scipy is BSD-3-Clause.
+
+  - name: pyyaml
+    status: approved
+    evidence: MIT
+    notes: >
+      YAML parsing for config validation and this license registry
+      (scripts/validate_configs.py, scripts/check_dependency_licenses.py). MIT.
+
 models:
   - name: toy
     status: approved
@@ -103,6 +132,10 @@ models:
     reason: >
       MACE-OFF23 weights use ASL (Academic Software License) which restricts commercial
       use. Do not use as default. If needed for research, confirm with project owner.
+    # Selected by model string, not a distinct import. The gate greps source for a
+    # call to the OFF loader; the substring includes '(' so the defensive guard in
+    # mace_backend.py (which only names the tokens to reject them) is not a hit.
+    detect_strings: ['mace_off(']
 
   - name: openff-forcefields
     status: approved

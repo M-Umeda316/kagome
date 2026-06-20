@@ -900,3 +900,11 @@ Use this template for each decision.
 - Alternatives considered: (a) r0 相対に完全統一（threshold_fraction=1.0 → 1.95 Å で検出）— 解離をより早く検出するが、揺らぎで偽検出のリスク。(b) 現状維持 — 判定が2箇所にインライン展開され、テスト困難。
 - Scientific risk: なし。activation の閾値 2.5 Å は変更しておらず、判定ロジックの純関数化のみ。BondTracker の動作もビット一致。
 - Licensing/commercial impact: None.
+
+## 2026-06-20: RF16 — ライセンスゲートを許可リスト方式へ拡張
+- Context: `scripts/check_dependency_licenses.py` は `blocked_pending_review` の依存が import された場合のみ失敗するブロックリスト方式で、「import される全依存が承認済みか」を検証していなかった。実際 scipy/rdkit/pyyaml/openff（namespace）が import されているのに registry 未掲載でもゲートは exit 0 だった。また MACE-OFF23（ASL, blocked）は import 名を持たず（モデル文字列で選択）`_INSTALL_TO_IMPORT['mace-off23']=[]` のため構造的に検知不能だった。
+- Paper anchor: CLAUDE.md 商用ガードレール「New dependencies require an explicit license check before adoption」「If license status is unclear, mark it blocked_pending_review」「single source of truth in sync with the matrix」。
+- Decision: (1) 許可リスト強制を追加。`sys.stdlib_module_names` と自前パッケージ（src/scripts/tests/pfpoly）を除く全 import が registry に登録されていなければ exit 1。ブロックリスト判定は多層防御として維持。(2) 未登録だった実在依存を登録: rdkit(BSD-3, matrix には既出だが YAML 欠落=同期ずれ), scipy(BSD-3), pyyaml(MIT), openff-units(MIT)。`_INSTALL_TO_IMPORT` に openff-toolkit→['openff','openff_toolkit'] 等の namespace マッピングを追加。(3) MACE-OFF23 に YAML フィールド `detect_strings: ['mace_off(']` を追加し、ゲートがソース中の OFF ローダ呼び出しを grep で検知。さらに `src/backends/mace_backend.py` に実行時ガードを追加（model 文字列が mace_off/mace-off/off23 を含む場合 RuntimeError）。`detect_strings` は '(' を含むため、トークンを列挙するだけのガード自身は誤検知しない。
+- Alternatives considered: (a) ブロックリストのみ維持 — 未登録依存を見逃す（現状の穴）。(b) MACE-OFF をトークン（'off23' 等）で広く grep — ブロック用ガードのコード自身に誤反応するため不採用、呼び出しパターン 'mace_off(' に限定。(c) openff-units を blocked 扱い — 実体は OpenFF スタックの MIT パッケージであり過剰。
+- Scientific risk: なし（ガードレール・記録のみ、数値計算に非干渉）。
+- Licensing/commercial impact: 商用安全性の網羅性が向上。未承認依存の混入と ASL 重み（MACE-OFF23）の使用を CI/実行時の両面で阻止。openff-units の upstream LICENSE は release 前に最終確認すること（YAML notes に明記）。

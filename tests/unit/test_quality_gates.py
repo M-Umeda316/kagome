@@ -80,6 +80,84 @@ def test_license_check_all_approved(tmp_path):
     assert check_licenses(yaml_file, [tmp_path]) == 0
 
 
+def test_license_check_fails_on_unregistered_import(tmp_path):
+    # RF16: allowlist enforcement — an imported dep absent from the registry fails,
+    # even though it is not on any blocklist.
+    yaml_file = _write_yaml(tmp_path, """
+        software:
+          - name: numpy
+            status: approved
+            evidence: BSD-3-Clause
+        models: []
+    """)
+    src_dir = tmp_path / 'src'
+    src_dir.mkdir()
+    (src_dir / 'mod.py').write_text('import numpy\nimport requests\n', encoding='utf-8')
+    assert check_licenses(yaml_file, [src_dir]) == 1
+
+
+def test_license_check_allows_stdlib_and_self_packages(tmp_path):
+    yaml_file = _write_yaml(tmp_path, """
+        software:
+          - name: numpy
+            status: approved
+            evidence: BSD-3-Clause
+        models: []
+    """)
+    src_dir = tmp_path / 'src'
+    src_dir.mkdir()
+    (src_dir / 'mod.py').write_text(
+        'import os\nimport sys\nfrom pathlib import Path\n'
+        'import numpy\nfrom src.boost import tdbb\n',
+        encoding='utf-8',
+    )
+    assert check_licenses(yaml_file, [src_dir]) == 0
+
+
+def test_license_check_detects_blocked_model_string(tmp_path):
+    # RF16: MACE-OFF23 has no distinct import; the gate greps for the loader call.
+    yaml_file = _write_yaml(tmp_path, """
+        software:
+          - name: mace-torch
+            status: approved
+            evidence: MIT
+        models:
+          - name: mace-off23
+            status: blocked_pending_review
+            reason: ASL restricts commercial use
+            detect_strings: ['mace_off(']
+    """)
+    src_dir = tmp_path / 'src'
+    src_dir.mkdir()
+    (src_dir / 'mod.py').write_text(
+        'from mace.calculators import mace_off\ncalc = mace_off(model="x")\n',
+        encoding='utf-8',
+    )
+    assert check_licenses(yaml_file, [src_dir]) == 1
+
+
+def test_license_check_mace_mp_not_flagged_as_off(tmp_path):
+    # The MACE-MP-0 path must not trip the MACE-OFF detector.
+    yaml_file = _write_yaml(tmp_path, """
+        software:
+          - name: mace-torch
+            status: approved
+            evidence: MIT
+        models:
+          - name: mace-off23
+            status: blocked_pending_review
+            reason: ASL
+            detect_strings: ['mace_off(']
+    """)
+    src_dir = tmp_path / 'src'
+    src_dir.mkdir()
+    (src_dir / 'mod.py').write_text(
+        'from mace.calculators import mace_mp\ncalc = mace_mp(model="small")\n',
+        encoding='utf-8',
+    )
+    assert check_licenses(yaml_file, [src_dir]) == 0
+
+
 # ---------- check_seed_defined ----------
 
 def test_seed_check_passes():

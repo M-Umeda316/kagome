@@ -35,6 +35,16 @@ def create_mace_calculator(
             'Install with: pip install mace-torch'
         )
 
+    # Guard against MACE-OFF (ASL, blocked_pending_review): this factory only
+    # serves MACE-MP-0. Reject any MACE-OFF model string/path so restricted
+    # weights cannot be loaded through here. See specs/approved_dependencies.yaml.
+    if any(tok in str(model).lower() for tok in ('mace_off', 'mace-off', 'off23')):
+        raise RuntimeError(
+            f'MACE-OFF weights ({model!r}) are blocked_pending_review (ASL restricts '
+            'commercial use); this backend only provides MACE-MP-0. See '
+            'specs/approved_dependencies.yaml.'
+        )
+
     local_path = _LOCAL_MODELS.get(model)
     model_arg = str(local_path) if local_path and local_path.exists() else model
 

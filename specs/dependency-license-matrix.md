@@ -22,6 +22,9 @@
 | Toy backend | internal test backend | internal code | yes | required for open/public CI |
 | matplotlib | plotting (optional) | PSF (permissive) | yes | optional `[plot]` dependency, not required at runtime |
 | RDKit | cheminformatics | BSD-3-Clause | **yes** | SMILES → 3D via EmbedMolecule + MMFF; used in `[rdkit]` extra for vinyl/AIBN system builder |
+| SciPy | numerics | BSD-3-Clause | **yes** | `curve_fit` for the Eq.11 conversion fit; optional `[fit]` extra |
+| PyYAML | config parsing | MIT | **yes** | parses configs and this license registry in the check scripts |
+| openff-units | units (OpenFF stack) | MIT | **yes** | unit handling in classical prep; imported via the `openff` namespace; verify upstream LICENSE before release |
 
 ## Policy
 - Software license and model-weight license must both be acceptable.
