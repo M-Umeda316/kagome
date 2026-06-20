@@ -91,6 +91,16 @@ def main() -> None:
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
+    parser.add_argument('--compress-backend', type=str, default='classical',
+                        choices=['classical', 'ml'],
+                        help='Calculator for box compression to paper density. '
+                             '"classical" (default) uses OpenMM/OpenFF Sage so densification '
+                             'does not consume MLIP GPU time (decision 2026-06-20); "ml" uses '
+                             'the production MLIP. MD always runs on the MLIP.')
+    parser.add_argument('--compress-platform', type=str, default='CPU',
+                        choices=['CPU', 'CUDA', 'OpenCL', 'Reference'],
+                        help='OpenMM platform for --compress-backend classical '
+                             '(default CPU, keeps the GPU free for the MLIP MD).')
     parser.add_argument('--initiator-smiles', type=str, default=None,
                         help='Override the initiator SMILES (e.g. "C[C](C)C#N" for the '
                              'real open-shell 2-cyanoprop-2-yl radical). Default: closed-shell model.')
@@ -215,8 +225,20 @@ def main() -> None:
             if place_edge is None:
                 raise RuntimeError('Could not place the system even at dilute density 0.10 g/mL.')
             from src.integrators.minimize import compress_box
+            from src.backends.classical_backend import make_compress_calculator
+            from src.prep.openmm_equilibrate import MoleculeSpec
+            # Placement order in build_full_aibn_system: AIBN first (seed), then
+            # monomers (seed+1). MoleculeSpec order/seeds must match (RF23).
+            specs = [
+                MoleculeSpec(_AIBN_SMILES, args.n_initiators, rdkit_seed=args.seed),
+                MoleculeSpec(_MONOMER_SMILES, args.n_monomers, rdkit_seed=args.seed + 1),
+            ]
+            compress_calc = make_compress_calculator(
+                args.compress_backend, specs, calc, platform=args.compress_platform,
+                target_edge_A=target_edge,
+            )
             place_cell = np.diag([place_edge, place_edge, place_edge])
-            result = compress_box(positions, place_cell, target_edge, species, calc)
+            result = compress_box(positions, place_cell, target_edge, species, compress_calc)
             positions, cell = result.positions, result.cell
     else:
         def _build(edge: float, gen: np.random.Generator):
@@ -282,8 +304,21 @@ def main() -> None:
                         'Could not place the system even at dilute density 0.10 g/mL.'
                     )
                 from src.integrators.minimize import compress_box
+                from src.backends.classical_backend import make_compress_calculator
+                from src.prep.openmm_equilibrate import MoleculeSpec
+                # Placement order in build_vinyl_aibn_system: initiators first
+                # (seed), then monomers (seed+1). MoleculeSpec order/seeds must
+                # match so the classical topology aligns with coords (RF23).
+                specs = [
+                    MoleculeSpec(_init_smiles, args.n_initiators, rdkit_seed=args.seed),
+                    MoleculeSpec(_MONOMER_SMILES, args.n_monomers, rdkit_seed=args.seed + 1),
+                ]
+                compress_calc = make_compress_calculator(
+                    args.compress_backend, specs, calc, platform=args.compress_platform,
+                    target_edge_A=target_edge,
+                )
                 place_cell = np.diag([place_edge, place_edge, place_edge])
-                result = compress_box(positions, place_cell, target_edge, species, calc)
+                result = compress_box(positions, place_cell, target_edge, species, compress_calc)
                 positions, cell = result.positions, result.cell
 
     if args.select_rmin is not None or args.select_rmax is not None:

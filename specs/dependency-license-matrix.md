@@ -18,7 +18,7 @@
 | PFP / Matlantis-related backend | model/backend | blocked_pending_review | no | do not enable by default without explicit rights confirmation |
 | orb-models (code) | MLIP framework | Apache-2.0 | **yes** | OrbMol calculator; optional `[orb]` dependency |
 | OrbMol-v2 model | pretrained weights | Apache-2.0 | **yes** | trained on OMol25 + OPoly26 (polymer data); recommended for organic/polymer systems |
-| nvalchemiops | PME electrostatics | blocked_pending_review | no | NVIDIA; required only for periodic OrbMol-v2 with long-range Coulomb; license unconfirmed |
+| nvalchemiops | PME electrostatics + D3 | Apache-2.0 | **yes** | NVIDIA ALCHEMI Toolkit-Ops (`nvalchemi-toolkit-ops`); required for periodic OrbMol-v2 (PME long-range Coulomb); LICENSE verified Apache-2.0 (2026-06-20). Windows torch.compile caveat → run periodic on Linux/WSL/cloud |
 | Toy backend | internal test backend | internal code | yes | required for open/public CI |
 | matplotlib | plotting (optional) | PSF (permissive) | yes | optional `[plot]` dependency, not required at runtime |
 | RDKit | cheminformatics | BSD-3-Clause | **yes** | SMILES → 3D via EmbedMolecule + MMFF; used in `[rdkit]` extra for vinyl/AIBN system builder |
@@ -32,3 +32,4 @@
 - If evidence is incomplete, block the component by default.
 - CC-BY-4.0 components (openff-forcefields, openff-nagl-models) are commercial-safe but require attribution: distributed results that depend on them must cite the Open Force Field Initiative.
 - License evidence verified 2026-06-14 from upstream LICENSE files: openff-toolkit/interchange/nagl = MIT; openff-forcefields + openff-nagl-models = CC-BY-4.0; OpenMM core = MIT, CUDA/OpenCL = LGPL.
+- nvalchemiops verified 2026-06-20 from upstream LICENSE (github.com/NVIDIA/nvalchemi-toolkit-ops): SPDX-License-Identifier Apache-2.0, © NVIDIA CORPORATION. Unblocks periodic OrbMol-v2 PME for paper-scale runs (Linux/WSL/cloud; Windows torch.compile caveat persists).

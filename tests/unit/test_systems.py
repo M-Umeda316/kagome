@@ -133,6 +133,46 @@ class TestVinylAIBNHelpers:
         assert h_alpha == 2
         assert h_beta == 1
 
+    def test_find_vinyl_alpha_beta_disubstituted_tertiary(self):
+        """1,1-disubstituted vinyls (CH2=CR2) must resolve: alpha=CH2 (2 H),
+        beta=substituted C (0 H, tertiary radical after propagation). Covers the
+        paper's methacrylate / diphenylethylene / dimethyl itaconate monomers
+        (decision 2026-06-20 'di-substituted vinyl builder')."""
+        from rdkit import Chem
+        from scripts._systems import _find_vinyl_alpha_beta
+
+        for smiles in (
+            'C=C(C)C(=O)OC',            # methyl methacrylate
+            'C=C(c1ccccc1)c1ccccc1',    # 1,1-diphenylethylene
+            'C=C(CC(=O)OC)C(=O)OC',     # dimethyl itaconate
+        ):
+            alpha, beta = _find_vinyl_alpha_beta(smiles)
+            mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+            h_alpha = sum(1 for n in mol.GetAtomWithIdx(alpha).GetNeighbors()
+                          if n.GetSymbol() == 'H')
+            h_beta = sum(1 for n in mol.GetAtomWithIdx(beta).GetNeighbors()
+                         if n.GetSymbol() == 'H')
+            assert h_alpha == 2, f'alpha must be =CH2 terminus for {smiles}'
+            assert h_beta == 0, f'beta must be the disubstituted C for {smiles}'
+
+    def test_build_methacrylate_system(self):
+        """End-to-end build of a 1,1-disubstituted (methacrylate) vinyl system:
+        the substituted beta carbon must populate the vinyl_beta_C group that
+        becomes the propagating (tertiary) radical."""
+        import numpy as np
+        from scripts._systems import build_vinyl_aibn_system
+
+        rng = np.random.default_rng(7)
+        _, species, _, groups, prop_map, _ = build_vinyl_aibn_system(
+            n_monomers=3, n_initiators=2, box_size=22.0, rng=rng,
+            monomer_smiles='C=C(C)C(=O)OC',
+        )
+        assert len(groups['vinyl_alpha_C'].atom_indices) == 3
+        assert len(groups['vinyl_beta_C'].atom_indices) == 3
+        assert len(prop_map) == 3
+        beta_indices = set(groups['vinyl_beta_C'].atom_indices)
+        assert set(prop_map.values()) == beta_indices
+
     def test_find_ibn_radical_c_has_three_c_neighbours(self):
         """Radical C in CC(C)C#N must be bonded to exactly 3 C (2 methyl + nitrile C)."""
         from rdkit import Chem
