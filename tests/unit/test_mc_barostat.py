@@ -1,9 +1,25 @@
 """Tests for MC barostat (NPT ensemble, T-B)."""
+import math
+
 import numpy as np
 import pytest
 
 from src.integrators.mc_barostat import MCBarostat, MCBarostatParams
 from src.units import ATM_TO_KCAL_MOL_A3, KB
+
+
+class _FixedRng:
+    """Deterministic stand-in: fixed volume proposal and acceptance draw."""
+
+    def __init__(self, delta_ln_v: float, accept_draw: float):
+        self._dlnv = delta_ln_v
+        self._r = accept_draw
+
+    def uniform(self, lo, hi):
+        return self._dlnv
+
+    def random(self):
+        return self._r
 
 
 class _FlatCalculator:
@@ -143,6 +159,33 @@ class TestMCBarostatStep:
         assert barostat.stats.attempts == 10
         assert 0 <= barostat.stats.accepted <= 10
         assert 0.0 <= barostat.stats.acceptance_rate <= 1.0
+
+    def test_jacobian_uses_n_plus_one(self):
+        # RF19b: ln(V)-uniform proposal => acceptance Jacobian is (N+1), not N.
+        # Flat potential, P=0: delta_H = -(N+1)*kT*delta_ln_V. For a volume
+        # *decrease* (delta_ln_V<0) accept iff draw < exp(-(N+1)|delta_ln_V|).
+        n = 4
+        dlnv = -0.01
+        thresh_n1 = math.exp(-(n + 1) * abs(dlnv))   # ~0.95123
+        thresh_n = math.exp(-n * abs(dlnv))          # ~0.96079
+        assert thresh_n1 < thresh_n  # the two rules give different thresholds
+
+        cell = self._cell(10.0)
+        positions = self._positions(n, 10.0)
+        calc = _FlatCalculator()
+
+        def attempt(draw):
+            b = MCBarostat(MCBarostatParams(pressure_atm=0.0, max_volume_change_frac=0.01))
+            accepted, _, _ = b.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc,
+                _FixedRng(dlnv, draw), 300.0,
+            )
+            return accepted
+
+        # draw between the two thresholds: rejected under (N+1), accepted under N
+        assert attempt(0.5 * (thresh_n1 + thresh_n)) is False
+        # draw below the (N+1) threshold: accepted
+        assert attempt(thresh_n1 - 0.01) is True
 
     def test_positions_scale_with_cell(self):
         """When accepted, positions should scale by the same factor as the cell.

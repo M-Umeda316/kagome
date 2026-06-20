@@ -84,3 +84,21 @@ class TestInstantTemperature:
         masses = np.array([m])
         T_measured = instant_temperature_K(v, masses)
         assert T_measured == pytest.approx(T, rel=1e-6)
+
+    def test_single_atom_uses_3n_dof(self):
+        # RF19b: N=1 keeps 3N (no COM removal to apply)
+        m = 12.0
+        v = np.array([[0.01, 0.0, 0.0]])
+        ke_kcal = 0.5 * m * 0.01 ** 2 / FORCE_CONV
+        expected = 2.0 * ke_kcal / (3 * 1 * KB)
+        assert instant_temperature_K(v, np.array([m])) == pytest.approx(expected, rel=1e-12)
+
+    def test_multiatom_uses_3n_minus_3_dof(self):
+        # RF19b: N>1 subtracts the 3 COM translational DOF
+        m = 12.0
+        masses = np.full(4, m)
+        v = np.zeros((4, 3))
+        v[0, 0] = 0.01
+        ke_kcal = 0.5 * m * 0.01 ** 2 / FORCE_CONV
+        expected = 2.0 * ke_kcal / ((3 * 4 - 3) * KB)
+        assert instant_temperature_K(v, masses) == pytest.approx(expected, rel=1e-12)

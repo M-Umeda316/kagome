@@ -110,8 +110,10 @@ class MCBarostat:
 
         dE = new_energy - current_energy
         dV = V_new - V_old
-        # Jacobian term: -N * kT * ln(V'/V)
-        delta_H = dE + self._pressure_kcal * dV - n_atoms * kT * delta_ln_V
+        # Jacobian term for a uniform-in-ln(V) proposal is -(N+1)*kT*ln(V'/V):
+        # the +1 over the uniform-in-V form is the d(lnV) measure (RF19b). The
+        # difference vs N is O(1/N); see specs/decisions.md 2026-06-20 RF19b.
+        delta_H = dE + self._pressure_kcal * dV - (n_atoms + 1) * kT * delta_ln_V
 
         self.stats.attempts += 1
         if delta_H <= 0.0 or rng.random() < np.exp(-delta_H / kT):

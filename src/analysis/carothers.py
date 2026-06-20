@@ -10,8 +10,12 @@ compared to TDBB-simulated DPn vs conversion.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 def dpn_carothers(p: NDArray[np.floating] | float) -> NDArray[np.floating]:
@@ -37,5 +41,15 @@ def dpn_from_bonds(
     """
     if n_functional_groups <= 0:
         return 1.0
-    p = min(n_bonds / (n_functional_groups / 2), 0.9999)
+    raw_p = n_bonds / (n_functional_groups / 2)
+    if raw_p > 0.9999:
+        # Surface the clamp instead of silently masking near-complete conversion
+        # or a p>1 bond/denominator miscount (RF19b).
+        logger.warning(
+            'dpn_from_bonds: extent of reaction p=%.6f exceeds the 0.9999 clamp '
+            '(n_bonds=%d, n_functional_groups=%d); DPn capped at 10000. p>1 would '
+            'indicate a bond-count or denominator error.',
+            raw_p, n_bonds, n_functional_groups,
+        )
+    p = min(raw_p, 0.9999)
     return 1.0 / (1.0 - p)

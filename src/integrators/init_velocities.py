@@ -49,7 +49,11 @@ def instant_temperature_K(
 ) -> float:
     """Kinetic temperature from velocities.
 
-    T = 2*KE / (3*N*KB),  KE[kcal/mol] = 0.5*sum(m*v^2)/FORCE_CONV
+    T = 2*KE / (dof*KB),  KE[kcal/mol] = 0.5*sum(m*v^2)/FORCE_CONV.
+    dof = 3N - 3 for N > 1 (center-of-mass translation removed; the MB
+    initializer removes COM and NVE Verlet conserves it), else 3N. The COM
+    correction is an O(1/N) diagnostic adjustment; see specs/decisions.md
+    2026-06-20 RF19b.
     """
     n = velocities.shape[0]
     if n == 0:
@@ -59,4 +63,5 @@ def instant_temperature_K(
     else:
         ke_amu = 0.5 * float(np.sum(velocities ** 2))
     ke_kcal = ke_amu / FORCE_CONV
-    return 2.0 * ke_kcal / (3.0 * n * KB)
+    dof = 3 * n - 3 if n > 1 else 3 * n
+    return 2.0 * ke_kcal / (dof * KB)

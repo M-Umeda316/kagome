@@ -916,3 +916,11 @@ Use this template for each decision.
 - Alternatives considered: (a) 専用 NylonCondensationUpdater で末端昇格 — 両末端が既登録のため冗長で、誤った再分類リスクを増やす。(b) 解離の atom_a/atom_b のうち脱離基側のみ除去 — どちらが脱離基かはテンプレート依存で一般化困難。両方除去で安全（反応中心 amine_N/carboxyl_C は amide 形成で消費されるため除去は無害かつ冪等）。(c) 現状維持 — 解離原子が再選択され縮合トポロジが進行しない（既知バグ）。
 - Scientific risk: nylon の反応経路が変わる（解離原子が次サイクルで再選択されなくなる＝正しい挙動）。vinyl は不変（決定論テストでビット一致を確認）。一般の「解離後も両原子が反応性を保つ」機構が将来必要になった場合は、PairSpec に脱離基フラグを追加して `_remove_pair` を選択的にする。
 - Licensing/commercial impact: None.
+
+## 2026-06-20: RF19b — MC barostat Jacobian (N+1) と運動温度の自由度 (3N-3)
+- Context: (1) `MCBarostat.try_step` は体積提案を ln(V) 一様（`delta_ln_V ~ U(-max,max)`）で行うが、受容判定の Jacobian 項が `N·kT·ln(V'/V)`（N 形式）だった。ln(V) 一様提案では測度 d(lnV) の分だけ厳密には `(N+1)` が正しい。(2) `instant_temperature_K` は `3N` 自由度を使っていたが、MB 初期化は COM 並進を除去し NVE Verlet は COM を保存するため、厳密には `3N-3` が正しい。
+- Paper anchor: NPT MC 受容式（mc_barostat.py docstring; Frenkel & Smit の log-volume サンプリング）。運動温度の等分配（init_velocities.py docstring）。いずれも MD の標準的扱いで論文固有の解釈ではない。
+- Decision: (1) barostat の `delta_H` を `(n_atoms + 1) * kT * delta_ln_V` に変更。(2) `instant_temperature_K` の分母を `3N-3`（N>1）/`3N`（N=1）に変更。どちらも差は O(1/N) で、既定 1 atm・数百原子では受容率・診断温度への実影響は極小。単原子（N=1）は 3N を維持（既存テスト `test_known_temperature` と整合）。
+- Alternatives considered: (a) barostat を N のまま維持（OpenMM は体積一様提案で N を使用）— しかし本実装は ln(V) 一様提案なので N+1 が整合的。(b) 温度を 3N のまま維持 — COM 除去と非整合で診断温度が系統的に約 (3N-3)/3N 倍低く出る。
+- Scientific risk: 低。受容率と診断温度が O(1/N) 変化する。barostat の既存テストは受容数の厳密値に依存しないため緑。温度テストは N=1 が 3N 維持、N>1 統計テストは ±30% 許容で通過（むしろ精度向上）。
+- Licensing/commercial impact: None.

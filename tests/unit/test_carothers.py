@@ -1,4 +1,6 @@
 """Tests for Carothers equation (step-growth polymerization)."""
+import logging
+
 import numpy as np
 import pytest
 
@@ -41,3 +43,15 @@ class TestDpnFromBonds:
     def test_near_full_conversion(self):
         result = dpn_from_bonds(9, 20)
         assert result == pytest.approx(10.0)
+
+    def test_clamp_warns_on_overshoot(self, caplog):
+        # RF19b: p>1 (miscount) or full conversion must not be silently clamped.
+        with caplog.at_level(logging.WARNING):
+            dpn = dpn_from_bonds(n_bonds=100, n_functional_groups=100)  # p = 2.0
+        assert dpn == pytest.approx(10000.0)  # 1/(1-0.9999)
+        assert 'clamp' in caplog.text
+
+    def test_no_warning_below_clamp(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            dpn_from_bonds(n_bonds=9, n_functional_groups=20)  # p = 0.9
+        assert caplog.text == ''
