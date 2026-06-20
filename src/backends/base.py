@@ -29,6 +29,15 @@ class Calculator(ABC):
     def name(self) -> str:
         """Backend identifier for logging."""
 
+    @property
+    def model_id(self) -> str:
+        """Resolved model/weights identity for provenance (RF17).
+
+        For uMLIP backends the exact weights are a first-order provenance item;
+        override to return the resolved checkpoint path/hash. Defaults to ``name``.
+        """
+        return self.name
+
     def set_spin(self, spin: int) -> None:
         """Update the system spin multiplicity (2S+1).
 

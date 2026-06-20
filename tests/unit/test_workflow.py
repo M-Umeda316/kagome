@@ -200,6 +200,9 @@ class TestPolymerizationWorkflow:
         assert ex['backend'] == 'toy'
         assert ex['candidate_r_min'] == 0.5
         assert ex['candidate_r_max'] == 5.0
+        # RF17: provenance — resolved model identity and alpha denominator recorded
+        assert ex['model_id'] == 'toy'
+        assert isinstance(ex['n_reactive_sites'], int)
 
     @staticmethod
     def _run_simple(integrator=None, masses=None, seed=7):

@@ -53,4 +53,8 @@ def create_mace_calculator(
         device=device,
         default_dtype=default_dtype,
     )
-    return ASECalculatorAdapter(calc, name=f'mace-mp-0-{model}')
+    # Record the resolved weights (local checkpoint path or model size) for
+    # provenance (RF17), distinct from the human-readable backend name.
+    return ASECalculatorAdapter(
+        calc, name=f'mace-mp-0-{model}', model_id=f'mace-mp-0:{model_arg}',
+    )

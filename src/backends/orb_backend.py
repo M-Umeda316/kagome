@@ -11,6 +11,7 @@ which requires cl.exe.  TORCHDYNAMO_DISABLE=1 bypasses this.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from numpy.typing import NDArray
 
 from src.backends.base import Calculator
 from src.units import EV_TO_KCAL_MOL
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _LOCAL_MODELS = {
@@ -59,10 +62,20 @@ def create_orb_calculator(
 
     local_path = _LOCAL_MODELS.get(model)
     if local_path and local_path.exists():
+        resolved_model_id = str(local_path)
         orbff, adapter = loader(
             weights_path=str(local_path), device=device, compile=compile,
         )
     else:
+        # No local checkpoint: the loader downloads/uses its bundled pretrained
+        # weights. Record that this happened so two runs with identical backend
+        # names but different resolved weights are distinguishable (RF17).
+        resolved_model_id = f'{model}:pretrained-download'
+        logger.warning(
+            'OrbMol local checkpoint not found for %r; falling back to the '
+            'pretrained loader (downloaded weights). model_id=%s',
+            model, resolved_model_id,
+        )
         orbff, adapter = loader(device=device, compile=compile)
     orbff.eval()
     return OrbCalculatorAdapter(
@@ -71,6 +84,7 @@ def create_orb_calculator(
         name=f'orb-{model}',
         charge=charge,
         spin=spin,
+        model_id=resolved_model_id,
     )
 
 
@@ -85,6 +99,7 @@ class OrbCalculatorAdapter(Calculator):
         name: str = 'orb-orbmol_v2',
         charge: int = 0,
         spin: int = 1,
+        model_id: str = '',
     ) -> None:
         self._model = model
         self._adapter = atoms_adapter
@@ -92,6 +107,7 @@ class OrbCalculatorAdapter(Calculator):
         self._name = name
         self._charge = charge
         self._spin = spin
+        self._model_id = model_id or name
 
         try:
             from ase import Atoms
@@ -102,6 +118,10 @@ class OrbCalculatorAdapter(Calculator):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
 
     def set_spin(self, spin: int) -> None:
         self._spin = spin

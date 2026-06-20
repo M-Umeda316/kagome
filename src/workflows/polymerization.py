@@ -278,9 +278,18 @@ class PolymerizationWorkflow:
         config_path: str = '',
         n_monomers: int | None = None,
     ) -> list[CycleLog]:
+        n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
+
         if output_dir:
             effective_params = _normalize_value(asdict(self.config))
             effective_params['backend'] = self.calculator.name
+            # Resolved weights identity (RF17): two runs with the same backend
+            # name but different weights are otherwise indistinguishable.
+            effective_params['model_id'] = getattr(
+                self.calculator, 'model_id', self.calculator.name)
+            # alpha(t) denominator (RF17): also lives in the trajectory header, but
+            # record it in the manifest so provenance is complete without the JSONL.
+            effective_params['n_reactive_sites'] = n_reactive_sites
             effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
             effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
             manifest = RunManifest(
@@ -291,8 +300,6 @@ class PolymerizationWorkflow:
                 extra=effective_params,
             )
             manifest.save(output_dir / 'manifest.json')
-
-        n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:

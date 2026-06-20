@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
@@ -164,6 +165,27 @@ def main() -> None:
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     tracker.save(out / 'bonds.jsonl')
+
+    # Provenance (RF17): this demo drives wf.run() per segment without output_dir,
+    # so emit a manifest here so the run is traceable to seed/backend/weights/config.
+    from src.workflows.manifest import RunManifest, _normalize_value
+    manifest_extra = _normalize_value(asdict(cfg))
+    manifest_extra.update(
+        backend=calc.name,
+        model_id=getattr(calc, 'model_id', calc.name),
+        n_monomers=args.n_monomers,
+        n_initiators=1,
+        demo='chain_propagation',
+        select_rmin=args.select_rmin,
+        approach=args.approach,
+    )
+    RunManifest(
+        config_path='(demo: scripts/demo_chain_propagation.py)',
+        seed=args.seed,
+        backend=calc.name,
+        output_dir=str(out),
+        extra=manifest_extra,
+    ).save(out / 'manifest.json')
     print(f'\nRESULT: confirmed_formations={n_form}  propagation_events={n_form}  '
           f'final chain-end radical={groups["radical_C"].atom_indices}')
     if n_form >= 2:

@@ -94,3 +94,46 @@ class TestRunManifest:
         assert ex['candidate_r_min'] == 3.0
         assert ex['candidate_r_max'] == 6.0
         assert ex['backend'] == 'toy'
+
+
+class TestGitProvenance:
+    """RF17: dirty-working-tree detection so a recorded SHA is trustworthy."""
+
+    def test_git_dirty_field_is_serialized(self, tmp_path):
+        manifest = RunManifest(
+            config_path='c', seed=1, backend='toy', output_dir=str(tmp_path),
+        )
+        out = tmp_path / 'manifest.json'
+        manifest.save(out)
+        data = json.loads(out.read_text(encoding='utf-8'))
+        assert 'git_dirty' in data
+        assert isinstance(data['git_dirty'], bool)
+
+    def test_get_git_dirty_true_when_porcelain_nonempty(self, monkeypatch):
+        import src.workflows.manifest as mod
+
+        class _R:
+            returncode = 0
+            stdout = ' M src/foo.py\n?? new.py\n'
+
+        monkeypatch.setattr(mod.subprocess, 'run', lambda *a, **k: _R())
+        assert mod._get_git_dirty() is True
+
+    def test_get_git_dirty_false_when_clean(self, monkeypatch):
+        import src.workflows.manifest as mod
+
+        class _R:
+            returncode = 0
+            stdout = '   \n'
+
+        monkeypatch.setattr(mod.subprocess, 'run', lambda *a, **k: _R())
+        assert mod._get_git_dirty() is False
+
+    def test_get_git_dirty_false_on_error(self, monkeypatch):
+        import src.workflows.manifest as mod
+
+        def _boom(*a, **k):
+            raise OSError('no git')
+
+        monkeypatch.setattr(mod.subprocess, 'run', _boom)
+        assert mod._get_git_dirty() is False

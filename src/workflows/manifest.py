@@ -16,6 +16,7 @@ class RunManifest:
     backend: str
     output_dir: str
     git_sha: str = ''
+    git_dirty: bool = False
     timestamp: str = ''
     extra: dict = field(default_factory=dict)
 
@@ -23,7 +24,10 @@ class RunManifest:
         if not self.timestamp:
             self.timestamp = datetime.now(timezone.utc).isoformat()
         if not self.git_sha:
+            # Auto-resolve provenance: record the dirty flag alongside the SHA so a
+            # recorded commit can be trusted to match the executed code (RF17).
             self.git_sha = _get_git_sha()
+            self.git_dirty = _get_git_dirty()
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,3 +54,21 @@ def _get_git_sha() -> str:
         return result.stdout.strip() if result.returncode == 0 else 'unknown'
     except Exception:
         return 'unknown'
+
+
+def _get_git_dirty() -> bool:
+    """True if the working tree has uncommitted changes (tracked or untracked).
+
+    A clean SHA is only a faithful identifier of the executed code when the tree
+    is clean; record this so a dirty run is auditable (RF17).
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        return bool(result.stdout.strip())
+    except Exception:
+        return False

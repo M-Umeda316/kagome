@@ -22,7 +22,7 @@ class ASECalculatorAdapter(Calculator):
     Handles unit conversion: ASE uses eV/Å, pfpoly uses kcal/mol/Å.
     """
 
-    def __init__(self, ase_calc: ASECalc, name: str = 'ase') -> None:
+    def __init__(self, ase_calc: ASECalc, name: str = 'ase', model_id: str = '') -> None:
         try:
             from ase import Atoms
         except ImportError:
@@ -32,11 +32,16 @@ class ASECalculatorAdapter(Calculator):
             )
         self._calc = ase_calc
         self._name = name
+        self._model_id = model_id or name
         self._Atoms = Atoms
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
 
     def compute(
         self,
