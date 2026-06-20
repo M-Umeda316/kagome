@@ -60,6 +60,38 @@ class TestPolymerizationWorkflow:
         assert logs[1].phase == 'unbiased'
         assert state.step == 40  # 2 × (10+10)
 
+    def test_selection_audit_written(self, tmp_path):
+        # RF18: selection.jsonl must record the ranked candidates and the
+        # selected/rejected decisions with reasons.
+        template = ReactionTemplate(
+            name='multi', groups=['A', 'B'],
+            pairs=[PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=10.0)],
+        )
+        groups = {'A': ReactiveGroup('A', [0, 1]), 'B': ReactiveGroup('B', [2, 3])}
+        config = PolymerizationConfig(biased_steps=2, unbiased_steps=2, n_cycles=1, seed=1)
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0, 0, 0], [5, 0, 0], [1, 0, 0], [6, 0, 0]], dtype=float),
+            velocities=np.zeros((4, 3)),
+            species=['C'] * 4,
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path)
+
+        audit = tmp_path / 'selection.jsonl'
+        assert audit.exists()
+        lines = [json.loads(l) for l in audit.read_text(encoding='utf-8').splitlines() if l.strip()]
+        assert len(lines) == 1  # one biased cycle
+        rec = lines[0]
+        assert rec['cycle'] == 0
+        assert rec['n_candidates'] == rec['n_selected'] + rec['n_rejected']
+        # candidates (0,2)(0,3)(1,2)(1,3): greedy keeps 2 disjoint, drops 2 on overlap
+        assert rec['n_selected'] >= 1 and rec['n_rejected'] >= 1
+        for d in rec['selected']:
+            assert 'atoms' in d and 'score' in d
+        for d in rec['rejected']:
+            assert d['reason'].startswith('overlap')
+
     def test_deterministic_with_seed(self):
         template, groups = _make_simple_setup()
         config = PolymerizationConfig(

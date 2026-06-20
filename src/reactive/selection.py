@@ -119,16 +119,50 @@ def score_candidates(
     return candidates
 
 
-def select_non_overlapping(candidates: list[Candidate]) -> list[Candidate]:
-    """Greedy non-overlapping selection: skip candidates with already-used atoms."""
+@dataclass
+class SelectionDecision:
+    """Audit record for one candidate in the greedy non-overlap pass (RF18).
+
+    reason is 'selected' or 'overlap:[...]' listing the already-used atoms that
+    caused the candidate to be dropped.
+    """
+    atom_indices: tuple[int, ...]
+    score: float
+    selected: bool
+    reason: str
+
+
+def audited_selection(
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], list[SelectionDecision]]:
+    """Greedy non-overlapping selection that also returns a per-candidate audit.
+
+    Single source of the selection logic; ``select_non_overlapping`` is a thin
+    wrapper that discards the audit. ``candidates`` is assumed already sorted by
+    score (see ``score_candidates``), so the audit reflects the true ranking.
+    """
     used_atoms: set[int] = set()
     selected: list[Candidate] = []
+    decisions: list[SelectionDecision] = []
 
     for c in candidates:
         atoms = set(c.atom_indices)
-        if atoms & used_atoms:
+        clash = atoms & used_atoms
+        if clash:
+            decisions.append(SelectionDecision(
+                c.atom_indices, c.score, False, f'overlap:{sorted(clash)}',
+            ))
             continue
         selected.append(c)
         used_atoms |= atoms
+        decisions.append(SelectionDecision(
+            c.atom_indices, c.score, True, 'selected',
+        ))
 
+    return selected, decisions
+
+
+def select_non_overlapping(candidates: list[Candidate]) -> list[Candidate]:
+    """Greedy non-overlapping selection: skip candidates with already-used atoms."""
+    selected, _ = audited_selection(candidates)
     return selected

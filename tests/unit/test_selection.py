@@ -5,10 +5,38 @@ import pytest
 from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
 from src.reactive.selection import (
     Candidate,
+    audited_selection,
     find_candidates,
     score_candidates,
     select_non_overlapping,
 )
+
+
+class TestAuditedSelection:
+    """RF18: greedy selection must also report why each candidate was dropped."""
+
+    def test_audit_matches_select_non_overlapping(self):
+        cands = [
+            Candidate(atom_indices=(0, 2), score=1.0),
+            Candidate(atom_indices=(0, 3), score=2.0),  # clashes on atom 0
+            Candidate(atom_indices=(1, 4), score=3.0),
+        ]
+        selected, decisions = audited_selection(cands)
+        assert [c.atom_indices for c in selected] == [(0, 2), (1, 4)]
+        # wrapper returns the same selected set
+        assert [c.atom_indices for c in select_non_overlapping(cands)] == \
+            [(0, 2), (1, 4)]
+        assert len(decisions) == 3
+
+    def test_audit_records_reasons(self):
+        cands = [
+            Candidate(atom_indices=(0, 2), score=1.0),
+            Candidate(atom_indices=(0, 3), score=2.0),
+        ]
+        _, decisions = audited_selection(cands)
+        assert decisions[0].selected and decisions[0].reason == 'selected'
+        assert not decisions[1].selected
+        assert decisions[1].reason == 'overlap:[0]'
 
 
 def _make_template() -> ReactionTemplate:

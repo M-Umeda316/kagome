@@ -5,6 +5,7 @@ Fig. 1: biased (2000 steps) → unbiased (2000 steps) → repeat.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -24,6 +25,7 @@ from src.reactive.bonds import BondTracker, is_dissociated
 from src.reactive.groups import ReactiveGroup, ReactionTemplate
 from src.reactive.selection import (
     Candidate,
+    audited_selection,
     find_candidates,
     score_candidates,
     select_non_overlapping,
@@ -255,6 +257,8 @@ class PolymerizationWorkflow:
         self.bond_tracker = bond_tracker
         self.barostat = barostat
         self.logs: list[CycleLog] = []
+        # Per-cycle candidate-selection audit (RF18); set in run() when output_dir given.
+        self._selection_log: Path | None = None
 
         if updater is not None:
             self._updater = updater
@@ -300,6 +304,11 @@ class PolymerizationWorkflow:
                 extra=effective_params,
             )
             manifest.save(output_dir / 'manifest.json')
+
+            # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
+            # must be reconstructable from artifacts, not just n_candidates counts.
+            self._selection_log = output_dir / 'selection.jsonl'
+            self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
@@ -512,7 +521,11 @@ class PolymerizationWorkflow:
             self.template, self.groups, state.positions, state.cell,
         )
         scored = score_candidates(candidates)
-        selected = select_non_overlapping(scored)
+        if self._selection_log is not None:
+            selected, decisions = audited_selection(scored)
+            self._write_selection_audit(cycle, decisions)
+        else:
+            selected = select_non_overlapping(scored)
 
         active_pairs = self._build_pair_biases(selected, state.species)
 
@@ -633,6 +646,41 @@ class PolymerizationWorkflow:
 
     def _update_groups_after_cycle(self, state: SimulationState) -> None:
         self._updater.update(self.groups, self.bond_tracker, state)
+
+    # Cap on rejected candidates written per cycle; large systems can enumerate
+    # many. Selected candidates are always written in full.
+    _MAX_REJECTED_LOGGED = 500
+
+    def _write_selection_audit(self, cycle: int, decisions: list) -> None:
+        """Append one JSON line recording the cycle's candidate ranking and the
+        non-overlap selection/rejection decisions (RF18)."""
+        if self._selection_log is None:
+            return
+        selected = [d for d in decisions if d.selected]
+        rejected = [d for d in decisions if not d.selected]
+        shown = rejected[:self._MAX_REJECTED_LOGGED]
+        record = {
+            'cycle': cycle,
+            'n_candidates': len(decisions),
+            'n_selected': len(selected),
+            'n_rejected': len(rejected),
+            'rejected_truncated': len(rejected) - len(shown),
+            'selected': [
+                {'atoms': list(d.atom_indices), 'score': d.score} for d in selected
+            ],
+            'rejected': [
+                {'atoms': list(d.atom_indices), 'score': d.score, 'reason': d.reason}
+                for d in shown
+            ],
+        }
+        with open(self._selection_log, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record) + '\n')
+        if record['rejected_truncated']:
+            logger.info(
+                'Cycle %d selection audit: logged %d/%d rejected candidates '
+                '(truncated %d)',
+                cycle, len(shown), len(rejected), record['rejected_truncated'],
+            )
 
     def run_activation(
         self,
