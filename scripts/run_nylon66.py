@@ -6,6 +6,11 @@ Ensemble: NPT (Langevin + MC barostat) at 300 K, 1 atm
 
 Paper anchor: arXiv:2511.22874, PDF p.22, Table S2, Fig. S2, Fig. 4.
 
+By default the system is built to paper density (0.5 g/mL, SI S-3) in one run:
+direct placement, or dilute placement + classical-FF compression in-process
+(--compress-backend classical), mirroring run_vinyl_aibn. Pass --box-size to
+place at an explicit (dilute) edge without compression instead.
+
 Usage:
     python scripts/run_nylon66.py --seed 7 --output-dir runs/nylon66
     python scripts/run_nylon66.py --seed 7 --backend mace --output-dir runs/nylon66_mace
@@ -22,7 +27,12 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
 import numpy as np
 
-from scripts._systems import build_nylon66_system
+from scripts._systems import (
+    _DIACID_SMILES,
+    _DIAMINE_SMILES,
+    box_from_density,
+    build_nylon66_system,
+)
 from src.backends.base import Calculator
 from src.boost.tdbb import TDBBParams
 from src.integrators.init_velocities import maxwell_boltzmann_velocities
@@ -60,7 +70,13 @@ def main() -> None:
     parser.add_argument('--n-cycles', type=int, default=3)
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
-    parser.add_argument('--box-size', type=float, default=25.0)
+    parser.add_argument('--box-size', type=float, default=None,
+                        help='Box edge (Å). If omitted, computed from --density and '
+                             'reached by direct placement or classical compression '
+                             '(single-run path to paper density, mirroring run_vinyl_aibn).')
+    parser.add_argument('--density', type=float, default=0.5,
+                        help='Initial density (g/mL). Paper SI S-3 uses 0.5. Used only '
+                             'when --box-size is omitted.')
     parser.add_argument('--temperature', type=float, default=300.0)
     parser.add_argument('--pressure', type=float, default=1.0)
     parser.add_argument('--no-barostat', action='store_true')
@@ -69,21 +85,97 @@ def main() -> None:
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
+    parser.add_argument('--compress-backend', type=str, default='classical',
+                        choices=['classical', 'ml'],
+                        help='Calculator for box compression to paper density. '
+                             '"classical" (default) uses OpenMM/OpenFF Sage so densification '
+                             'does not consume MLIP GPU time (decision 2026-06-20); "ml" uses '
+                             'the production MLIP. Only used when --box-size is omitted.')
+    parser.add_argument('--compress-platform', type=str, default='CPU',
+                        choices=['CPU', 'CUDA', 'OpenCL', 'Reference'],
+                        help='OpenMM platform for --compress-backend classical '
+                             '(default CPU, keeps the GPU free for the MLIP MD).')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
 
-    logger.info(
-        'Building nylon-6,6 system: %d diamines + %d diacids in %.1f Å box...',
-        args.n_diamines, args.n_diacids, args.box_size,
-    )
-    positions, species, template, groups = build_nylon66_system(
-        n_diamines=args.n_diamines,
-        n_diacids=args.n_diacids,
-        box_size=args.box_size,
-        rng=rng,
-        rdkit_seed=args.seed,  # RF23: conformer geometry follows --seed
-    )
+    counts = {_DIAMINE_SMILES: args.n_diamines, _DIACID_SMILES: args.n_diacids}
+
+    # Backend is created before the build so the 'ml' compress option can reuse it.
+    calc = _create_backend(args.backend, args.device, args.model)
+    logger.info('Backend: %s', calc.name)
+
+    def _build(edge: float, gen):
+        return build_nylon66_system(
+            n_diamines=args.n_diamines,
+            n_diacids=args.n_diacids,
+            box_size=edge,
+            rng=gen,
+            rdkit_seed=args.seed,  # RF23: conformer geometry follows --seed
+        )
+
+    if args.box_size is not None:
+        # Explicit box edge (legacy behaviour): direct placement, no compression.
+        logger.info(
+            'Building nylon-6,6: %d diamines + %d diacids in %.1f Å box (explicit)...',
+            args.n_diamines, args.n_diacids, args.box_size,
+        )
+        positions, species, template, groups = _build(args.box_size, rng)
+        cell = np.diag([args.box_size, args.box_size, args.box_size])
+    else:
+        # Single-run path to paper density (mirrors run_vinyl_aibn): direct
+        # placement at the target density, else dilute placement + compression.
+        target_edge = box_from_density(counts, args.density)
+        logger.info(
+            'Building nylon-6,6: %d diamines + %d diacids, target box %.1f Å '
+            '(%.2f g/mL, paper SI S-3)...',
+            args.n_diamines, args.n_diacids, target_edge, args.density,
+        )
+        try:
+            positions, species, template, groups = _build(target_edge, rng)
+            cell = np.diag([target_edge, target_edge, target_edge])
+        except RuntimeError:
+            logger.warning(
+                'Direct placement at %.2f Å failed — placing dilute then compressing.',
+                target_edge,
+            )
+            place_edge = None
+            for place_density in (0.25, 0.20, 0.15, 0.10):
+                edge = box_from_density(counts, place_density)
+                if edge <= target_edge:
+                    continue
+                try:
+                    positions, species, template, groups = _build(
+                        edge, np.random.default_rng(args.seed))
+                    place_edge = edge
+                    logger.info(
+                        'Placed at dilute density %.2f g/mL (box %.2f Å); compressing to %.2f Å.',
+                        place_density, edge, target_edge,
+                    )
+                    break
+                except RuntimeError:
+                    continue
+            if place_edge is None:
+                raise RuntimeError(
+                    'Could not place nylon even at dilute density 0.10 g/mL.'
+                )
+            from src.backends.classical_backend import make_compress_calculator
+            from src.integrators.minimize import compress_box
+            from src.prep.openmm_equilibrate import MoleculeSpec
+            # Placement order in build_nylon66_system: diamines first (seed),
+            # then diacids (seed+1). MoleculeSpec order/seeds must match (RF23).
+            specs = [
+                MoleculeSpec(_DIAMINE_SMILES, args.n_diamines, rdkit_seed=args.seed),
+                MoleculeSpec(_DIACID_SMILES, args.n_diacids, rdkit_seed=args.seed + 1),
+            ]
+            compress_calc = make_compress_calculator(
+                args.compress_backend, specs, calc, platform=args.compress_platform,
+                target_edge_A=target_edge,
+            )
+            place_cell = np.diag([place_edge, place_edge, place_edge])
+            result = compress_box(positions, place_cell, target_edge, species, compress_calc)
+            positions, cell = result.positions, result.cell
+
     logger.info(
         'System: %d atoms total  (%d amine_N, %d carboxyl_C, %d amine_H, %d carboxyl_OH)',
         len(species),
@@ -93,7 +185,8 @@ def main() -> None:
         len(groups['carboxyl_OH'].atom_indices),
     )
 
-    cell = np.diag([args.box_size, args.box_size, args.box_size])
+    # Initial box edge for provenance (state.cell evolves under NPT during the run).
+    initial_box_edge_A = float(cell[0, 0])
 
     langevin_params = LangevinParams(temperature_K=args.temperature)
     config = PolymerizationConfig(
@@ -111,9 +204,6 @@ def main() -> None:
         seed=args.seed,
         save_interval=50,
     )
-
-    calc = _create_backend(args.backend, args.device, args.model)
-    logger.info('Backend: %s', calc.name)
 
     integrator = LangevinIntegrator(langevin_params)
     tracker = BondTracker()
@@ -172,7 +262,7 @@ def main() -> None:
         'n_diamines': args.n_diamines,
         'n_diacids': args.n_diacids,
         'n_atoms': len(species),
-        'box_size_A': args.box_size,
+        'box_size_A': initial_box_edge_A,
         'cell_periodic': True,
         'backend': calc.name,
         'temperature_K': args.temperature,

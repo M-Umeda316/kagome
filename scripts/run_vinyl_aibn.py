@@ -149,10 +149,13 @@ def main() -> None:
                              '~200 with f2=0.3 for OrbMol-v2 C-N barrier (~39 kcal/mol). '
                              'Default 250.')
     parser.add_argument('--load-structure', type=Path, default=None,
-                        help='Load a classically pre-equilibrated structure (JSON from '
-                             'scripts/prep_structure.py) and skip build/place/compress. '
-                             'positions+cell come from the file; the short ML re-equil '
-                             '(--minimize/--equil-steps) still runs. See decision D-4.')
+                        help='Optional: load a classically pre-equilibrated structure (JSON '
+                             'from scripts/prep_structure.py) and skip build/place/compress. '
+                             'Not required for paper density — by default the run compresses '
+                             'in-process (--compress-backend classical). Use this only to '
+                             'reuse one prepped structure across many seeds. positions+cell '
+                             'come from the file; the short ML re-equil (--minimize/'
+                             '--equil-steps) still runs. See decision D-4 (+2026-06-20 WSL).')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
