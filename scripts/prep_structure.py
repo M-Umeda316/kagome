@@ -1,19 +1,31 @@
 """Classical (OpenMM/OpenFF) structure preparation — standalone entry point.
 
-Runs in the dedicated ``pfpoly-prep`` conda environment (OpenFF + OpenMM), which
-is kept separate from the ML production environment (``pfpoly-gpu``, OrbMol-v2)
-because OpenFF pulls openff-nagl → a second PyTorch that would collide with the
-production torch. This script writes the relaxed structure to a JSON file that
-``scripts/run_vinyl_aibn.py --load-structure`` consumes. See specs/decisions.md
-2026-06-14 "Decouple initial-structure preparation" (decision D-4).
+This is now an OPTIONAL caching path. The run scripts (run_vinyl_aibn.py /
+run_nylon66.py) compress to paper density in-process by default
+(--compress-backend classical), so a single command reaches paper density
+without any file handoff. Use this script only when you want to prep once and
+reuse the same equilibrated structure across many production seeds/parameters:
+it writes a PreparedStructure JSON that ``--load-structure`` consumes, and it
+adds a classical NVT thermalization the inline compress path does not.
+
+Environment: on WSL/Linux the production env (``pfpoly-gpu``) already contains
+both the OpenFF/OpenMM classical stack and OrbMol-v2, so run this script there
+directly — no separate env is needed. The dedicated ``pfpoly-prep`` env is a
+Windows-only fallback (on Windows openff-nagl pulls a second PyTorch that
+collides with the production torch). See specs/decisions.md 2026-06-14
+"Decouple initial-structure preparation" (D-4) and its 2026-06-20 WSL addendum.
 
 Pipeline: dilute grid placement → classical minimize → compress to the target
 (0.5 g/mL) density → NVT thermalization → save PreparedStructure.
 
-Usage (from the repo root, in the prep env):
-    conda run -n pfpoly-prep python scripts/prep_structure.py \
+Usage (from the repo root):
+    # WSL/Linux (single env):
+    python scripts/prep_structure.py \
         --n-monomers 200 --n-initiators 10 --seed 42 \
         --output runs/prep/paper200_structure.json
+
+    # Windows fallback (separate classical env):
+    conda run -n pfpoly-prep python scripts/prep_structure.py ...
 """
 from __future__ import annotations
 

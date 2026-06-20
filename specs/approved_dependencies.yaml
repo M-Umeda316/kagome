@@ -114,11 +114,16 @@ models:
       Recommended for organic/polymer systems. Non-periodic runs do not require nvalchemiops.
 
   - name: nvalchemiops
-    status: blocked_pending_review
-    reason: >
-      NVIDIA package required for periodic PME in OrbMol-v2. License not confirmed.
-      Also causes torch.compile failures on Windows. Do not enable until license is
-      confirmed by project owner AND Windows compatibility is verified.
+    status: approved
+    evidence: Apache-2.0
+    notes: >
+      NVIDIA ALCHEMI Toolkit-Ops (pip: nvalchemi-toolkit-ops, import: nvalchemiops).
+      Provides PME long-range electrostatics + D3 dispersion for periodic OrbMol-v2.
+      Upstream LICENSE verified Apache-2.0 (SPDX-License-Identifier: Apache-2.0,
+      github.com/NVIDIA/nvalchemi-toolkit-ops) on 2026-06-20 — commercial-safe.
+      Windows caveat REMAINS: periodic PME triggers torch.compile/cl.exe failures on
+      Windows. Run periodic jobs on Linux/WSL/cloud, or set TORCHDYNAMO_DISABLE=1.
+      Installed in pfpoly-gpu (WSL) as nvalchemi-toolkit-ops==0.3.1.
 
   - name: pfp
     status: blocked_pending_review

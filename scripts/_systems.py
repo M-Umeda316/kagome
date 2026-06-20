@@ -8,6 +8,9 @@ from src.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
 # ── SMILES constants ─────────────────────────────────────────────────────────
 
 _MONOMER_SMILES = 'C=CC(=O)OC'   # methyl acrylate
+# 1,1-disubstituted vinyls (CH2=CR2): propagating radical is tertiary. Buildable
+# since _find_vinyl_alpha_beta accepts a 0-H beta carbon (2026-06-20).
+_METHACRYLATE_SMILES = 'C=C(C)C(=O)OC'  # methyl methacrylate (tertiary radical)
 _INITIATOR_SMILES = 'CC(C)C#N'   # isobutyronitrile (closed-shell IBN radical model)
 _DIAMINE_SMILES = 'NCCCCCCN'     # hexamethylenediamine
 _DIACID_SMILES = 'OC(=O)CCCCC(=O)O'  # adipic acid
@@ -115,10 +118,21 @@ def _rdkit_3d(smiles: str, seed: int = 42) -> tuple[np.ndarray, list[str]]:
 
 
 def _find_vinyl_alpha_beta(smiles: str) -> tuple[int, int]:
-    """Return (alpha_idx, beta_idx) local atom indices for the CH2=CH- motif.
+    """Return (alpha_idx, beta_idx) local atom indices for the CH2=CR- motif.
 
-    alpha-C: =CH2 end (2 H, vinyl terminus) → Group J
-    beta-C:  =CH- inner  (1 H) → propagation target
+    alpha-C: =CH2 terminus (2 H) → Group J; the radical attacks here.
+    beta-C:  the other vinyl carbon → propagation target (becomes the new
+             radical). 1 H for mono-substituted vinyls (CH2=CH-R, e.g. methyl
+             acrylate, styrene); 0 H for 1,1-disubstituted vinyls (CH2=CR2,
+             e.g. methacrylate, diphenylethylene, dimethyl itaconate), where the
+             propagating radical is tertiary.
+
+    Regiochemistry (head-to-tail): the radical always adds to the terminal =CH2
+    (alpha) and the unpaired electron localizes on the substituted carbon (beta).
+    Tertiary-radical stability for 1,1-disubstituted monomers is left to the MLIP
+    energetics (decision 2026-06-20 "atom-typing only"); no extra bias is added.
+    Aromatic ring bonds report bond order 1.5, so only the genuine vinyl double
+    bond matches — styrene/diphenylethylene phenyl rings are not mistaken for it.
     """
     from rdkit import Chem
 
@@ -132,11 +146,13 @@ def _find_vinyl_alpha_beta(smiles: str) -> tuple[int, int]:
             continue
         h_a = sum(1 for n in a.GetNeighbors() if n.GetSymbol() == 'H')
         h_b = sum(1 for n in b.GetNeighbors() if n.GetSymbol() == 'H')
-        if h_a == 2 and h_b == 1:
+        # alpha must be the =CH2 terminus (2 H); beta is the substituted carbon
+        # (1 H mono-substituted, 0 H for 1,1-disubstituted).
+        if h_a == 2 and h_b <= 1:
             return a.GetIdx(), b.GetIdx()
-        if h_b == 2 and h_a == 1:
+        if h_b == 2 and h_a <= 1:
             return b.GetIdx(), a.GetIdx()
-    raise ValueError(f'No CH2=CH- pattern found in {smiles!r}')
+    raise ValueError(f'No CH2=CR- vinyl terminus found in {smiles!r}')
 
 
 def _find_ibn_radical_c(smiles: str) -> int:
