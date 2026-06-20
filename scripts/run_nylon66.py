@@ -82,6 +82,7 @@ def main() -> None:
         n_diacids=args.n_diacids,
         box_size=args.box_size,
         rng=rng,
+        rdkit_seed=args.seed,  # RF23: conformer geometry follows --seed
     )
     logger.info(
         'System: %d atoms total  (%d amine_N, %d carboxyl_C, %d amine_H, %d carboxyl_OH)',

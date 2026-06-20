@@ -52,11 +52,12 @@ from src.prep.openmm_equilibrate import (
 logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 logger = logging.getLogger(__name__)
 
-# rdkit_seed offsets used by build_vinyl_aibn_system (initiator=seed, monomer=seed+1).
-_RDKIT_SEED = 42
+# build_vinyl_aibn_system uses rdkit_seed offsets (initiator=seed, monomer=seed+1).
+# The MoleculeSpec rdkit_seed below MUST use the same scheme so the OpenFF topology
+# atom order matches the placed coordinates. Both follow --seed (RF23).
 
 
-def _place_dilute(n_monomers, n_initiators, counts, target_edge, rng):
+def _place_dilute(n_monomers, n_initiators, counts, target_edge, rng, rdkit_seed):
     """Place the system at the densest feasible dilute density above the target.
 
     Returns (positions, species, cell, place_edge). The greedy placer is reliable
@@ -69,7 +70,7 @@ def _place_dilute(n_monomers, n_initiators, counts, target_edge, rng):
         try:
             positions, species, _, _, _, _ = build_vinyl_aibn_system(
                 n_monomers=n_monomers, n_initiators=n_initiators,
-                box_size=edge, rng=rng,
+                box_size=edge, rng=rng, rdkit_seed=rdkit_seed,
             )
             logger.info(
                 'Placed at dilute density %.2f g/mL (box %.2f Å).',
@@ -91,8 +92,11 @@ def main() -> None:
     parser.add_argument('--temperature', type=float, default=333.0)
     parser.add_argument('--charge-method', choices=['gasteiger', 'nagl'],
                         default='gasteiger',
-                        help='Partial-charge method. Default gasteiger (lightweight; '
-                             'the structure is overwritten by the ML re-equil, see D-2).')
+                        help='Partial-charge method. CLI default gasteiger DELIBERATELY '
+                             'overrides the ClassicalPrepConfig library default (nagl, '
+                             'decision D-2): lightweight, no model download, and the '
+                             'structure is overwritten by the ML re-equil — see '
+                             'specs/decisions.md 2026-06-14. Not a divergence bug (RF23).')
     parser.add_argument('--forcefield', type=str, default='openff-2.2.0.offxml')
     parser.add_argument('--compress-stages', type=int, default=20)
     parser.add_argument('--compress-relax-steps', type=int, default=200)
@@ -113,13 +117,15 @@ def main() -> None:
 
     positions, species, cell, place_edge = _place_dilute(
         args.n_monomers, args.n_initiators, counts, target_edge, rng,
+        rdkit_seed=args.seed,
     )
 
     # Placement order is initiators-first then monomers (build_vinyl_aibn_system),
     # so the MoleculeSpec list must follow that order for the OpenFF topology.
+    # rdkit_seed follows --seed and matches the placement scheme above (RF23).
     molecule_specs = [
-        MoleculeSpec(_INITIATOR_SMILES, args.n_initiators, rdkit_seed=_RDKIT_SEED),
-        MoleculeSpec(_MONOMER_SMILES, args.n_monomers, rdkit_seed=_RDKIT_SEED + 1),
+        MoleculeSpec(_INITIATOR_SMILES, args.n_initiators, rdkit_seed=args.seed),
+        MoleculeSpec(_MONOMER_SMILES, args.n_monomers, rdkit_seed=args.seed + 1),
     ]
 
     cfg = ClassicalPrepConfig(

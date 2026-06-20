@@ -186,6 +186,27 @@ class TestVinylAIBNHelpers:
         assert species.count('H') == 7
 
 
+class TestRdkitSeedDeterminism:
+    """RF23: conformer geometry must follow the seed (threaded from --seed), while
+    atom ordering stays seed-independent."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    def test_same_seed_identical_diff_seed_differs(self):
+        from scripts._systems import _rdkit_3d
+        p_a, s_a = _rdkit_3d('C=CC(=O)OC', seed=7)
+        p_a2, s_a2 = _rdkit_3d('C=CC(=O)OC', seed=7)
+        p_b, s_b = _rdkit_3d('C=CC(=O)OC', seed=8)
+        # same seed -> identical geometry (deterministic)
+        np.testing.assert_array_equal(p_a, p_a2)
+        # atom ordering / species is seed-independent
+        assert s_a == s_a2 == s_b
+        # different seed -> different conformer
+        assert not np.allclose(p_a, p_b)
+
+
 class TestBuildVinylAIBNSystem:
 
     @pytest.fixture(autouse=True)

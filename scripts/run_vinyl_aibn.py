@@ -186,6 +186,7 @@ def main() -> None:
                 n_aibn=args.n_initiators,
                 box_size=edge,
                 rng=gen,
+                rdkit_seed=args.seed,  # RF23: conformer geometry follows --seed
             )
 
         logger.info(
@@ -225,6 +226,7 @@ def main() -> None:
                 box_size=edge,
                 rng=gen,
                 initiator_smiles=_init_smiles,
+                rdkit_seed=args.seed,  # RF23: conformer geometry follows --seed
             )
 
         if args.load_structure is not None:
