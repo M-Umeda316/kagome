@@ -43,3 +43,22 @@ def force_to_accel(
     else:
         inv_m = 1.0
     return FORCE_CONV * forces * inv_m
+
+
+def precompute_inv_masses(
+    masses: NDArray[np.floating] | None,
+) -> NDArray[np.floating] | None:
+    """Precompute ``FORCE_CONV / masses`` for ``force_to_accel_fast``."""
+    if masses is None:
+        return None
+    return (FORCE_CONV / masses)[:, np.newaxis]
+
+
+def force_to_accel_fast(
+    forces: NDArray[np.floating],
+    inv_masses: NDArray[np.floating] | None,
+) -> NDArray[np.floating]:
+    """Like ``force_to_accel`` but takes precomputed inverse masses."""
+    if inv_masses is not None:
+        return forces * inv_masses
+    return FORCE_CONV * forces

@@ -56,3 +56,47 @@ def wrap_positions(
     _check_orthorhombic(cell)
     box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
     positions[:] = positions % box
+
+
+# ---------------------------------------------------------------------------
+# Fast-path variants for inner MD loops
+# ---------------------------------------------------------------------------
+
+def validated_box(
+    cell: NDArray[np.floating] | None,
+) -> NDArray[np.floating] | None:
+    """Validate an orthorhombic cell once and return its (3,) box diagonal.
+
+    Call once per phase (or after barostat acceptance), then pass the
+    returned ``box`` to ``minimum_image_fast`` / ``wrap_positions_fast``.
+    """
+    if cell is None:
+        return None
+    _check_orthorhombic(cell)
+    return np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
+
+
+def minimum_image_fast(
+    r_vec: NDArray[np.floating],
+    box: NDArray[np.floating] | None,
+) -> NDArray[np.floating]:
+    """Minimum image without per-call validation.
+
+    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``.
+    """
+    if box is None:
+        return r_vec
+    return r_vec - box * np.round(r_vec / box)
+
+
+def wrap_positions_fast(
+    positions: NDArray[np.floating],
+    box: NDArray[np.floating] | None,
+) -> None:
+    """In-place wrap without per-call validation.
+
+    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``.
+    """
+    if box is None:
+        return
+    positions[:] = positions % box

@@ -5,6 +5,7 @@ Equations 2-5, 8.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -173,3 +174,64 @@ def total_bias(
         forces[pair.idx_b] -= f_mag * e_ij
 
     return energy, forces
+
+
+def total_bias_fast(
+    pairs: list[PairBias],
+    positions: NDArray[np.floating],
+    state: BoostState,
+    params: TDBBParams,
+    box: NDArray[np.floating] | None = None,
+) -> tuple[float, NDArray[np.floating], list[float]]:
+    """Scalar-math fast path for ``total_bias``.
+
+    Returns ``(energy, forces, distances)`` where ``distances[i]`` is
+    the interatomic distance for ``pairs[i]``.
+    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``.
+    """
+    n_atoms = positions.shape[0]
+    forces = np.zeros((n_atoms, 3), dtype=np.float64)
+    energy = 0.0
+    distances: list[float] = []
+    f2 = params.f2
+    f1_form = state.f1_formation
+    f1_dissoc = state.f1_dissociation
+
+    for pair in pairs:
+        dx = positions[pair.idx_b, 0] - positions[pair.idx_a, 0]
+        dy = positions[pair.idx_b, 1] - positions[pair.idx_a, 1]
+        dz = positions[pair.idx_b, 2] - positions[pair.idx_a, 2]
+
+        if box is not None:
+            bx, by, bz = float(box[0]), float(box[1]), float(box[2])
+            dx -= bx * round(dx / bx)
+            dy -= by * round(dy / by)
+            dz -= bz * round(dz / bz)
+
+        r = math.sqrt(dx * dx + dy * dy + dz * dz)
+        distances.append(r)
+        if r < 1e-12:
+            continue
+        inv_r = 1.0 / r
+
+        if pair.is_formation:
+            dr = r - pair.r0
+            exp_val = math.exp(-f2 * dr * dr)
+            energy += f1_form * (1.0 - exp_val)
+            dv_dr = f1_form * 2.0 * f2 * dr * exp_val
+        else:
+            exp_val = math.exp(-f2 * r * r)
+            energy += f1_dissoc * exp_val
+            dv_dr = -2.0 * f1_dissoc * f2 * r * exp_val
+
+        fx = dv_dr * dx * inv_r
+        fy = dv_dr * dy * inv_r
+        fz = dv_dr * dz * inv_r
+        forces[pair.idx_a, 0] += fx
+        forces[pair.idx_a, 1] += fy
+        forces[pair.idx_a, 2] += fz
+        forces[pair.idx_b, 0] -= fx
+        forces[pair.idx_b, 1] -= fy
+        forces[pair.idx_b, 2] -= fz
+
+    return energy, forces, distances

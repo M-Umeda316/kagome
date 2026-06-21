@@ -15,8 +15,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from kagome.backends.base import Calculator
-from kagome.boost.tdbb import BoostState, PairBias, TDBBParams, target_distance, total_bias
-from kagome.geometry import minimum_image
+from kagome.boost.tdbb import BoostState, PairBias, TDBBParams, target_distance, total_bias_fast
+from kagome.geometry import minimum_image, validated_box
 from kagome.integrators.mc_barostat import MCBarostat
 from kagome.integrators.minimize import FireParams, fire_minimize
 from kagome.integrators.verlet import Integrator, VelocityVerletIntegrator
@@ -458,10 +458,11 @@ class PolymerizationWorkflow:
         boost: BoostState | None = None,
         tdbb: TDBBParams | None = None,
         enable_barostat: bool = True,
-    ) -> tuple[float, float, NDArray[np.floating]]:
+        box: NDArray[np.floating] | None = None,
+    ) -> tuple[float, float, NDArray[np.floating], list[float] | None]:
         """Single MD step: pre_force → compute → [bias] → post_force → [barostat].
 
-        Returns (base_energy, bias_energy, current_forces).
+        Returns (base_energy, bias_energy, current_forces, pair_distances).
         """
         self.integrator.pre_force(
             state.positions, state.velocities, current_forces,
@@ -473,9 +474,10 @@ class PolymerizationWorkflow:
         )
 
         bias_energy = 0.0
+        pair_dists: list[float] | None = None
         if active_pairs is not None and boost is not None and tdbb is not None:
-            bias_energy, bias_forces = total_bias(
-                active_pairs, state.positions, boost, tdbb, state.cell,
+            bias_energy, bias_forces, pair_dists = total_bias_fast(
+                active_pairs, state.positions, boost, tdbb, box,
             )
             current_forces = base_forces + bias_forces
         else:
@@ -497,15 +499,19 @@ class PolymerizationWorkflow:
             )
             if accepted and new_base_f is not None:
                 base_energy = new_base_e
+                if box is not None and state.cell is not None:
+                    box[0] = state.cell[0, 0]
+                    box[1] = state.cell[1, 1]
+                    box[2] = state.cell[2, 2]
                 if active_pairs is not None and boost is not None and tdbb is not None:
-                    bias_energy, bias_forces = total_bias(
-                        active_pairs, state.positions, boost, tdbb, state.cell,
+                    bias_energy, bias_forces, pair_dists = total_bias_fast(
+                        active_pairs, state.positions, boost, tdbb, box,
                     )
                     current_forces = new_base_f + bias_forces
                 else:
                     current_forces = new_base_f
 
-        return base_energy, bias_energy, current_forces
+        return base_energy, bias_energy, current_forces, pair_dists
 
     # ------------------------------------------------------------------
     # Phase implementations — each delegates to _md_step
@@ -531,7 +537,7 @@ class PolymerizationWorkflow:
         current_forces = forces
 
         for step_in_phase in range(self.config.equil_steps):
-            energy, _, current_forces = self._md_step(
+            energy, _, current_forces, _ = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
             )
 
@@ -578,15 +584,17 @@ class PolymerizationWorkflow:
         dt = self.config.timestep_fs
         last_bias_energy = 0.0
 
+        box = validated_box(state.cell)
+
         base_energy, base_forces = self.calculator.compute(
             state.positions, state.species, state.cell,
         )
-        bias_energy, bias_forces = total_bias(
-            active_pairs, state.positions, boost, self.config.tdbb, state.cell,
+        bias_energy, bias_forces, _ = total_bias_fast(
+            active_pairs, state.positions, boost, self.config.tdbb, box,
         )
         current_forces = base_forces + bias_forces
 
-        form_pairs = [p for p in active_pairs if p.is_formation]
+        form_indices = {i for i, p in enumerate(active_pairs) if p.is_formation}
         min_form_dist = float('inf')
 
         steps_run = 0
@@ -598,16 +606,17 @@ class PolymerizationWorkflow:
                 self.config.tdbb.f1_max_dissociation,
             )
 
-            base_energy, bias_energy, current_forces = self._md_step(
+            base_energy, bias_energy, current_forces, pair_dists = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
                 active_pairs=active_pairs, boost=boost, tdbb=self.config.tdbb,
+                box=box,
             )
             last_bias_energy = bias_energy
 
-            for _p in form_pairs:
-                _r = _pair_distance(state.positions, _p.idx_a, _p.idx_b, state.cell)
-                if _r < min_form_dist:
-                    min_form_dist = _r
+            if pair_dists is not None:
+                for i in form_indices:
+                    if pair_dists[i] < min_form_dist:
+                        min_form_dist = pair_dists[i]
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -659,7 +668,7 @@ class PolymerizationWorkflow:
         current_forces = forces
 
         for step_in_phase in range(self.config.unbiased_steps):
-            energy, _, current_forces = self._md_step(
+            energy, _, current_forces, _ = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
             )
 
@@ -779,11 +788,13 @@ class PolymerizationWorkflow:
             lambda_vdw=self.config.tdbb.lambda_vdw,
         )
 
+        box = validated_box(state.cell)
+
         base_energy, base_forces = self.calculator.compute(
             state.positions, state.species, state.cell,
         )
-        bias_energy, bias_forces = total_bias(
-            pairs, state.positions, boost, tdbb, state.cell,
+        bias_energy, bias_forces, _ = total_bias_fast(
+            pairs, state.positions, boost, tdbb, box,
         )
         current_forces = base_forces + bias_forces
 
@@ -798,14 +809,15 @@ class PolymerizationWorkflow:
         for step_in_phase in range(activation_steps):
             boost.advance(tdbb.gamma, tdbb.f1_max_formation, tdbb.f1_max_dissociation)
 
-            base_energy, bias_energy, current_forces = self._md_step(
+            base_energy, bias_energy, current_forces, pair_dists = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
                 active_pairs=pairs, boost=boost, tdbb=tdbb,
-                enable_barostat=False,
+                enable_barostat=False, box=box,
             )
 
-            for p in pairs:
-                r = _pair_distance(state.positions, p.idx_a, p.idx_b, state.cell)
+            for i, p in enumerate(pairs):
+                r = pair_dists[i] if pair_dists else _pair_distance(
+                    state.positions, p.idx_a, p.idx_b, state.cell)
                 if (step_in_phase + 1) % 500 == 0 or step_in_phase == 0:
                     logger.info(
                         'Activation step %d: (%d,%d) r=%.3f A, f1_d=%.1f, bias_E=%.1f',

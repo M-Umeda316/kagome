@@ -14,6 +14,8 @@ from kagome.units import (
     FORCE_CONV,
     KB,
     force_to_accel,
+    force_to_accel_fast,
+    precompute_inv_masses,
 )
 
 # CODATA 2018
@@ -66,3 +68,19 @@ def test_force_to_accel_unit_mass_when_none():
     forces = np.array([[3.0, 0.0, 0.0]])
     accel = force_to_accel(forces, None)
     np.testing.assert_allclose(accel[0, 0], FORCE_CONV * 3.0, rtol=1e-12)
+
+
+def test_force_to_accel_fast_matches_original():
+    forces = np.array([[2.0, 1.0, -0.5], [0.0, 3.0, 1.0]])
+    masses = np.array([4.0, 12.0])
+    expected = force_to_accel(forces, masses)
+    inv_m = precompute_inv_masses(masses)
+    result = force_to_accel_fast(forces, inv_m)
+    np.testing.assert_allclose(result, expected, rtol=1e-14)
+
+
+def test_force_to_accel_fast_none_masses():
+    forces = np.array([[3.0, 0.0, 0.0]])
+    expected = force_to_accel(forces, None)
+    result = force_to_accel_fast(forces, None)
+    np.testing.assert_allclose(result, expected, rtol=1e-14)
