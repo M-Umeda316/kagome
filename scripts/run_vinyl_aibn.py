@@ -409,11 +409,17 @@ def main() -> None:
         )
         act_template, act_groups = build_activation_template(aibn_azo_bonds)
 
+        # Order matters (see specs/decisions.md 2026-06-24 "活性化と平衡化の順序バグ").
+        # minimize (FIRE, 0 K) relaxes placement clashes WITHOUT thermally
+        # decomposing the AIBN; activation then dissociates the azo C-N bonds on
+        # the still-intact structure. The 333 K equilibration is DEFERRED to
+        # after activation — running it before (the old order) thermally
+        # decomposed/scattered the azo bonds (C-N stretched past the [0,3] Å
+        # activation window), so activation found 0 C-N candidates, no real
+        # radicals formed, and the radical_C/chain_C topology was broken,
+        # starving downstream candidate selection (qualified candidates 0 vs 16).
         if config.minimize:
             wf._minimize(state)
-        if config.equil_steps > 0:
-            act_rng = np.random.default_rng(args.seed)
-            wf._run_equilibration_phase(state, act_rng, writer=None)
 
         dissociated = wf.run_activation(
             state, act_template, act_groups,
@@ -437,6 +443,12 @@ def main() -> None:
                     '(N_radicals=%d) — results assume the backend is spin-agnostic.',
                     calc.name, production_spin, n_radicals,
                 )
+
+        # Thermalize AFTER activation: radicals are already formed, so there is
+        # no intact azo left for the 333 K dynamics to decompose.
+        if config.equil_steps > 0:
+            act_rng = np.random.default_rng(args.seed)
+            wf._run_equilibration_phase(state, act_rng, writer=None)
 
         config = PolymerizationConfig(
             timestep_fs=config.timestep_fs,

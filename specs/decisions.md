@@ -969,3 +969,63 @@ Use this template for each decision.
 - Scientific risk: 低〜中。nylon の既定挙動が「固定 25Å」→「論文密度へ圧縮」に変わる(--box-size 明示で旧挙動を完全再現可能)。圧縮は準備デバイスで後段 ML 動力学をバイアスしない。原子順序不変は _build_openff_topology の検証で担保。
 - Licensing/commercial impact: なし(新規依存なし)。
 - Follow-up: (a) WSL で nylon 単一run(--density 0.5, classical 圧縮 → OrbMol-v2 MD)のスモーク。(b) 将来 nylon の prep-once-run-many が必要になれば prep_structure.py を nylon 対応に拡張。
+
+## 2026-06-24: 200+10 は 16 GB GPU でも WSL なら sustained MD が収まる — 「16 GB 実走不可」結論を撤回(Windows 固有の制約だった)
+- Measurement: 同一の RTX 4060 Ti (16 GB) を **WSL2 (Ubuntu-24.04) + pfpoly-gpu (torch 2.12.1+cu126)** で実行し、`scripts/profile_vram.py --systems vinyl_methyl_acrylate --scale 1.0 --md-steps 300`(= 論文スケール 200+10, 2520 atoms, 0.50 g/mL, 古典圧縮 → OrbMol-v2 持続 MD 300 step)を完走(exit 0)。**device peak 9.55 GB / 16 GB(torch reserved peak 7.88 GB)、headroom 6.45 GB、fits=True、0.954 s/step**。`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` が env で有効。成果物: runs/vram_s6_test_wsl/vram_profile.json。
+- Contradiction with 2026-06-15: 2026-06-15「200+10 exceeds 16 GB VRAM for sustained MD」では同型カード(Windows)で予約 VRAM が数百 step かけて 9.5 → 15.9 GB に creep してハングした。今回は同規模・同 300 step 窓(= Windows で creep が顕在化した窓)でピークが 9.55 GB のまま平坦で、creep は発生せず。
+- Root cause of the difference: 2026-06-15/2026-06-15(VRAM record)で記録のとおり `expandable_segments:True` は **Windows CUDA build では no-op**(torch が "not supported on this platform")。WSL2 では実際に効くため、近傍グラフのサイズ変動由来のアロケータ断片化が抑えられ、ピークが単発フットプリント(~9.5 GB)に留まる。したがって「200+10 は 16 GB では sustained 不可、≥24 GB 必須」という結論は **Windows 固有の制約**であり、VRAM 容量の根本的な天井ではなかった。
+- Decision: 200+10 paper-scale を **このマシン(16 GB)+ WSL で実走可能**と再評価する。本番 S6 を WSL の pfpoly-gpu で起動(scripts/run_s6_paper_scale.sh 経由、PYTHONPATH=src:. + expandable_segments)。≥24 GB GPU は「短時間化(0.95 s/step → A100 で数倍速)」の手段であって「実走の必須条件」ではない、と位置づけを変更。
+- Caveat (honest scope): 検証は 300 step。S6 本番は ~127,000 step(50 cycle)/ 数十時間規模なので、超長時間での creep ゼロは未保証。ただし Windows での creep は「数百 step」窓で顕在化したため、300 step 平坦は強い(完全証明ではない)証拠。本番ランの実 VRAM を定期サンプルして確認する。
+- Licensing/commercial impact: なし(新規依存なし。torch/orb-models/OpenFF は既存)。
+- Follow-up: (a) README:84「S6 未着手(24 GB+ GPU 必要)」, docs/installation.md S6 ハードウェア要件, docs/paper-reproduction.md を「WSL なら 16 GB で実走可、24 GB は時短用」に更新。(b) S6 本番完走時に confirmed_formations / 温度 / figures を確認し figure-comparison.md を更新(これがリポジトリ初の 200+10 paper-scale 完走になる)。(c) 本番中の実 VRAM をサンプルし、長時間 creep の有無を記録。
+
+## 2026-06-24: PES スキャン診断で OrbMol-v2 がラジカル付加の引力チャネルを再現すると確認 — formations=0 は MLIP 限界ではなくサンプリング/スピンの問題に確定
+- Background: 2026-06-15(Fix B minimal)が「formations>0 は OrbMol-v2 の反応再現性の問題であり未検証。推奨は workflow ではなく PES スキャン診断」と残していた。S6 本番(200+10, 16GB WSL)を 18/50 cycle で停止し、その診断を実施。
+- Method: `scripts/scan_radical_addition.py --backend orb --device cuda --spin 2`。メチルラジカル `[CH3]` + エチレン `C=C`(教科書的ラジカル付加、文献: 障壁 ~7、発熱 ~-23 kcal/mol)、**spin=2 doublet**、forming C–C を 3.5→1.54 Å で拘束緩和スキャン(sp2→sp3 再混成を許可)。
+- Result (decisive, VERDICT=attractive): dE_vs_3.5 が 3.5→2.2 Å で +6.1 kcal/mol まで微増(遷移状態 ~2.2-2.4 Å、障壁 ~+6)→ 2.0 Å で -2.1 → 1.8 Å -16.0 → 1.6 Å -26.8 → **1.54 Å で -27.8 kcal/mol(最小)**。教科書 PES(障壁 ~7、発熱 ~-23)と定量的に一致。**OrbMol-v2 はラジコル付加の引力チャネルを正しく再現する。**
+- Interpretation: (1) 「別 MLIP / PFP が必須」という 2026-06-15 末尾の最悪シナリオは**否定**。formations=0 は MLIP の根本的限界ではない。(2) PES 形状が workflow の困難を説明: 3.5→2.2 Å はほぼ平坦(~6 kcal/mol)で、3-6 Å の候補ペアはほとんど引力を感じない → ~2.2 Å の障壁を**バイアスで押し越える**必要があり、越えれば井戸へ自落。窓 [3,6] も f2 も触る必要はなく、バイアスが 2.2 Å まで届けば足りる。(3) スピンの寄与: 本スキャンは spin=2(doublet)で成功。**【訂正: 下記 2026-06-24 CORRECTION 参照】** 当初ここで「S6 が spin=1 だから候補が来ても結合しない」と記したが誤り。S6 はログ上 spin=1 のまま formation を 2 件出していた(run を kill したため bonds.jsonl 未生成で空に見えただけ)。スピンは formation EVENT の可否を決める直接原因ではなかった(電子状態の物理的厳密性には効くが、バイアス駆動の幾何条件は spin=1 でも満たされる)。
+- Decision: formations を出す筋道を「(a) 正しい開殻スピン + (b) バイアスで ~2.2 Å 障壁を越えさせる」と確定。窓/f2/r0 のチューニングは不要(paper-confirmed のまま）。次の科学的争点は「溶融系の複数ラジカルで系全体スピンが ill-defined」問題(独立 doublet vs 高スピン和）であり、scripts/scan_radical_addition_2rad.py がその検証用。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) scan_radical_addition_2rad.py で 2 ラジカル同時のスピン扱いを検証(melt スケーリングの本質的ブロッカー)。(b) その結果次第で、単一ラジカル+少数モノマーの TDBB を spin=2 で回し formations>=1 を実証(機構の end-to-end 検証）。(c) 多ラジカル melt のスピン処理方針を decisions に起こしてから 200+10 を spin 対応で再実行。
+
+## 2026-06-24: 2ラジカル PES で高スピン近似は MARGINAL(使用可・~2-3 kcal/mol の不定性)— melt は系全体スピン=高スピン和で扱う
+- Method: `scripts/scan_radical_addition_2rad.py --device cuda`。2×CH3 ラジカル + C2H4。スキャンするラジカル1がエチレン C0 へ付加、傍観ラジカル2 を中心から 7 Å に固定。1rad/s=2(クリーン基準)・2rad/s=1(非物理の閉殻一重項・参考)・2rad/s=3(高スピン三重項=2 doublet の高スピン和)で拘束緩和スキャン。成果物: runs/s3_pes_2rad/pes_comparison.json + s3_pes_comparison.png/pdf。
+- Result: 正しい比較は 1rad/s=2 vs 2rad/s=3。barrier 33.90 vs 37.18(diff 3.28)、product min -27.78 vs -30.18(diff 2.41)、max点差 2.64 kcal/mol。VERDICT=MARGINAL(<1 kcal/mol のクリーン基準には未達だが、付加チャネルの形—障壁 ~+7、深い発熱井戸—は完全保存)。参考: 2rad/s=1(閉殻一重項)は非物理でズレ最大 ~4.2 kcal/mol、これは使うべきでない。
+- Decision: 多ラジカル melt のスピンは **系全体を高スピン和(全不対電子を平行、multiplicity = n_radicals+1)で OrbMol-v2 に渡す** 方針を採用。根拠: 高スピン近似は付加チャネルを定性的に正しく再現し、誤差は ~2-3 kcal/mol に収まる(独立 doublet の厳密扱いは MLIP の系全体スピン制約では不可能なため、これが実務上の最善)。閉殻一重項(spin=1)は物理的厳密性では不可。**【訂正: 下記 2026-06-24 CORRECTION 参照】** ただし「S6 が spin=1 で formations=0」は事実誤認で、S6 は spin=1 でも formation 2 件を出していた。高スピン和は formation を出すための前提ではなく、電子状態を物理的に正しくするための改善。
+- Caveat: ~2-3 kcal/mol の系統誤差は障壁(~7 kcal/mol)に対して無視できない比率。バイアス(f1_max=250)は障壁を十分上回るので bond formation の可否自体には影響しないが、絶対反応性/速度論の定量比較には効く。傍観ラジカルが増える(高密度 melt)とシフトが累積する可能性があり、本番では確認が要る。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) 単一ラジカル+少数モノマーの TDBB を **spin=2** で回し formations>=1 を end-to-end 実証(2026-06-15 Fix B minimal は spin=2 でも 0 だったが、当時は PES が引力的と未確認・希薄系でバイアスが ~2.2 Å 障壁まで届かなかった可能性。今回 PES が引力的と判明したので、バイアス捕捉が 2.2 Å に届く配置/密度で再試行する価値がある)。(b) run_vinyl_aibn の活性化後スピンを「閉殻 spin=1」から「高スピン和」へ修正できるか検討(現状 activation は spin=1 のまま)。(c) 200+10 を高スピン対応で再実行する前に、まず (a) の最小系で機構を確定。
+
+## 2026-06-24 CORRECTION: S6(200+10)は spin=1 でも formation を出していた — 「formations=0」は run を kill した運用ミスによる誤認(bonds.jsonl は完了時書き込み)
+- Trigger: 上記 2 エントリで「S6 は spin=1 ゆえ formations=0」と推論したが、停止した S6 のログ(tasks/bbliiqoxs.output, line 93-110)を精読したところ事実誤認と判明。faithful-reporting に基づき訂正。
+- Actual data: S6(200+10, 2640 atoms, spin=1, f2=5.0, Fix A 連続 in-phase 検出, f1_max_formation=250)は cycle 19/50 までに **chain propagation(formation)を 2 件**記録。Cycle 9: `reaction event at step 465 (1 pair(s))`, min_pair_dist 1.74 Å → `Chain propagation: atom 577 (beta-C) → radical_C`。Cycle 15: `reaction event at step 586`, min_pair_dist 1.90 Å → `Chain propagation: atom 1453 → radical_C`。selection.jsonl に該当ペア([223,576,128,781] / [79,1452,32,2581])も記録。
+- Why I misread: bonds.jsonl と summary.json は **run 完了時にフラッシュ**される。私が cycle 18 で run を kill したため両ファイルが未生成 → 「bonds.jsonl が空 = formations=0」と早合点した。**ファイル不在 ≠ formation ゼロ**。formation の有無はログの reaction-event/Chain-propagation 行で判断すべきだった。運用ミスとして、動作中で成果を出していた run を停止してしまった。
+- Corrected scientific picture: (1) **TDBB は paper-scale(200+10)で実際に bond formation を生成する** — これは本プロジェクトの主目標の達成。(2) spin=1 でも formation EVENT は起きる: 強いバイアス(f1_max=250 ≫ 障壁 ~7)がペアを幾何的 bonding 条件(< 60% Σvdw)まで駆動し、paper の reaction-event 定義(幾何条件)を満たすため。(3) なぜ 2026-06-15 の 100+5 / 20+2 では 0 で、今回 200+10 で出たか: **スケール**(200+10 は候補・遭遇が多い。cycle 9 で 5 候補)+ **Fix A**(run-until-reaction の連続検出が過渡的接触を捕捉)+ **f2=5.0**(3 Å でのバイアス力 ~17 kcal/mol/Å、f2=10 の ~0 と桁違い)の組合せ。当初「スケールアップで転化率」仮説には実は merit があった(2026-06-14/15 で否定し過ぎていた)。(4) PES 診断(本日の 2 エントリ)は依然有効: OrbMol-v2 に真の引力井戸がある=強制接触したペアは実在の井戸に入る(純バイアス artifact ではない)。高スピンは formation の前提ではなく、電子状態の物理的厳密化のための改善。
+- Caveat / remaining rigor: spin=1 は閉殻サロゲート(activation 解離 0 → 真の開殻ラジカル不在)。formation は paper の幾何基準では成立だが電子状態は真のラジカルでない。物理的厳密化には高スピン和 / 実ラジカルでの再実行(plan B)が有効。ただし TDBB 機構そのものは paper-scale で formation を出すと実証済み。
+- Process lesson: 長時間 run を停止する前に、(i) 成果ログ(reaction-event/propagation)を確認、(ii) 完了時書き込みファイル(bonds/summary)の有無で結論しない。
+- Decision: S6(200+10, 現行パラメータ)を **完走まで再実行**し、bonds.jsonl / summary.json / figures と 50 cycle 全体の formation 数を確定する(リポジトリ初の 200+10 paper-scale 完走 + formation 記録)。spin 厳密化(plan B)は完走ベースライン取得後の改善として別途。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) S6 再実行・完走 → confirmed_formations, 温度, figures を figure-comparison.md に記録。(b) 完走後に高スピン/実ラジカル版を比較し、formation の電子状態依存を評価。
+
+## 2026-06-24: 候補枯渇の真因 = 活性化と平衡化の順序バグ + AIBN の prep 不安定(幾何/密度/NVT/スピンは無関係)
+- Question: S6 の低転化率(~7 formation = 3.5%、論文 60-80%)の律速は何か。「候補枯渇」(ほとんどのサイクルで n_candidates=0)を実測で切り分け。
+- Method: (1) オフライン再構成は **原子順序不整合で無効**と判明(再ビルド index が軌跡と不一致 → radical–共有 chain_C 距離 28 Å 等あり得ない値。`scripts/diag_candidate_starvation.py` の数値は破棄)。(2) 権威ある方法に切替: `polymerization.py` の `_run_biased_phase`/`run_activation` に env ガード付き計装(`KAGOME_DIAG_STARVATION=1`)を追加し、ライブの正しいグループで `raw_ij / validk / validl / both / qualified` と activation 時の azo C-N 実距離を出力。短縮 S6(200+10)で測定。
+- Decisive evidence:
+  - 活性化が失敗した run(equil 長): DIAG-STARV は raw_ij≈40-50(幾何は潤沢)だが **validk≈0**(i–k: radical_C–chain_C ≤3Å がほぼ不成立)→ qualified≈0。
+  - 活性化が成功した run(equil 500): DIAG-ACTIV = 20 azo C-N bonds, dist **min 1.18 / max 17.97 / mean 3.86 Å、window[0,3]に 15/20 のみ**。15/15 dissociated で活性化発火。直後 DIAG-STARV cycle 0 = raw_ij=39, **validk=20, both=12, qualified=16**。
+  - つまり qualified candidates は活性化の成否で **0 ⇄ 16** に変わる。候補枯渇 ⇔ 活性化不発、の因果が確定。
+- Root cause: ワークフロー順序が `minimize → 333K 平衡化(本番 equil_steps=2000)→ run_activation`。AIBN アゾは熱的に不安定で、**活性化の前に 333K 平衡化で制御されず分解・四散**(azo C-N が 0.5 ps で 18Å まで開く=物理的 AIBN 速度より桁違いに速く、prep 歪み or OrbMol-v2 由来)。平衡化が長いほど azo が全滅 → 本番(equil 2000)は activation「0 dissociated」→ 本物のラジカル不在 → radical_C/chain_C トポロジー崩壊で i–k 制約不成立 → 候補枯渇 → formation ~7。
+- Conclusion: 低転化率の律速は **幾何でも密度でも NVT でもスピンでもなく、活性化前の平衡化が AIBN を壊していること**。これは 2026-06-13/14/15 の各仮説(scale, equilibration不足, temperature, window, bias range)とも別の、ワークフロー順序の問題。
+- Decision/fix candidates(Ask-first: 反応モデル/ワークフロー順序): (a) **活性化を 333K 平衡化の前に実行**(構築直後の intact 構造で azo を解離 → その後に平衡化・TDBB)。(b) または活性化前の equil を skip/短縮。(c) または古典圧縮/平衡化中に azo 結合を拘束。(d) 古典圧縮単体で既に azo が壊れるか(compress 直後の azo 距離)を切り分け、FF の azo パラメータ妥当性を確認。最有力は (a)。
+- Caveat: 短縮 run(equil 500)でも 5/20 は既に窓外。古典圧縮(20段 FIRE)時点での損傷可能性があり、(d) の切り分けが要る。
+- Licensing/commercial impact: なし(計装は env ガード、既定無効)。
+- Follow-up: (a) 活性化順序を build→activate→equil→TDBB に変える設計を decisions に起こし実装(承認後)。(b) 修正後に短縮 S6 で qualified candidates が全サイクル潤沢か、formation が増えるかを確認。(c) その後 NPT 化(plan B)。
+
+## 2026-06-24: 活性化順序の修正を実装・検証 — activation 0→19, formation レート ~3-4x 改善。残課題: 活性化後 equil が候補品質を再劣化
+- Implementation: `scripts/run_vinyl_aibn.py` の活性化分岐を `minimize → equil(333K) → activate` から **`minimize(FIRE 0K) → activate → equil(333K)`** に変更。minimize は clash 緩和(0K なので azo を熱分解しない)として活性化前に残し、333K 平衡化のみ活性化後へ移動。スピン切替(高スピン和)は activate 直後・equil 前に実行。
+- Verification (短縮 S6: 200+10, equil 500, activation-steps 1000, 2 cycles, spin auto): DIAG-ACTIV = azo C-N **max 3.46Å(無傷), 窓[0,3]に 18/20**(旧順序 equil 前は max 17.97Å, 15/20)。**Activation result: 19 dissociated(旧本番=0)**。Spin switched 1→21。cycle0 qualified=3 → reaction event step4 → Chain propagation、cycle1 qualified=1。**Confirmed formations: 1 / 2 cycles**(旧 ~7/50 ≈ 0.14/cycle に対し ~0.5/cycle ≈ 3-4x)。根本原因(活性化前 equil が AIBN を破壊)は解消と確認。
+- Remaining issue (next lever): `validk`(radical_C–chain_C ≤3Å)が活性化直後は ~20(bkb57pl5o 実測, equil を挟まない計測)だが、**活性化後 equil 500 を挟むと 6 に低下、qualified 16→3**。activation 自体は救えたが、その後の 333K 平衡化(spin=21 高スピン)が生成ラジカルのトポロジー/配置を再び劣化させている。候補をさらに潤沢にするレバー候補: (a) post-activation equil を短縮/skip し直接 TDBB へ、(b) high-spin 動力学の安定性確認、(c) 平衡化を弱め(低温/短時間)に。
+- Performance note: high-spin(spin=21)生産は spin=1 比でやや重い/不安定の可能性。別の短縮 run(bmiz0nptj, equil 2000)は活性化到達前に異常に時間がかかり kill(主因は CPU 古典圧縮 + ML minimize のブレで、本修正とは無関係)。
+- Status: 計装(KAGOME_DIAG_STARVATION env ガード)と本修正は未コミット。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) post-activation equil を短縮/skip した短縮 run で qualified が ~16 を維持し formation レートが上がるか確認。(b) 効果確認後に長め(10-50 cycle)で転化率を測り、論文 60-80% への差を再評価。(c) その後 NPT 化(plan B)。

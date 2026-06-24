@@ -556,6 +556,63 @@ class PolymerizationWorkflow:
 
         logger.info('Equilibration: %d steps complete', self.config.equil_steps)
 
+    def _log_starvation_diag(self, cycle, positions, cell, n_qualified) -> None:
+        """Decompose the formation criterion on the LIVE groups (authoritative).
+
+        Counts raw i-j geometric pairs in the formation window, then how many of
+        those i (j) also have a valid constraint partner k (l) within its window,
+        and how many satisfy both — vs the fully-qualified 4-tuple candidates.
+        Isolates whether candidate scarcity is geometric (raw_ij ~ 0) or
+        constraint-driven (raw_ij large but both ~ 0).
+        """
+        score_pairs = [p for p in self.template.pairs if p.score_pair]
+        form = next((p for p in score_pairs if p.is_formation
+                     and p.group_a in self.groups and p.group_b in self.groups), None)
+        if form is None:
+            return
+        A = self.groups[form.group_a].atom_indices
+        B = self.groups[form.group_b].atom_indices
+
+        def _partner(anchor):
+            for p in score_pairs:
+                if p is form:
+                    continue
+                if p.group_a == anchor:
+                    return p.group_b, p
+                if p.group_b == anchor:
+                    return p.group_a, p
+            return None, None
+
+        kc_label, kc = _partner(form.group_a)   # radical_C -> chain_C
+        lc_label, lc = _partner(form.group_b)   # vinyl_alpha_C -> vinyl_beta_C
+        Kset = self.groups[kc_label].atom_indices if kc_label else []
+        Lset = self.groups[lc_label].atom_indices if lc_label else []
+
+        def _has_partner(i, partners, ps):
+            for q in partners:
+                d = float(np.linalg.norm(minimum_image(positions[q] - positions[i], cell)))
+                if ps.r_min <= d <= ps.r_max:
+                    return True
+            return False
+
+        raw = vk = vl = both = 0
+        for i in A:
+            ik = _has_partner(i, Kset, kc) if kc else True
+            for j in B:
+                d = float(np.linalg.norm(minimum_image(positions[j] - positions[i], cell)))
+                if not (form.r_min <= d <= form.r_max):
+                    continue
+                raw += 1
+                jl = _has_partner(j, Lset, lc) if lc else True
+                vk += ik
+                vl += jl
+                both += (ik and jl)
+        logger.info(
+            'DIAG-STARV cycle %d: raw_ij=%d (window [%.1f,%.1f]) '
+            'with_validk=%d with_validl=%d both=%d qualified=%d',
+            cycle, raw, form.r_min, form.r_max, vk, vl, both, n_qualified,
+        )
+
     def _run_biased_phase(
         self,
         state: SimulationState,
@@ -567,6 +624,15 @@ class PolymerizationWorkflow:
             self.template, self.groups, state.positions, state.cell,
         )
         scored = score_candidates(candidates)
+
+        # DIAG (candidate-starvation, 2026-06-24): decompose the formation
+        # criterion live. Counts raw i-j geometric pairs (formation window only)
+        # and how many of those also satisfy each constraint (i-k, j-l), vs the
+        # fully-qualified 4-tuple candidates. Isolates geometry vs constraint.
+        import os
+        if os.environ.get('KAGOME_DIAG_STARVATION'):
+            self._log_starvation_diag(cycle, state.positions, state.cell,
+                                      len(candidates))
         if self._selection_log is not None:
             selected, decisions = audited_selection(scored)
             self._write_selection_audit(cycle, decisions)
@@ -761,6 +827,27 @@ class PolymerizationWorkflow:
         )
         scored = score_candidates(candidates)
         selected = select_non_overlapping(scored)
+
+        import os
+        if os.environ.get('KAGOME_DIAG_STARVATION'):
+            # Measure the ACTUAL bonded azo C-N distances (azo_C[k] is bonded to
+            # azo_N[k]). If these are stretched beyond the activation window the
+            # structure prep distorted the AIBN molecules -> activation can't fire.
+            c_idx = activation_groups['azo_C'].atom_indices
+            n_idx = activation_groups['azo_N'].atom_indices
+            bonded = [
+                float(np.linalg.norm(minimum_image(
+                    state.positions[n] - state.positions[c], state.cell)))
+                for c, n in zip(c_idx, n_idx)
+            ]
+            ps = activation_template.pairs[0]
+            in_win = sum(ps.r_min <= d <= ps.r_max for d in bonded)
+            logger.info(
+                'DIAG-ACTIV: %d azo C-N bonds; dist min=%.2f max=%.2f mean=%.2f; '
+                'in window [%.1f,%.1f]=%d; find_candidates=%d',
+                len(bonded), min(bonded), max(bonded), sum(bonded) / len(bonded),
+                ps.r_min, ps.r_max, in_win, len(candidates),
+            )
 
         if not selected:
             logger.warning('Activation: no C-N candidates found.')

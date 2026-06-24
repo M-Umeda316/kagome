@@ -43,6 +43,12 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
+
 SEED="${SEED:-7}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/s6_paper_scale_seed${SEED}}"
 DEVICE="${DEVICE:-cuda}"
