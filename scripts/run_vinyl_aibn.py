@@ -107,6 +107,11 @@ def main() -> None:
     parser.add_argument('--spin', type=int, default=1,
                         help='Total spin multiplicity (2S+1) passed to OrbMol-v2. '
                              'Use 2 (doublet) for a single radical. Default 1 (singlet).')
+    parser.add_argument('--production-spin-cap', type=int, default=None,
+                        help='Cap the post-activation production multiplicity at this '
+                             'value instead of n_radicals+1 (high-spin sum). Diagnostic '
+                             'for isolating whether high multiplicity destabilises the '
+                             'dynamics. Default: no cap (high-spin sum).')
     parser.add_argument('--minimize', dest='minimize', action='store_true', default=True,
                         help='FIRE energy minimization before TDBB (default: on). '
                              'Relaxes initial close contacts (paper anchor PDF p.20).')
@@ -434,6 +439,10 @@ def main() -> None:
         if dissociated:
             n_radicals = len(groups['radical_C'].atom_indices)
             production_spin = n_radicals + 1
+            if args.production_spin_cap is not None:
+                production_spin = min(production_spin, args.production_spin_cap)
+                logger.info('Production spin capped at %d (from n_radicals+1=%d)',
+                            production_spin, n_radicals + 1)
             calc.set_spin(production_spin)
             if getattr(calc, 'supports_spin', False):
                 logger.info('Spin switched: 1 → %d (N_radicals=%d)', production_spin, n_radicals)

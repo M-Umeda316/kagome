@@ -1029,3 +1029,28 @@ Use this template for each decision.
 - Status: 計装(KAGOME_DIAG_STARVATION env ガード)と本修正は未コミット。
 - Licensing/commercial impact: なし。
 - Follow-up: (a) post-activation equil を短縮/skip した短縮 run で qualified が ~16 を維持し formation レートが上がるか確認。(b) 効果確認後に長め(10-50 cycle)で転化率を測り、論文 60-80% への差を再評価。(c) その後 NPT 化(plan B)。
+
+## 2026-06-25: 決定的 — spin=21(20ラジカルの高スピン和)で OrbMol-v2 は熱暴走する。高スピン和方針は paper-scale で破綻
+- Trigger: 活性化順序の修正後、候補が cycle 0(qualified=34)以降に全ラジカルで一斉崩壊(cycle1 で validk 34→5、cycle3 で 0)。「post-activation equil が原因」仮説で equil=0 を試したが改善せず → 温度を直接測定。
+- Decisive measurement(trajectory の temperature_K, 設定 333K): **spin=21 の run は両方とも熱暴走**。s6_equil0(equil 0, spin21): cyc0 biased 2.5e6 K → cyc2 で 1e10 K。s6_fix_verify(equil 500, spin21): cyc0 biased 2.3e8 K → 1.7e10 K。equil の長短は無関係(むしろ equil 500 の方が速く発散)。一方、元の安定 S6(spin=1; 活性化 0 解離でスピン切替が起きなかった)は全 run ~300K で安定だった。
+- Root cause: **OrbMol-v2 は 20 ラジカルの高スピン和 multiplicity=21 で異常(発散的)な力を返し、Langevin 333K 恒温器が制御不能になり系が爆発(1e8〜1e10 K)。** これが validk 崩壊=候補枯渇の正体(系全体が爆発し全共有結合が壊れる)。検出された formation は爆発中の偶発接触で物理的に無意味。
+- 構図: 元 S6 = 活性化失敗→spin=1→安定だが候補少。活性化順序の修正 = 活性化成功→spin 1→21 切替→爆発。修正は活性化を直したが、その結果「高スピン和」方針(2026-06-24 採用)が 20 ラジカルで破綻することを露呈。2-radical PES の "MARGINAL"(~2-3 kcal/mol)が、20 radical では "catastrophic"(発散)に悪化。
+- Implication: OrbMol-v2 の系全体スピン制約下では、多ラジカル melt の高スピン和は使えない。formation を出すには (A) **production spin を低く保つ**(spin=1 等。非物理だが安定でバイアス駆動の幾何 formation は起きる。元 S6 が spin=1 で formation 2件を出した実績あり)か、(B) 別アプローチ(per-radical spin 不可、別 MLIP、または逐次 1 ラジカルずつ処理)。
+- Decision: PENDING(Ask-first: スピン/反応モデルの科学的意味)。次の切り分け/修正候補: 活性化順序の修正は残しつつ **スピン切替を低い上限でキャップ**(例 spin=1 or 2)し、活性化成功+安定動力学+候補維持を両立できるか短縮 run で検証。これが成立すれば paper-scale で持続的な候補供給→転化率向上が見込める。
+- Status: 計装・活性化順序修正はコミット済み(165295e)。スピンキャップは未実装(設計待ち)。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) spin キャップ実装(--production-spin-cap 等)→ 短縮 run で温度安定(~333K)と qualified 維持を確認。(b) 安定したら長尺で転化率測定(plan B)。(c) その後 NPT 化(plan C)。高スピン和方針(2026-06-24 の 2-radical 決定)は本結果で paper-scale 不適と更新。
+
+## 2026-06-25 事前確認(spin の本質究明)— 結論: OrbMol-v2 では agnostic 不可・高スピン和は即爆発・低スピンは非物理かつ不安定 → 逐次処理が本命
+- 事前確認1(OrbMol-v2 の spin 実装と挙動):
+  - orb-models adapter は spin を **graph_feats["spin_multiplicity"](系全体スカラー)**として渡す。conservative_regressor の conditioner が **charge+spin を必須**とし、未設定だと `AssertionError: Missing required total_charge and spin_multiplicity`。→ **OrbMol-v2 は spin-agnostic 実行が構造的に不可**(spin=None を試すと conditioner が assert で拒否。backend は変更せず元のまま)。
+  - 孤立緩和ラジカル(8 個)の spin 掃引: mult 1〜31 で max|F|=5〜15 と穏当(高 mult 単体では非爆発)。
+  - standalone 力テスト(実 post-activation 構造, periodic): max|F|=27万〜85万で spin 非依存に見えたが、**安定だった killed_partial 構造でも 85万**だったため**周期座標 unwrap のアーティファクトと判明・破棄**。
+  - 実 MD ラン(s6_spincap1, 活性化成功18解離, spin キャップ=1): cyc0 biased が **408→1220→992K(設定333K付近)で開始** — spin=21(s6_equil0)が初手 2.5e6 K で即爆発したのと対照的。**実動力学では高 multiplicity が初期から不安定**(standalone では見えなかった)。ただし spin=1 でも unbiased 中に加熱(1777→1.3e5K)し cyc1 で 3e8K に発散 → **timestep 1 fs(論文 0.25 fs)による数値ドリフトが第2の不安定源**(硬い反応系で 1 fs は過大)。
+- 事前確認2(論文/PFP の多ラジカル扱い, PDF 全28p 抽出):
+  - **"spin"/"multiplicity"/"unpaired"/"doublet"/"open-shell"/"unrestricted" の語が論文に一度も無い**。p21「AIBN 分解+ラジカル付加のみ有効化、停止/連鎖移動は無効」、p8-9「全開始剤ラジカルが活性持続(リビング的)」=**同時に最大20ラジカル**、p27「障壁検証は単一ラジカル+モノマー」、p20「PFP Bader 電荷を古典平衡化に使用」。→ **論文は PFP をスピン非設定(agnostic)で回している**と強く推定。OrbMol-v2 では再現不可。
+- Correction: 2026-06-25 前エントリ「spin=21 が OrbMol-v2 を爆発させる」は**部分的に正しいが単純化**。正: (1) 実 MD では高 multiplicity が初期不安定を生む(spin 依存は実在)、(2) ただし spin=1 でも timestep 1 fs で徐々に発散、の**2要因**。候補枯渇の最終原因は「活性化後の本物ラジカル melt を安定に動かせないこと」。
+- 重要: spin=1 で **qualified candidates が cyc0=37/cyc1=36 と2サイクル維持**(温度上昇前)。**動力学が安定なら候補は枯れない**=安定化できれば転化率を積める。
+- Decision(方針, Ask-first 済の議論継続): OrbMol-v2 互換で物理的に筋が通るのは **逐次処理(一度に1ラジカル=doublet spin=2、安定領域かつ物理的、PES 検証済み)**。agnostic は不可、高スピン和は爆発、低スピンは非物理。バックエンド変更は「agnostic/フラグメントスピン対応が商用安全に存在するか不明」で不確実。**timestep を 0.25 fs(論文値)に戻す**のは安定化の併用レバー。
+- Status: --production-spin-cap フラグ・diag_spin_sweep.py を診断用に残置。spin=None backend ガード(死にコード)と diag_spin_on_real_struct.py(周期 unwrap アーティファクトで信頼不可)は破棄。
+- Follow-up: (a) 逐次処理ワークフローの設計(1ラジカル activate→doublet で連鎖成長→終了で次)。(b) timestep 0.25 fs を既定反応条件に。(c) 設計合意後に実装。
