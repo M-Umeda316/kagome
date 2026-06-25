@@ -120,14 +120,20 @@ def _rotation_align(a, b):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description='Radical-addition PES scan')
-    ap.add_argument('--backend', default='orb', choices=['orb', 'mace'])
+    ap.add_argument('--backend', default='orb', choices=['orb', 'mace', 'aimnet'])
     ap.add_argument('--device', default='cpu')
     ap.add_argument('--spin', type=int, default=2, help='doublet for one radical')
+    ap.add_argument('--aimnet-model', default='aimnet2-nse',
+                    help='AIMNet2 model name (default aimnet2-nse, open-shell)')
     args = ap.parse_args()
 
     if args.backend == 'orb':
         from kagome.backends.orb_backend import create_orb_calculator
         calc = create_orb_calculator(device=args.device, spin=args.spin)
+    elif args.backend == 'aimnet':
+        from kagome.backends.aimnet_backend import create_aimnet_calculator
+        calc = create_aimnet_calculator(
+            model=args.aimnet_model, device=args.device, spin=args.spin)
     else:
         from kagome.backends.mace_backend import create_mace_calculator
         calc = create_mace_calculator(device=args.device)

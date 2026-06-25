@@ -1054,3 +1054,31 @@ Use this template for each decision.
 - Decision(方針, Ask-first 済の議論継続): OrbMol-v2 互換で物理的に筋が通るのは **逐次処理(一度に1ラジカル=doublet spin=2、安定領域かつ物理的、PES 検証済み)**。agnostic は不可、高スピン和は爆発、低スピンは非物理。バックエンド変更は「agnostic/フラグメントスピン対応が商用安全に存在するか不明」で不確実。**timestep を 0.25 fs(論文値)に戻す**のは安定化の併用レバー。
 - Status: --production-spin-cap フラグ・diag_spin_sweep.py を診断用に残置。spin=None backend ガード(死にコード)と diag_spin_on_real_struct.py(周期 unwrap アーティファクトで信頼不可)は破棄。
 - Follow-up: (a) 逐次処理ワークフローの設計(1ラジカル activate→doublet で連鎖成長→終了で次)。(b) timestep 0.25 fs を既定反応条件に。(c) 設計合意後に実装。
+
+## 2026-06-25: プロジェクト方針の確定 — 目標は「商用安全 TDBB 能力(i)+ 妥当域の知見(ii)」、論文の数値追試は非目標
+- Context: spin の壁(多ラジカル melt を OrbMol-v2 で物理的に扱えない)を受け、ゴールを再設定する議論をオーナーと実施。論文キネティクスの物理的意味を精査した結果、Rp∝[I] や線形転化率は **停止反応を無効化した理想化(モデル化選択)の帰結**であり MLIP の物理的忠実性をほとんど検証しない(論文 p8-9 自身が「√[I] でなく線形なのは停止なしだから」と明記)。物理的に濃い結果(相対反応性・障壁)ほど OrbMol-v2 では困難、再現容易な集団キネティクスほど物理的中身が薄い、という非対称が判明。
+- Decision: 本プロジェクトの目標を **(i) 使える商用安全 TDBB シミュレーション能力(道具)** と **(ii) その妥当域(OrbMol-v2+TDBB がどこまで信頼できるか)の知見** に確定。**論文の数値追試(完全再現)は非目標**(MLIP が異なる以上原理的に不可能、かつ目玉キネティクスの物理的中身が薄い)。論文は「手法の出典 + 定性的サニティチェック」に格下げ。CLAUDE.md の Mission(設計のための商用安全な workflow 再現)の実体に合致。
+- Implications: (a) 多ラジカルスピンの壁(2026-06-25)は「再現の障害」ではなく **画定すべき限界(成果 ii)** に位置づけ変更。(b) **S6(密な 200+10 同時多ラジカル melt)は OrbMol-v2 の妥当域外**。スコープ内での扱いは「妥当域外と画定 + ガードレールで検知/拒否 + ラジカル能力は妥当領域(希薄/単一ラジカル=doublet)で実証」。(c) **逐次処理は必須でなく任意拡張**(密領域でも構造生成したい場合のみ。キネティクスは非物理になる)。
+- Workstreams: A) 妥当域スペック + 小 validation スイート(本セッションの PES/障壁・スピン壁の知見を結晶化)。B) 妥当領域でのツール堅牢化(無効領域のガードレール=黙って発散させない、+ クリーンな end-to-end: 段階重合ナイロン[閉殻=spin 問題なし]・希薄単一ラジカルのビニル[doublet])。C) ドキュメント(使い方・妥当域・限界)。
+- Scientific risk: 低(スコープを物理的に妥当な領域に限定する方向の決定)。Licensing/commercial impact: なし(OrbMol-v2 維持、PFP 不採用を再確認)。
+- Follow-up: ワークストリーム A から着手 → specs/validity-domain.md を新設(本エントリ参照)。
+
+## 2026-06-25: ラジカル架橋の方針 — 逐次は保留、spin-agnostic バックエンド spike を先行
+- Context: ラジカル架橋(crosslinking/curing)を「構造生成までは扱える道具にしたい」とのオーナー意向。手段は (S) 逐次(OrbMol-v2, doublet, 構造生成のみ・非物理キネティクス)か (A) spin-agnostic バックエンド(同時多ラジカルを一律処理、論文 PFP と同戦略)。
+- 重要な再認識: 多ラジカルスピンの壁は **OrbMol-v2 が spin 必須であることに固有**。spin-agnostic MLIP(multiplicity 非要求)なら壁が無く、しかも **commercial-safe な候補が存在しうる**(PFP=Matlantis の制限に縛られない)。バックエンドはクリーンなインターフェース化済みで差替え容易。
+- Decision: **逐次は投機的に実装せず保留**。先に **バックエンド spike を実施**(候補 spin-agnostic MLIP の選定 → license チェック → `scripts/scan_radical_addition.py` で PES 検証=障壁~7/井戸~−28 を再現するか)。判定後に逐次の要否を確定する。
+  - spike 通過 → 同時多ラジカル架橋が商用安全に可能 → **逐次は不要化**。
+  - spike 失敗 → commercial-safe agnostic 無し → **逐次が OrbMol-v2 での構造生成フォールバックに昇格**。
+- Rationale: 「大きな実装の前に安く前提を潰す」原則。逐次を先に作るとバックエンドが通った場合に無駄になる。逐次には副次的利点(検証済み backend を妥当領域 doublet で使う=局所結合形成の信頼性)があるが二次的。
+- Guardrails (CLAUDE.md): 新バックエンドは **採用前に license チェック必須**、`specs/dependency-license-matrix.md` に商用化ステータス記録。permissive 重みでなければ `blocked_pending_review`。PFP は使用許諾未確認のため既定にしない。
+- Follow-up: (a) 候補選定基準(commercial-safe permissive 重み + 有機ラジカル対応 + spin 非要求 + 保存力)で候補列挙・license 確認。(b) 最有力候補で PES 検証。(c) 結果を validity-domain.md §2.7 と本エントリに反映し逐次要否を確定。
+
+## 2026-06-25 CORRECTION(重大): 「spin=21 が爆発」は誤帰属。真因は timestep 1fs + 平衡化不足。OrbMol-v2 は良条件で 200+10 多ラジカル melt を安定に走る
+- Trigger: AIMNet2-NSE spike のクリーンな同条件比較(40+4, 0.25fs, equil1000, spin=9)で、**OrbMol-v2 が mean 386K と aimnet(875K)より安定**だった。「OrbMol-v2 は多ラジカル不可」が条件依存では?と疑い、爆発した元条件(200+10, spin=21)を良条件で再試験。
+- Decisive measurement: **OrbMol-v2, 200+10, spin=21(auto, 18解離), 0.25fs, equil2000** → 温度 **mean 404K / max 437K で安定**、qualified candidates **40/41/41 と全サイクル潤沢に維持**(runs/orb_fullcond)。これは s6_equil0(1fs,equil0)/s6_fix_verify(1fs,equil500)で 1e6〜1e10 K に爆発した**まさに同じ系・同じ spin=21**。唯一の差は timestep(1fs→0.25fs)+ 平衡化(0/500→2000)。
+- Root cause(確定・訂正): 一連の「爆発 / 候補崩壊 / spin の壁」は **run 条件のアーティファクト** — (1) **timestep 1fs が反応性ラジカル系には過大で数値発散**(C-H 伸縮 ~3000cm⁻¹、強バイアス、開殻で硬い)、(2) 平衡化不足。**論文値 timestep=0.25fs + 適切な平衡化**で解消。2026-06-25「spin=21 が爆発」「spin が決定的」とした各記述は **timestep への誤帰属**であり撤回。spin=21(高スピン和)自体は良条件下で安定に扱える。
+- Implications: (a) **逐次処理・spin-agnostic バックエンド・「多ラジカル melt は妥当域外」(validity-domain §2.1/§2.6)は、いずれも“爆発という偽ブロッカー”前提だった → 前提崩壊**。OrbMol-v2 単独で多ラジカル melt が走る。(b) **AIMNet2-NSE は検証済みの有効な第2バックエンド**(PES 一致 = OrbMol-v2 と barrier ~6/well ~−28、ラジカル訓練、クロス検証に有用、MIT 商用安全)だが**問題解決には不要**。第2バックエンドとしての価値(独立検証)で残置。(c) **元の目標(多ラジカル melt の転化率、さらにキネティクス)が OrbMol-v2 + 良条件で再び射程**。「論文数値追試は非目標」「妥当域に限定」の方針(2026-06-25 プロジェクト方針)は、この新事実を踏まえ**再検討の余地**。
+- Caveat: orb_fullcond は 3 cycle・biased 200×0.25fs=50fs と短く formations=0(候補は潤沢=40+、biased 時間延長で形成する見込み)。長尺で転化率を実測して確認要。aimnet が 875K と高めだった理由(thermostat 結合 vs バイアス仕事)は別途。
+- Process lesson: (i) 既定の探索用 timestep(1fs)を本番反応系にそのまま使ったのが誤りの起点。反応性 MD は論文値 0.25fs を既定にすべき(validity-domain §3 に既記載、根拠が実証された)。(ii) 「バックエンド固有の限界」と結論する前に、run 条件(timestep/平衡化)を最小比較で潰すべきだった。クリーンな2バックエンド比較が真因露呈の決め手。
+- Status: aimnet backend(src/kagome/backends/aimnet_backend.py)、scan/run の aimnet 対応、license matrix 記録は spike 成果として残置(第2バックエンドとして有効)。
+- Follow-up: (a) **OrbMol-v2 + 0.25fs + equil で 200+10 を長尺実行し転化率を実測**(元の S6 目標が達成可能か)。(b) timestep 0.25fs を反応条件の既定にし S6 スクリプト/configs を更新(現状 1fs)。(c) 目標スコープ(論文追試の要否)を新事実で再検討。

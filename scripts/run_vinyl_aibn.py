@@ -53,6 +53,11 @@ def _create_backend(backend: str, device: str, model: str, spin: int = 1) -> Cal
     if backend == 'orb':
         from kagome.backends.orb_backend import create_orb_calculator
         return create_orb_calculator(device=device, spin=spin)
+    elif backend == 'aimnet':
+        from kagome.backends.aimnet_backend import create_aimnet_calculator
+        # model carries the AIMNet2 model name when backend=aimnet (default below)
+        aimnet_model = model if model and model.startswith('aimnet') else 'aimnet2-nse'
+        return create_aimnet_calculator(model=aimnet_model, device=device, spin=spin)
     else:
         from kagome.backends.mace_backend import create_mace_calculator
         return create_mace_calculator(model=model, device=device)
@@ -86,8 +91,8 @@ def main() -> None:
     parser.add_argument('--no-barostat', action='store_true',
                         help='Disable NPT barostat and run NVT instead.')
     parser.add_argument('--backend', type=str, default='orb',
-                        choices=['orb', 'mace'],
-                        help='MLIP backend (default: orb = OrbMol-v2)')
+                        choices=['orb', 'mace', 'aimnet'],
+                        help='MLIP backend (default: orb = OrbMol-v2; aimnet = AIMNet2-NSE)')
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
