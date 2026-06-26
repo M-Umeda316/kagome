@@ -42,6 +42,7 @@ from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
+    load_checkpoint,
     masses_from_species,
 )
 
@@ -163,6 +164,15 @@ def main() -> None:
                         help='Peak V^d amplitude for activation (kcal/mol). Must exceed '
                              '~200 with f2=0.3 for OrbMol-v2 C-N barrier (~39 kcal/mol). '
                              'Default 250.')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Resume from <output-dir>/checkpoint.pkl if present: skip '
+                             'build-time activation and start at the saved cycle. Bit-exact '
+                             'continuation (rng state restored). Use after a long run was '
+                             'killed (e.g. crash/swap). No-op if no checkpoint exists.')
+    parser.add_argument('--no-checkpoint', action='store_true', default=False,
+                        help='Disable writing <output-dir>/checkpoint.pkl each cycle. '
+                             'By default a checkpoint is saved at every cycle boundary so '
+                             'a killed run can --resume.')
     parser.add_argument('--load-structure', type=Path, default=None,
                         help='Optional: load a classically pre-equilibrated structure (JSON '
                              'from scripts/prep_structure.py) and skip build/place/compress. '
@@ -172,6 +182,15 @@ def main() -> None:
                              'come from the file; the short ML re-equil (--minimize/'
                              '--equil-steps) still runs. See decision D-4 (+2026-06-20 WSL).')
     args = parser.parse_args()
+
+    # Cycle-boundary checkpointing for crash recovery (long runs). By default a
+    # checkpoint is written every cycle; --resume continues from it (skipping the
+    # one-time build-time activation/minimize/equil). See decisions.md 2026-06-26.
+    ckpt_file = args.output_dir / 'checkpoint.pkl'
+    resuming = bool(args.resume and ckpt_file.exists())
+    run_checkpoint_path = None if (args.no_checkpoint and not args.resume) else ckpt_file
+    if args.resume and not ckpt_file.exists():
+        logger.warning('--resume given but %s not found; starting a fresh run.', ckpt_file)
 
     rng = np.random.default_rng(args.seed)
 
@@ -417,7 +436,33 @@ def main() -> None:
     )
 
     n_activation_dissoc = 0
-    if args.activation and aibn_azo_bonds:
+    if resuming:
+        # The expensive one-time prep (build/compress/minimize/activation/equil)
+        # already happened before the checkpoint was written. Restore the
+        # post-activation production spin and skip straight to the cycle loop;
+        # run() restores positions/groups/tracker/rng from the checkpoint.
+        _ck = load_checkpoint(ckpt_file)
+        _extra = _ck.get('extra', {}) or {}
+        n_activation_dissoc = int(_extra.get('activation_dissociations', 0))
+        _spin = _extra.get('spin')
+        if _spin is not None and getattr(calc, 'supports_spin', False):
+            calc.set_spin(int(_spin))
+            logger.info('Resume: restored production spin %d from checkpoint', int(_spin))
+        config = PolymerizationConfig(
+            timestep_fs=config.timestep_fs,
+            biased_steps=config.biased_steps,
+            unbiased_steps=config.unbiased_steps,
+            n_cycles=config.n_cycles,
+            tdbb=config.tdbb,
+            seed=config.seed,
+            save_interval=config.save_interval,
+            minimize=False,
+            minimize_fmax=config.minimize_fmax,
+            equil_steps=0,
+        )
+        wf.config = config
+        logger.info('Resume mode: skipping build-time activation/minimize/equilibration.')
+    elif args.activation and aibn_azo_bonds:
         logger.info(
             'Activation phase: %d C-N azo bonds, %d steps, f2=%.2f, f1_max=%.0f, spin=1',
             len(aibn_azo_bonds), args.activation_steps, args.activation_f2,
@@ -494,6 +539,12 @@ def main() -> None:
         output_dir=args.output_dir,
         config_path='configs/boost/paper_faithful.yaml',
         n_monomers=args.n_monomers,
+        checkpoint_path=run_checkpoint_path,
+        resume=resuming,
+        checkpoint_extra={
+            'spin': getattr(calc, '_spin', None),
+            'activation_dissociations': n_activation_dissoc,
+        },
     )
 
     n_form = len(tracker.confirmed_formations())

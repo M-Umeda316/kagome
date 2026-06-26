@@ -765,6 +765,72 @@ class TestNylonMixedBias:
         assert forces.shape == (4, 3)
 
 
+class TestCheckpointResume:
+    """Cycle-boundary checkpoint must allow bit-exact resume (crash recovery).
+
+    A run killed after cycle k and resumed from <out>/checkpoint.pkl must produce
+    the identical final state as an uninterrupted run, because the numpy Generator
+    state, positions/velocities, groups, and bond tracker are all restored.
+    """
+
+    @staticmethod
+    def _setup(n_cycles):
+        template = ReactionTemplate(
+            name='radical_vinyl',
+            groups=['radical_C', 'vinyl_alpha_C'],
+            pairs=[PairSpec('radical_C', 'vinyl_alpha_C',
+                            is_formation=True, r_min=0.5, r_max=5.0)],
+        )
+        groups = {
+            'radical_C': ReactiveGroup('radical_C', [0]),
+            'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', [1]),
+        }
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=n_cycles, seed=7,
+        )
+        calc = ToyCalculator()
+        tracker = BondTracker()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.5, 0.0, 0.0]]),
+            velocities=np.zeros((3, 3)),
+            species=['C', 'C', 'C'],
+        )
+        wf = PolymerizationWorkflow(
+            config, calc, template, groups, bond_tracker=tracker,
+            propagation_map={1: 2}, propagation_target_group='radical_C',
+        )
+        return wf, state, tracker
+
+    def test_resume_is_bit_exact(self, tmp_path):
+        # Uninterrupted 4-cycle reference.
+        wf_full, state_full, tracker_full = self._setup(n_cycles=4)
+        wf_full.run(state_full)
+        pos_ref = state_full.positions.copy()
+        events_ref = [(e.event_type, e.atom_a, e.atom_b, e.step) for e in tracker_full.events]
+
+        ckpt = tmp_path / 'checkpoint.pkl'
+        # First leg: run only 2 cycles, writing a checkpoint each cycle ("crash").
+        wf_a, state_a, _ = self._setup(n_cycles=2)
+        wf_a.run(state_a, checkpoint_path=ckpt)
+        assert ckpt.exists()
+        # Diverged from the reference after 2 cycles (proves resume does real work).
+        assert not np.array_equal(state_a.positions, pos_ref)
+
+        # Second leg: fresh objects, resume to the full 4 cycles from the checkpoint.
+        wf_b, state_b, tracker_b = self._setup(n_cycles=4)
+        wf_b.run(state_b, checkpoint_path=ckpt, resume=True)
+
+        np.testing.assert_array_equal(state_b.positions, pos_ref)
+        events_resumed = [(e.event_type, e.atom_a, e.atom_b, e.step) for e in tracker_b.events]
+        assert events_resumed == events_ref
+
+    def test_no_checkpoint_file_when_disabled(self, tmp_path):
+        # Without checkpoint_path, no checkpoint is written.
+        wf, state, _ = self._setup(n_cycles=2)
+        wf.run(state, output_dir=tmp_path)
+        assert not (tmp_path / 'checkpoint.pkl').exists()
+
+
 class TestIntegratorTemperature:
     """Tests for _integrator_temperature (RF13: Verlet uses kinetic T, not 300 K)."""
 

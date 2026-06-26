@@ -68,6 +68,12 @@ UNBIASED_STEPS="${UNBIASED_STEPS:-1500}"
 EQUIL_STEPS="${EQUIL_STEPS:-2000}"
 F2="${F2:-2}"
 FRICTION_PER_FS="${FRICTION_PER_FS:-0.01}"
+# RESUME=1 continues from ${OUTPUT_DIR}/checkpoint.pkl after a killed run
+# (skips build-time activation, restarts at the saved cycle). Checkpoints are
+# written every cycle by default.
+RESUME="${RESUME:-0}"
+RESUME_FLAG=""
+if [ "${RESUME}" = "1" ]; then RESUME_FLAG="--resume"; fi
 
 echo "=== S6 paper-scale run ==="
 echo "  Seed:           ${SEED}"
@@ -113,7 +119,8 @@ python scripts/run_vinyl_aibn.py \
     --equil-steps "${EQUIL_STEPS}" \
     --timestep-fs 0.25 \
     --minimize \
-    --minimize-fmax 1.0
+    --minimize-fmax 1.0 \
+    ${RESUME_FLAG}
 
 echo ""
 echo "Run complete. Generating figures..."

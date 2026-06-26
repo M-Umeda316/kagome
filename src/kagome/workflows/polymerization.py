@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -44,6 +45,69 @@ ATOMIC_MASSES: dict[str, float] = {
     'H': 1.008, 'C': 12.011, 'N': 14.007, 'O': 15.999,
     'F': 18.998, 'S': 32.06, 'Cl': 35.45, 'Cu': 63.546,
 }
+
+# ---------------------------------------------------------------------------
+# Cycle-boundary checkpointing (crash recovery for long TDBB runs)
+# ---------------------------------------------------------------------------
+# A checkpoint captures everything the cycle loop mutates so a killed run can
+# resume at the next cycle instead of from scratch (build + activation + all
+# completed cycles). The static parts (species, template, calculator/weights)
+# are NOT stored — the resuming process rebuilds them and overrides the dynamic
+# state below. Resume is bit-exact because the numpy Generator state is saved.
+CHECKPOINT_VERSION = 1
+
+
+def load_checkpoint(path: Path) -> dict:
+    """Load a cycle-boundary checkpoint written by :func:`save_checkpoint`."""
+    with open(path, 'rb') as f:
+        data = pickle.load(f)
+    if data.get('version') != CHECKPOINT_VERSION:
+        logger.warning(
+            'Checkpoint version %s != current %s; resume may be incompatible.',
+            data.get('version'), CHECKPOINT_VERSION,
+        )
+    return data
+
+
+def save_checkpoint(
+    path: Path,
+    *,
+    next_cycle: int,
+    state: SimulationState,
+    groups: dict[str, ReactiveGroup],
+    updater: object,
+    tracker: BondTracker | None,
+    rng: np.random.Generator,
+    logs: list[CycleLog],
+    extra: dict | None = None,
+) -> None:
+    """Atomically write a checkpoint at a cycle boundary.
+
+    Written to ``path.with_suffix('.tmp')`` then renamed, so a crash mid-write
+    never corrupts the previous good checkpoint.
+    """
+    data = {
+        'version': CHECKPOINT_VERSION,
+        'next_cycle': next_cycle,
+        'positions': np.asarray(state.positions),
+        'velocities': np.asarray(state.velocities),
+        'cell': None if state.cell is None else np.asarray(state.cell),
+        'step': state.step,
+        'groups': {label: list(g.atom_indices) for label, g in groups.items()},
+        'updater_processed_formations': getattr(updater, '_processed_formations', 0),
+        'updater_processed_dissociations': getattr(updater, '_processed_dissociations', 0),
+        'updater_chain_c_map': dict(getattr(updater, 'chain_c_map', {})),
+        'tracker_events': list(tracker._events) if tracker else [],
+        'tracker_reacted': set(tracker._reacted) if tracker else set(),
+        'rng_state': rng.bit_generator.state,
+        'logs': list(logs),
+        'extra': extra or {},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    with open(tmp, 'wb') as f:
+        pickle.dump(data, f)
+    tmp.replace(path)
 
 
 def _pair_distance(
@@ -316,13 +380,55 @@ class PolymerizationWorkflow:
         output_dir: Path | None = None,
         config_path: str = '',
         n_monomers: int | None = None,
+        checkpoint_path: Path | None = None,
+        resume: bool = False,
+        checkpoint_extra: dict | None = None,
     ) -> list[CycleLog]:
         """biased/unbiased 交互ループを n_cycles 回実行する。
 
         output_dir を指定すると trajectory.jsonl, bonds.jsonl, manifest.json,
         summary.json を出力する。戻り値は各フェーズの CycleLog リスト。
+
+        checkpoint_path を指定すると各サイクル境界で状態を保存する。resume=True
+        かつ checkpoint が存在すれば minimize/equil/初期frame を skip し、保存
+        サイクルの次から継続する（trajectory/selection は追記）。checkpoint_extra
+        は checkpoint に保存する追加情報（例: production spin）。
         """
         n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
+
+        # Resume from a cycle-boundary checkpoint: restore the mutated dynamic
+        # state and continue at the saved cycle. The static parts (species,
+        # template, calculator) were rebuilt by the caller; here we override the
+        # parts the cycle loop mutates. minimize/equil/initial-frame are skipped.
+        _ckpt = None
+        start_cycle = 0
+        resuming = False
+        if resume and checkpoint_path is not None and Path(checkpoint_path).exists():
+            _ckpt = load_checkpoint(Path(checkpoint_path))
+            resuming = True
+            start_cycle = int(_ckpt['next_cycle'])
+            state.positions = np.array(_ckpt['positions'])
+            state.velocities = np.array(_ckpt['velocities'])
+            state.cell = None if _ckpt['cell'] is None else np.array(_ckpt['cell'])
+            state.step = int(_ckpt['step'])
+            for label, idxs in _ckpt['groups'].items():
+                if label in self.groups:
+                    self.groups[label].atom_indices[:] = list(idxs)
+            self._updater._processed_formations = _ckpt['updater_processed_formations']
+            if hasattr(self._updater, '_processed_dissociations'):
+                self._updater._processed_dissociations = _ckpt['updater_processed_dissociations']
+            if hasattr(self._updater, 'chain_c_map'):
+                self._updater.chain_c_map = dict(_ckpt['updater_chain_c_map'])
+            if self.bond_tracker is not None:
+                self.bond_tracker._events = list(_ckpt['tracker_events'])
+                self.bond_tracker._reacted = set(_ckpt['tracker_reacted'])
+            self.logs = list(_ckpt['logs'])
+            logger.info(
+                'Resuming from checkpoint: starting at cycle %d of %d '
+                '(%d confirmed formations so far)',
+                start_cycle, self.config.n_cycles,
+                len(self.bond_tracker.confirmed_formations()) if self.bond_tracker else 0,
+            )
 
         if output_dir:
             effective_params = _normalize_value(asdict(self.config))
@@ -348,7 +454,8 @@ class PolymerizationWorkflow:
             # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
             # must be reconstructable from artifacts, not just n_candidates counts.
             self._selection_log = output_dir / 'selection.jsonl'
-            self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
+            if not resuming:
+                self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
@@ -358,28 +465,33 @@ class PolymerizationWorkflow:
                 save_interval=self.config.save_interval,
                 metadata={'config_path': config_path, 'seed': self.config.seed},
                 n_reactive_sites=n_reactive_sites,
+                append=resuming,  # keep prior frames when resuming
             )
 
         rng = np.random.default_rng(self.config.seed)
+        if _ckpt is not None:
+            # Bit-exact continuation: restore the generator to its cycle-boundary state.
+            rng.bit_generator.state = _ckpt['rng_state']
 
         try:
-            if writer:
-                writer.write_frame(TrajectoryFrame(
-                    step=state.step,
-                    time_fs=0.0,
-                    phase='initial',
-                    cycle=-1,
-                    energy_base=0.0,
-                    energy_bias=0.0,
-                    energy_total=0.0,
-                    positions=state.positions.tolist(),
-                ))
-            if self.config.minimize:
-                self._minimize(state, writer)
-            if self.config.equil_steps > 0:
-                self._run_equilibration_phase(state, rng, writer)
+            if not resuming:
+                if writer:
+                    writer.write_frame(TrajectoryFrame(
+                        step=state.step,
+                        time_fs=0.0,
+                        phase='initial',
+                        cycle=-1,
+                        energy_base=0.0,
+                        energy_bias=0.0,
+                        energy_total=0.0,
+                        positions=state.positions.tolist(),
+                    ))
+                if self.config.minimize:
+                    self._minimize(state, writer)
+                if self.config.equil_steps > 0:
+                    self._run_equilibration_phase(state, rng, writer)
 
-            for cycle in range(self.config.n_cycles):
+            for cycle in range(start_cycle, self.config.n_cycles):
                 log_biased = self._run_biased_phase(state, cycle, rng, writer)
                 self.logs.append(log_biased)
                 logger.info(
@@ -394,6 +506,21 @@ class PolymerizationWorkflow:
                 logger.info('Cycle %d unbiased: %d steps', cycle, log_unbiased.steps)
 
                 self._update_groups_after_cycle(state)
+
+                if checkpoint_path is not None:
+                    # Save AFTER the group update so resume starts cleanly at the
+                    # next cycle. Atomic write — a crash mid-save keeps the prior one.
+                    save_checkpoint(
+                        Path(checkpoint_path),
+                        next_cycle=cycle + 1,
+                        state=state,
+                        groups=self.groups,
+                        updater=self._updater,
+                        tracker=self.bond_tracker,
+                        rng=rng,
+                        logs=self.logs,
+                        extra=checkpoint_extra,
+                    )
         finally:
             if writer:
                 writer.close()
