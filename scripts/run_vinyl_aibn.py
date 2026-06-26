@@ -86,6 +86,11 @@ def main() -> None:
                         help='Initial density (g/mL). Paper SI S-3 uses 0.5 for vinyl. '
                              'Used only when --box-size is omitted.')
     parser.add_argument('--temperature', type=float, default=333.0)
+    parser.add_argument('--friction-per-fs', type=float, default=0.001,
+                        help='Langevin friction coefficient (1/fs). Default 0.001 '
+                             '(weak, τ~1 ps). Increase (e.g. 0.01) to dissipate TDBB '
+                             'bias work + exothermic reaction heat faster and keep the '
+                             'reactive melt near the target temperature across cycles.')
     parser.add_argument('--pressure', type=float, default=1.0,
                         help='Target pressure (atm). Default 1.0 (assumed, not stated in paper).')
     parser.add_argument('--no-barostat', action='store_true',
@@ -354,7 +359,8 @@ def main() -> None:
     )
     logger.info('Propagation map: %d entries', len(propagation_map))
 
-    langevin_params = LangevinParams(temperature_K=args.temperature)
+    langevin_params = LangevinParams(
+        temperature_K=args.temperature, friction_per_fs=args.friction_per_fs)
     config = PolymerizationConfig(
         timestep_fs=args.timestep_fs,
         biased_steps=args.biased_steps,

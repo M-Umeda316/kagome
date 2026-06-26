@@ -17,7 +17,7 @@
 #       --n-monomers 100 --n-initiators 5 --activation --activation-f2 0.3 \
 #       --activation-f1-max 250 --activation-steps 5000 --f2 5.0 --density 0.5 \
 #       --temperature 333.0 --no-barostat --backend orb --device cuda --n-cycles 30 \
-#       --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 --timestep-fs 1.0 \
+#       --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 --timestep-fs 0.25 \
 #       --minimize --minimize-fmax 1.0
 #
 # Environment: pfpoly-gpu (or equivalent clone; see docs below)
@@ -35,7 +35,10 @@
 # n_cycles=50                      : Paper reports multi-hundred cycles; 50 is a feasible start
 # biased_steps=2000                : Validated in S2-S3 runs
 # unbiased_steps=500               : Validated in S2-S3 runs
-# timestep_fs=1.0                  : Standard for organic ML MD (4x faster than 0.25 fs default)
+# timestep_fs=0.25                 : Paper value. REQUIRED for reactive multi-radical
+#                                    stability — 1.0 fs numerically explodes the open-shell
+#                                    melt (1e6-1e10 K). See specs/decisions.md 2026-06-25
+#                                    CORRECTION and specs/validity-domain.md §2.1/§3.
 # density=0.5                      : Paper SI S-3 (methyl acrylate melt)
 # temperature=333.0                : Paper Table S1 (60°C)
 # no-barostat                      : NVT validated (barostat is unstable for open-shell systems)
@@ -98,7 +101,7 @@ python scripts/run_vinyl_aibn.py \
     --biased-steps "${BIASED_STEPS}" \
     --unbiased-steps "${UNBIASED_STEPS}" \
     --equil-steps "${EQUIL_STEPS}" \
-    --timestep-fs 1.0 \
+    --timestep-fs 0.25 \
     --minimize \
     --minimize-fmax 1.0
 
@@ -111,7 +114,7 @@ python scripts/reproduce_figures.py \
     --trajectory "${OUTPUT_DIR}/trajectory.jsonl" \
     --bonds "${OUTPUT_DIR}/bonds.jsonl" \
     --target-temperature 333.0 \
-    --timestep-fs 1.0 \
+    --timestep-fs 0.25 \
     --output-dir "${OUTPUT_DIR}/figures"
 
 echo ""
