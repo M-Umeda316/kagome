@@ -1,0 +1,65 @@
+# OrbMol-v2 production recipe for reactive vinyl polymerization (melt formation).
+#
+# Derived empirically from configs/boost/paper_faithful.yaml. The deviations below
+# are REQUIRED for OrbMol-v2 to actually form bonds in a dense multi-radical melt
+# and to keep the reactive melt thermostatted across cycles. Paper-faithful values
+# alone (f2=10) produce ~0 formations on this backend.
+#
+# NOTE: like paper_faithful.yaml, this file is NOT auto-loaded by run scripts;
+# effective values are recorded in each run's manifest.json (extra field). It
+# documents the validated recipe and the rationale for each deviation.
+#
+# Provenance: runs/s6_half_100x5 (100 monomers + 5 AIBN, 30 cycles, seed 7,
+# backend orb-orbmol_v2) -> conversion 26% (26 formations / 26 propagations),
+# temperature mean 338 K (held near the 333 K target across all 30 cycles, no
+# drift), VRAM peak <40% of 16 GB (no swap). git SHA 59e6830.
+# Full diagnosis chain: specs/decisions.md 2026-06-26.
+
+boost:
+  mode: orbmol_v2_production
+  backend: orb-orbmol_v2
+
+  # --- unchanged from the paper (arXiv:2511.22874, Section 3 / p.7) ---
+  timestep_fs: 0.25             # paper p.7; required for reactive open-shell stability
+  biased_steps: 2000            # paper p.7 (= 500 fs)
+  lambda_vdw: 0.60              # Eq. 4 -> r0 = 0.6*(r_C + r_C) = 2.04 A for a C-C bond
+  gamma: 1.0                    # paper p.7
+  f1_max_form_kcal_mol: 250.0   # paper p.7 (formation bias cap)
+  f1_max_break_kcal_mol: 125.0  # paper p.7 (dissociation bias cap)
+  candidate_window_A: [3.0, 6.0]  # paper Table S1
+
+  # --- deviations REQUIRED for OrbMol-v2 melt formation (2026-06-26) ---
+  f2_invA2: 2.0                 # paper 10 (repo prior 5). The Gaussian capture of V^f
+                                # (Eq. 2) at f2>=5 only exerts force within r0 +/- ~0.45 A
+                                # (~2.5 A), but candidates are selected in the [3,6] A
+                                # window. The dead zone (~2.8-3.6 A) leaves selected pairs
+                                # with ~0 bias force (0.7 kcal/mol/A at 3.3 A) -> 0
+                                # formations regardless of biased length. f2=2 (reach
+                                # ~0.71 A; ~52 kcal/mol/A at 3.3 A) bridges it. f2=1 also
+                                # works but heats more; f2=2 is the conservative choice.
+  unbiased_steps: 1500          # paper 2000; relaxation window between biased phases
+  friction_per_fs: 0.01         # Langevin friction (run_vinyl_aibn.py --friction-per-fs,
+                                # default 0.001). Lowering f2 injects bias work that, with
+                                # the exothermic addition heat (~-28 kcal/mol), accumulates
+                                # over cycles (f2=2 @ friction 0.001 / unbiased 500: 389 ->
+                                # 565 K and rising). friction 0.01 + unbiased 1500 dissipates
+                                # it each cycle and pins T near 333 K.
+
+# Run-level schedule for the validated half-scale run (16 GB GPU safe).
+# Entry point: scripts/run_vinyl_aibn.py (see scripts/run_s6_paper_scale.sh).
+run:
+  n_monomers: 100
+  n_initiators: 5
+  n_cycles: 30                  # higher conversion needs more cycles (paper 60-80%
+                                # corresponds to multi-hundred cycles)
+  density_g_ml: 0.5             # paper SI S-3 (methyl acrylate melt)
+  temperature_K: 333.0          # paper Table S1 (60 C)
+  barostat: false               # NVT (validated; barostat unstable for open-shell)
+  activation: true              # AIBN V^d C-N dissociation before propagation
+  activation_f2: 0.3            # OrbMol-v2 C-N barrier ~39 kcal/mol (decisions.md 2026-06-18)
+  activation_f1_max: 250.0
+  activation_steps: 5000
+  minimize: true
+  minimize_fmax: 1.0
+  # Full scale 200+10: same recipe; OrbMol-v2 single-step ~9.5 GB fits a 16 GB GPU
+  # (half-scale validated swap-free at <40% VRAM).

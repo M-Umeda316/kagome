@@ -12,13 +12,14 @@
 #   SEED=42 OUTPUT_DIR=runs/s6_seed42 bash scripts/run_s6_paper_scale.sh
 #
 # For 16 GB GPU (half-scale 100+5), run run_vinyl_aibn.py directly. This mirrors
-# the full-scale flags below; only system size and n-cycles differ (RF22):
+# the full-scale flags below; only system size and n-cycles differ (RF22). This
+# is the validated recipe (runs/s6_half_100x5: conversion 26%, T~338 K, swap-free):
 #   python scripts/run_vinyl_aibn.py --seed 7 --output-dir runs/s6_half_scale \
 #       --n-monomers 100 --n-initiators 5 --activation --activation-f2 0.3 \
-#       --activation-f1-max 250 --activation-steps 5000 --f2 5.0 --density 0.5 \
-#       --temperature 333.0 --no-barostat --backend orb --device cuda --n-cycles 30 \
-#       --biased-steps 2000 --unbiased-steps 500 --equil-steps 2000 --timestep-fs 0.25 \
-#       --minimize --minimize-fmax 1.0
+#       --activation-f1-max 250 --activation-steps 5000 --f2 2 --friction-per-fs 0.01 \
+#       --density 0.5 --temperature 333.0 --no-barostat --backend orb --device cuda \
+#       --n-cycles 30 --biased-steps 2000 --unbiased-steps 1500 --equil-steps 2000 \
+#       --timestep-fs 0.25 --minimize --minimize-fmax 1.0
 #
 # Environment: pfpoly-gpu (or equivalent clone; see docs below)
 # Estimated wall-clock: 12-48 h depending on GPU and n_cycles
@@ -29,12 +30,18 @@
 # activation-f2=0.3, f1_max=250    : OrbMol-v2 C-N barrier ~39 kcal/mol requires these
 #                                     (f2=10/f1_max=125 paper defaults insufficient for OrbMol-v2)
 #                                     See specs/decisions.md 2026-06-18
-# f2=5.0                           : Validated capture radius for OrbMol-v2 PES
-#                                     (paper default f2=10 misses capture for this backend)
-#                                     See specs/decisions.md 2026-06-17
+# f2=2.0                           : Capture width. Paper 10 / repo prior 5 leave a dead
+#                                     zone between the [3,6] candidate window and the ~2.5 A
+#                                     bias-capture shell, so selected pairs feel ~0 force and
+#                                     0 formations result in a melt. f2=2 (reach ~0.71 A)
+#                                     bridges it. See specs/decisions.md 2026-06-26.
+# friction_per_fs=0.01             : Langevin friction. Lowering f2 injects bias work that,
+#                                     with addition heat, accumulates over cycles; 0.01 (vs
+#                                     default 0.001) dissipates it and pins T near 333 K.
 # n_cycles=50                      : Paper reports multi-hundred cycles; 50 is a feasible start
 # biased_steps=2000                : Validated in S2-S3 runs
-# unbiased_steps=500               : Validated in S2-S3 runs
+# unbiased_steps=1500              : Relaxation window; with friction 0.01 keeps T at 333 K
+#                                     (decisions.md 2026-06-26). Paper uses 2000.
 # timestep_fs=0.25                 : Paper value. REQUIRED for reactive multi-radical
 #                                    stability — 1.0 fs numerically explodes the open-shell
 #                                    melt (1e6-1e10 K). See specs/decisions.md 2026-06-25
@@ -57,8 +64,10 @@ OUTPUT_DIR="${OUTPUT_DIR:-runs/s6_paper_scale_seed${SEED}}"
 DEVICE="${DEVICE:-cuda}"
 N_CYCLES="${N_CYCLES:-50}"
 BIASED_STEPS="${BIASED_STEPS:-2000}"
-UNBIASED_STEPS="${UNBIASED_STEPS:-500}"
+UNBIASED_STEPS="${UNBIASED_STEPS:-1500}"
 EQUIL_STEPS="${EQUIL_STEPS:-2000}"
+F2="${F2:-2}"
+FRICTION_PER_FS="${FRICTION_PER_FS:-0.01}"
 
 echo "=== S6 paper-scale run ==="
 echo "  Seed:           ${SEED}"
@@ -91,7 +100,8 @@ python scripts/run_vinyl_aibn.py \
     --activation-f2 0.3 \
     --activation-f1-max 250 \
     --activation-steps 5000 \
-    --f2 5.0 \
+    --f2 "${F2}" \
+    --friction-per-fs "${FRICTION_PER_FS}" \
     --density 0.5 \
     --temperature 333.0 \
     --no-barostat \
