@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 
 from kagome.backends.base import Calculator
 from kagome.boost.tdbb import BoostState, PairBias, TDBBParams, target_distance, total_bias_fast
+from kagome.diagnostics import StepWatchdog
 from kagome.geometry import minimum_image, validated_box
 from kagome.integrators.mc_barostat import MCBarostat
 from kagome.integrators.minimize import FireParams, fire_minimize
@@ -790,6 +791,7 @@ class PolymerizationWorkflow:
         form_indices = {i for i, p in enumerate(active_pairs) if p.is_formation}
         min_form_dist = float('inf')
 
+        watchdog = StepWatchdog()
         steps_run = 0
         for step_in_phase in range(self.config.biased_steps):
             steps_run = step_in_phase + 1
@@ -799,11 +801,13 @@ class PolymerizationWorkflow:
                 self.config.tdbb.f1_max_dissociation,
             )
 
+            watchdog.arm()
             base_energy, bias_energy, current_forces, pair_dists = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
                 active_pairs=active_pairs, boost=boost, tdbb=self.config.tdbb,
                 box=box,
             )
+            watchdog.step_done(phase='biased', cycle=cycle, step=state.step)
             last_bias_energy = bias_energy
 
             if pair_dists is not None:
@@ -860,10 +864,13 @@ class PolymerizationWorkflow:
         )
         current_forces = forces
 
+        watchdog = StepWatchdog()
         for step_in_phase in range(self.config.unbiased_steps):
+            watchdog.arm()
             energy, _, current_forces, _ = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
             )
+            watchdog.step_done(phase='unbiased', cycle=cycle, step=state.step)
 
             if writer and writer.should_write(step_in_phase):
                 writer.write_frame(TrajectoryFrame(
@@ -1020,14 +1027,17 @@ class PolymerizationWorkflow:
         dissoc_threshold = 2.5
         dissociated: list[tuple[int, int]] = []
 
+        watchdog = StepWatchdog()
         for step_in_phase in range(activation_steps):
             boost.advance(tdbb.gamma, tdbb.f1_max_formation, tdbb.f1_max_dissociation)
 
+            watchdog.arm()
             base_energy, bias_energy, current_forces, pair_dists = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
                 active_pairs=pairs, boost=boost, tdbb=tdbb,
                 enable_barostat=False, box=box,
             )
+            watchdog.step_done(phase='activation', cycle=-1, step=state.step)
 
             for i, p in enumerate(pairs):
                 r = pair_dists[i] if pair_dists else _pair_distance(

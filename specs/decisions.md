@@ -1108,3 +1108,16 @@ Use this template for each decision.
 - 検証: ユニット test_resume_is_bit_exact(ToyCalculator, 「2cyc→checkpoint→resume 2cyc」== 無中断 4cyc を positions/tracker events で bit-exact 確認, 33/33 pass)。実 GPU e2e(8+2, runs/ckpt_e2e): leg1 活性化4/4・spin5・checkpoint 保存 → leg2 `--resume` で **活性化を再実行せず spin 5 復元・cycle 2 から継続**(cycle 0 からではない)を確認。
 - Licensing/commercial impact: なし。
 - Follow-up: 長尺(70cyc@100+5 or 200+10)を回す際は既定で checkpoint され、落ちても `RESUME=1 OUTPUT_DIR=<同じ>` で再開可能。最適化余地: resume 時も build の圧縮を払う(~数分)ので、将来 species/template も checkpoint すれば build skip 可能。
+
+## 2026-06-27: cycle-15 ハング調査 — 物理ではなくバックエンド/GPU stall。診断計測(StepWatchdog)を実装
+- Trigger: runs/s6_full_200x10(200+10, 50cyc, OrbMol-v2, --resume)が cycle 15 でハング(進展停止)。
+- Evidence(trajectory/selection/log の事後解析):
+  - ハング地点 = cycle 15 biased step 31535 の `_md_step`(= calculator.compute, Orb/warp GPU)直後。**E_base≈9986 / T≈336K と全フレームと同一、NaN 無し、エネルギー爆発無し** → 数値発散ではない「静かな停止」。
+  - selection.jsonl の cycle 15 が**2回**(完全同一スコア)。trajectory の追記順では cycle 15 **unbiased step 33033** が biased step 31535 より**前**に存在 = cycle 15 を**同一 checkpoint から2回**実行し、一方は unbiased まで完走・もう一方(resume)は biased で停止。**同一初期状態から到達点が異なる = ハングは非決定的**。
+  - GPU = RTX 4060 Ti **16GB**。run_s6_paper_scale.sh は 200+10 を **≥24GB 必要**と明記。run_vinyl_aibn.py 冒頭コメントに既出の既知故障モード「CUDA caching allocator 断片化 → VRAM 枯渇 → run hangs」(2026-06-15 VRAM record)。
+- Hypothesis(最有力): **VRAM 不足/瞬間スパイク → WSL system-memory fallback による stall**(クラッシュせず PCIe スピルで 10–100× 減速 = 「ハング」に見える、断片化依存で非決定的)。物理/TDBB ロジックではない。
+- 0.68Å 近接の扱い(訂正含む): 最終フレームで原子間最小距離 ~0.68Å・<1.0Å が 164 対あるが、**生座標(PBC 無し)でも 0.66–0.69Å = 実在の近接**で PBC アーティファクトではない(当初「アーティファクト」と述べたのは撤回)。ただし **初期構造(cycle -1, T=0)から全 cycle 一様に存在し、cycle 15 を完走した試行でも同条件** → **本ハングの引き金ではない**(新規崩壊ではない)。真因は compress_box の FIRE 未収束(最終 fmax≈46 vs 目標2.0)による残留クラッシュで、構造品質の別件として要調査。病的局所形状が compute コスト/メモリを一時的に跳ね上げ VRAM スパイク仮説に寄与する可能性あり。
+- 実装(診断のみ・物理不変): `src/kagome/diagnostics.py` の `StepWatchdog` を biased/unbiased/activation の各 MD ループに装着。各ステップ前に faulthandler を単発再武装(規定秒ハングで全スレッド stack dump)、遅ステップ WARN(peak VRAM 付き)、任意 heartbeat。env 閾値(診断値・科学パラメータではない): `KAGOME_WATCHDOG_S`(既定180, 0で無効)/ `KAGOME_STALL_WARN_S`(既定20)/ `KAGOME_HEARTBEAT_STEPS`(既定0=無効)。CPU/MACE では VRAM ログ自動 skip。faulthandler 出力は stderr(既存 run の resume.log は stderr 捕捉済=warp warning が記録されている)。
+- 検証: ユニット 33 passed/1 skipped。watchdog 単体 smoke OK(既定値・arm/step_done)。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) 計測入りで half-scale(100+5, 既知の 16GB swap-free 完走実績)を 50cyc 再現 → ハングしなければ VRAM 確定。(b) フル 200+10 を回すならハング中 `nvidia-smi`(共有 GPU メモリ/util)+ stack dump で stall 箇所を直接確認。`KAGOME_HEARTBEAT_STEPS=500` 推奨。(c) VRAM 確定なら sysmem fallback を無効化(NVIDIA Sysmem Fallback Policy = Prefer No Sysmem Fallback)し OOM 例外化で白黒、もしくは半スケール運用。(d) 残留クラッシュ(0.68Å)= minimize 未収束を別途調査(max_steps/fmax 見直し)。
