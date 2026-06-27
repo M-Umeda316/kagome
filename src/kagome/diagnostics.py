@@ -63,10 +63,21 @@ class StepWatchdog:
         if not self._cuda:
             return ''
         gib = 1024 ** 3
-        cur = self._torch.cuda.memory_allocated() / gib
+        # torch-only view: max_memory_allocated captures THIS step's transient
+        # backward-graph spike (peak reset in arm()). But warp/orb allocate
+        # OUTSIDE torch's caching allocator, so these undercount the true device
+        # footprint. mem_get_info() reads free/total straight from the CUDA
+        # driver and so includes warp's memory — this is what actually governs
+        # the WSL system-memory fallback that presents as a hang.
         peak = self._torch.cuda.max_memory_allocated() / gib
-        resv = self._torch.cuda.memory_reserved() / gib
-        return f' (VRAM cur={cur:.2f} peak={peak:.2f} reserved={resv:.2f} GiB)'
+        note = f' (torch_peak={peak:.2f} GiB'
+        try:
+            free_b, total_b = self._torch.cuda.mem_get_info()
+            used = (total_b - free_b) / gib
+            note += f'; device used={used:.2f}/{total_b / gib:.2f} free={free_b / gib:.2f} GiB'
+        except Exception:
+            pass
+        return note + ')'
 
     def arm(self) -> None:
         """Call immediately before an MD step."""
