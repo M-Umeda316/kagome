@@ -64,8 +64,12 @@ def main() -> None:
     )
     # DEMO-ONLY: widen the formation-pair selection window so the pre-positioned
     # near-contact pair is selected (see --select-rmin help).
+    # Only the actual forming pair (radical_C–vinyl_alpha_C); the constraint_only
+    # in-phase pairs (radical_C–chain_C ~1.5 A, vinyl_alpha_C–vinyl_beta_C = C=C
+    # ~1.33 A) must keep their natural [0,3] window, else widening r_min to 1.5
+    # excludes the C=C bond distance and no candidate can ever form (0 candidates).
     for ps in template.pairs:
-        if ps.is_formation:
+        if ps.is_formation and not ps.constraint_only:
             ps.r_min = args.select_rmin
     logger.info('DEMO: formation candidate window set to [%.1f, %.1f] A (paper: [3,6]).',
                 args.select_rmin, template.pairs[0].r_max)

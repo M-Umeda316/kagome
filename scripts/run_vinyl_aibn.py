@@ -42,6 +42,7 @@ from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
+    load_checkpoint,
     masses_from_species,
 )
 
@@ -53,6 +54,11 @@ def _create_backend(backend: str, device: str, model: str, spin: int = 1) -> Cal
     if backend == 'orb':
         from kagome.backends.orb_backend import create_orb_calculator
         return create_orb_calculator(device=device, spin=spin)
+    elif backend == 'aimnet':
+        from kagome.backends.aimnet_backend import create_aimnet_calculator
+        # model carries the AIMNet2 model name when backend=aimnet (default below)
+        aimnet_model = model if model and model.startswith('aimnet') else 'aimnet2-nse'
+        return create_aimnet_calculator(model=aimnet_model, device=device, spin=spin)
     else:
         from kagome.backends.mace_backend import create_mace_calculator
         return create_mace_calculator(model=model, device=device)
@@ -81,13 +87,18 @@ def main() -> None:
                         help='Initial density (g/mL). Paper SI S-3 uses 0.5 for vinyl. '
                              'Used only when --box-size is omitted.')
     parser.add_argument('--temperature', type=float, default=333.0)
+    parser.add_argument('--friction-per-fs', type=float, default=0.001,
+                        help='Langevin friction coefficient (1/fs). Default 0.001 '
+                             '(weak, τ~1 ps). Increase (e.g. 0.01) to dissipate TDBB '
+                             'bias work + exothermic reaction heat faster and keep the '
+                             'reactive melt near the target temperature across cycles.')
     parser.add_argument('--pressure', type=float, default=1.0,
                         help='Target pressure (atm). Default 1.0 (assumed, not stated in paper).')
     parser.add_argument('--no-barostat', action='store_true',
                         help='Disable NPT barostat and run NVT instead.')
     parser.add_argument('--backend', type=str, default='orb',
-                        choices=['orb', 'mace'],
-                        help='MLIP backend (default: orb = OrbMol-v2)')
+                        choices=['orb', 'mace', 'aimnet'],
+                        help='MLIP backend (default: orb = OrbMol-v2; aimnet = AIMNet2-NSE)')
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
@@ -107,6 +118,11 @@ def main() -> None:
     parser.add_argument('--spin', type=int, default=1,
                         help='Total spin multiplicity (2S+1) passed to OrbMol-v2. '
                              'Use 2 (doublet) for a single radical. Default 1 (singlet).')
+    parser.add_argument('--production-spin-cap', type=int, default=None,
+                        help='Cap the post-activation production multiplicity at this '
+                             'value instead of n_radicals+1 (high-spin sum). Diagnostic '
+                             'for isolating whether high multiplicity destabilises the '
+                             'dynamics. Default: no cap (high-spin sum).')
     parser.add_argument('--minimize', dest='minimize', action='store_true', default=True,
                         help='FIRE energy minimization before TDBB (default: on). '
                              'Relaxes initial close contacts (paper anchor PDF p.20).')
@@ -148,6 +164,15 @@ def main() -> None:
                         help='Peak V^d amplitude for activation (kcal/mol). Must exceed '
                              '~200 with f2=0.3 for OrbMol-v2 C-N barrier (~39 kcal/mol). '
                              'Default 250.')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Resume from <output-dir>/checkpoint.pkl if present: skip '
+                             'build-time activation and start at the saved cycle. Bit-exact '
+                             'continuation (rng state restored). Use after a long run was '
+                             'killed (e.g. crash/swap). No-op if no checkpoint exists.')
+    parser.add_argument('--no-checkpoint', action='store_true', default=False,
+                        help='Disable writing <output-dir>/checkpoint.pkl each cycle. '
+                             'By default a checkpoint is saved at every cycle boundary so '
+                             'a killed run can --resume.')
     parser.add_argument('--load-structure', type=Path, default=None,
                         help='Optional: load a classically pre-equilibrated structure (JSON '
                              'from scripts/prep_structure.py) and skip build/place/compress. '
@@ -157,6 +182,15 @@ def main() -> None:
                              'come from the file; the short ML re-equil (--minimize/'
                              '--equil-steps) still runs. See decision D-4 (+2026-06-20 WSL).')
     args = parser.parse_args()
+
+    # Cycle-boundary checkpointing for crash recovery (long runs). By default a
+    # checkpoint is written every cycle; --resume continues from it (skipping the
+    # one-time build-time activation/minimize/equil). See decisions.md 2026-06-26.
+    ckpt_file = args.output_dir / 'checkpoint.pkl'
+    resuming = bool(args.resume and ckpt_file.exists())
+    run_checkpoint_path = None if (args.no_checkpoint and not args.resume) else ckpt_file
+    if args.resume and not ckpt_file.exists():
+        logger.warning('--resume given but %s not found; starting a fresh run.', ckpt_file)
 
     rng = np.random.default_rng(args.seed)
 
@@ -344,7 +378,8 @@ def main() -> None:
     )
     logger.info('Propagation map: %d entries', len(propagation_map))
 
-    langevin_params = LangevinParams(temperature_K=args.temperature)
+    langevin_params = LangevinParams(
+        temperature_K=args.temperature, friction_per_fs=args.friction_per_fs)
     config = PolymerizationConfig(
         timestep_fs=args.timestep_fs,
         biased_steps=args.biased_steps,
@@ -401,7 +436,33 @@ def main() -> None:
     )
 
     n_activation_dissoc = 0
-    if args.activation and aibn_azo_bonds:
+    if resuming:
+        # The expensive one-time prep (build/compress/minimize/activation/equil)
+        # already happened before the checkpoint was written. Restore the
+        # post-activation production spin and skip straight to the cycle loop;
+        # run() restores positions/groups/tracker/rng from the checkpoint.
+        _ck = load_checkpoint(ckpt_file)
+        _extra = _ck.get('extra', {}) or {}
+        n_activation_dissoc = int(_extra.get('activation_dissociations', 0))
+        _spin = _extra.get('spin')
+        if _spin is not None and getattr(calc, 'supports_spin', False):
+            calc.set_spin(int(_spin))
+            logger.info('Resume: restored production spin %d from checkpoint', int(_spin))
+        config = PolymerizationConfig(
+            timestep_fs=config.timestep_fs,
+            biased_steps=config.biased_steps,
+            unbiased_steps=config.unbiased_steps,
+            n_cycles=config.n_cycles,
+            tdbb=config.tdbb,
+            seed=config.seed,
+            save_interval=config.save_interval,
+            minimize=False,
+            minimize_fmax=config.minimize_fmax,
+            equil_steps=0,
+        )
+        wf.config = config
+        logger.info('Resume mode: skipping build-time activation/minimize/equilibration.')
+    elif args.activation and aibn_azo_bonds:
         logger.info(
             'Activation phase: %d C-N azo bonds, %d steps, f2=%.2f, f1_max=%.0f, spin=1',
             len(aibn_azo_bonds), args.activation_steps, args.activation_f2,
@@ -409,11 +470,17 @@ def main() -> None:
         )
         act_template, act_groups = build_activation_template(aibn_azo_bonds)
 
+        # Order matters (see specs/decisions.md 2026-06-24 "活性化と平衡化の順序バグ").
+        # minimize (FIRE, 0 K) relaxes placement clashes WITHOUT thermally
+        # decomposing the AIBN; activation then dissociates the azo C-N bonds on
+        # the still-intact structure. The 333 K equilibration is DEFERRED to
+        # after activation — running it before (the old order) thermally
+        # decomposed/scattered the azo bonds (C-N stretched past the [0,3] Å
+        # activation window), so activation found 0 C-N candidates, no real
+        # radicals formed, and the radical_C/chain_C topology was broken,
+        # starving downstream candidate selection (qualified candidates 0 vs 16).
         if config.minimize:
             wf._minimize(state)
-        if config.equil_steps > 0:
-            act_rng = np.random.default_rng(args.seed)
-            wf._run_equilibration_phase(state, act_rng, writer=None)
 
         dissociated = wf.run_activation(
             state, act_template, act_groups,
@@ -428,6 +495,10 @@ def main() -> None:
         if dissociated:
             n_radicals = len(groups['radical_C'].atom_indices)
             production_spin = n_radicals + 1
+            if args.production_spin_cap is not None:
+                production_spin = min(production_spin, args.production_spin_cap)
+                logger.info('Production spin capped at %d (from n_radicals+1=%d)',
+                            production_spin, n_radicals + 1)
             calc.set_spin(production_spin)
             if getattr(calc, 'supports_spin', False):
                 logger.info('Spin switched: 1 → %d (N_radicals=%d)', production_spin, n_radicals)
@@ -437,6 +508,12 @@ def main() -> None:
                     '(N_radicals=%d) — results assume the backend is spin-agnostic.',
                     calc.name, production_spin, n_radicals,
                 )
+
+        # Thermalize AFTER activation: radicals are already formed, so there is
+        # no intact azo left for the 333 K dynamics to decompose.
+        if config.equil_steps > 0:
+            act_rng = np.random.default_rng(args.seed)
+            wf._run_equilibration_phase(state, act_rng, writer=None)
 
         config = PolymerizationConfig(
             timestep_fs=config.timestep_fs,
@@ -462,6 +539,12 @@ def main() -> None:
         output_dir=args.output_dir,
         config_path='configs/boost/paper_faithful.yaml',
         n_monomers=args.n_monomers,
+        checkpoint_path=run_checkpoint_path,
+        resume=resuming,
+        checkpoint_extra={
+            'spin': getattr(calc, '_spin', None),
+            'activation_dissociations': n_activation_dissoc,
+        },
     )
 
     n_form = len(tracker.confirmed_formations())

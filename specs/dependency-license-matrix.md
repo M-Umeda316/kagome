@@ -19,6 +19,8 @@
 | orb-models (code) | MLIP framework | Apache-2.0 | **yes** | OrbMol calculator; optional `[orb]` dependency |
 | OrbMol-v2 model | pretrained weights | Apache-2.0 | **yes** | trained on OMol25 + OPoly26 (polymer data); recommended for organic/polymer systems |
 | nvalchemiops | PME electrostatics + D3 | Apache-2.0 | **yes** | NVIDIA ALCHEMI Toolkit-Ops (`nvalchemi-toolkit-ops`); required for periodic OrbMol-v2 (PME long-range Coulomb); LICENSE verified Apache-2.0 (2026-06-20). Windows torch.compile caveat → run periodic on Linux/WSL/cloud |
+| aimnet (code) | MLIP framework | MIT | **yes** | AIMNet2 calculator (`pip install aimnet`; isayevlab/aimnetcentral); 周期境界 (Ewald/PME) ネイティブ対応; spin-charge 認識 |
+| AIMNet2-NSE model | pretrained weights | MIT | **yes** | 開殻/ラジカル化学(spin-charge equilibration、total spin multiplicity 入力)。HF `isayevlab/aimnet2-nse`。ラジカル系の第2バックエンド候補(spike 2026-06-25)。OrbMol-v2 を置換でなく補完(クロス検証) |
 | Toy backend | internal test backend | internal code | yes | required for open/public CI |
 | matplotlib | plotting (optional) | PSF (permissive) | yes | optional `[plot]` dependency, not required at runtime |
 | RDKit | cheminformatics | BSD-3-Clause | **yes** | SMILES → 3D via EmbedMolecule + MMFF; used in `[rdkit]` extra for vinyl/AIBN system builder |
@@ -33,3 +35,4 @@
 - CC-BY-4.0 components (openff-forcefields, openff-nagl-models) are commercial-safe but require attribution: distributed results that depend on them must cite the Open Force Field Initiative.
 - License evidence verified 2026-06-14 from upstream LICENSE files: openff-toolkit/interchange/nagl = MIT; openff-forcefields + openff-nagl-models = CC-BY-4.0; OpenMM core = MIT, CUDA/OpenCL = LGPL.
 - nvalchemiops verified 2026-06-20 from upstream LICENSE (github.com/NVIDIA/nvalchemi-toolkit-ops): SPDX-License-Identifier Apache-2.0, © NVIDIA CORPORATION. Unblocks periodic OrbMol-v2 PME for paper-scale runs (Linux/WSL/cloud; Windows torch.compile caveat persists).
+- aimnet (code) + AIMNet2-NSE weights verified MIT 2026-06-25: github.com/isayevlab/aimnetcentral LICENSE = MIT; HF model card `isayevlab/aimnet2-nse` declares `license: mit`。コード・重みとも商用安全。ラジカル/開殻化学のための第2バックエンド候補として spike 評価中(PES 検証 + 多ラジカル高スピン安定性)。OrbMol-v2 の代替でなく補完(backend-agnostic クロス検証; specs/decisions.md 2026-06-25 参照)。

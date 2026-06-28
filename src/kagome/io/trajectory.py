@@ -38,12 +38,17 @@ class TrajectoryWriter:
         save_interval: int = 100,
         metadata: dict[str, Any] | None = None,
         n_reactive_sites: int | None = None,
+        append: bool = False,
     ) -> None:
         self._path = path
         self._save_interval = save_interval
         self._step_counter = 0
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(path, 'w', encoding='utf-8')
+        # append=True (checkpoint resume): keep prior frames and the existing
+        # header instead of truncating; only fresh runs write the header.
+        self._file = open(path, 'a' if append else 'w', encoding='utf-8')
+        if append:
+            return
 
         header: dict[str, Any] = {
             '_header': True,
