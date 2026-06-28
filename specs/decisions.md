@@ -1136,3 +1136,15 @@ Use this template for each decision.
 - 評価: paper の claim は全てサイズ非依存の method/workflow + eval.qualitative(定性トレンド一致先行)。**半スケールで TDBB workflow(biased 近接生成→確定→鎖伸長)と単調増加する転化・制御された温度を定性再現 → 論文追試の科学目標を達成**(数値厳密一致は非目標と既決)。
 - Licensing/commercial impact: なし(OrbMol-v2 は既存の妥当域バックエンド、新規依存なし)。
 - Follow-up: (a) density プロットが必要なら trajectory 出力間隔を bond step に整合させ再生成。(b) 先行 30cyc 実績(α=26%)→ 50cyc(α=43%)で転化が伸長を継続中、より高転化を見たい場合は cycle 数増で延長可能(checkpoint で再開可)。(c) 0.68Å 残留クラッシュ(minimize 未収束)は引き続き別件。
+
+## 2026-06-29: half-scale 100+5 / 100cyc 完走 — checkpoint resume で 50cyc を延長、転化率 73%(runs/s6_half_50c)
+- 結果: **完走(cycle 100/100)。確定形成 73, 解離 0**。transition 率 α = 73/100 = **73%**。目標 60% を上回る。
+- 方式: 前項 50cyc 完走の `runs/s6_half_50c/checkpoint.pkl`(next_cycle=50, 復元 spin=11, reacted=43)から **`--resume` + `--n-cycles 100`** で cycle 50→99 を継続。resume が `range(start_cycle, n_cycles)`(polymerization.py)で動くため、checkpoint の next_cycle から n_cycles 増分だけ素直に延長できることを実機確認。既存 43% を bit-exact で引き継ぎ、build/activation/minimize は skip(spin 11 復元)。
+- 転化の伸び: 30cyc=26% → 50cyc=43% → **100cyc=73%**。cycle に対し単調増加を継続(停止反応なし理想化と整合)。末期(cycle ~80 以降)は candidate 数が 5–8 に減少・形成ペース ~0.53/cycle(中盤 ~0.7–0.8 から鈍化)= monomer 消費(残 27)に伴う正常な頭打ち。
+- 実行健全性: ~2.0–2.3 steps/s(cycle 68 付近で一度 1.46 まで低下したが一過性で 2.04 に回復)。VRAM swap-free(torch_peak ~4.7 / nvidia-smi device ~5–6.5 / 16 GiB、~10 GiB 空き)、stall WARN ゼロ。**今回は中断なしでノンストップ完走**。
+- 起動方式の知見: 前回の launcher 切断(子 python 道連れ)を踏まえ、**`setsid nohup python ... --resume >> run.log 2>&1 &`** でフル detach 起動 → launcher/セッション切断に耐え完走。長尺起動の既定手順として有効。WSL では `nvidia-smi` の per-process 表示が効かず他プロセスの GPU 使用は総量からの推定のみ(Windows タスクマネージャ GPU タブで直接確認可)。
+- 図(scripts/reproduce_figures.py で再生成、手編集なし): runs/s6_half_50c/figures/ を 100cyc データで上書き(conversion/temperature/energy/base_energy, .png/.pdf)。density は前回同様 skip(bond event step と trajectory 出力 step の粒度不一致、主目的の転化/温度/エネルギーには影響なし)。注: run_vinyl_aibn.py 直起動のため図は自動生成されず手動再生成した(run_s6_paper_scale.sh 経由なら自動)。
+- 成果物: runs/s6_half_50c/{run.log, bonds.jsonl(73 confirmed_formation), trajectory.jsonl, checkpoint.pkl(cycle100 状態), checkpoint.cycle50.bak.pkl(50cyc 退避), figures/}。
+- 評価: 前項(50cyc/43%)の延長として **半スケール TDBB workflow で転化率 73% まで単調伸長を達成**。論文追試の科学目標(定性トレンド一致)をより高転化で補強。数値厳密一致は非目標(既決)。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) さらに高転化を見たい場合は同 checkpoint(cycle100)から `--n-cycles 150` 等で再延長可(末期鈍化のため伸び幅は逓減)。(b) density プロット・0.68Å 残留クラッシュ(minimize 未収束)は引き続き別件。
