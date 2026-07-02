@@ -94,9 +94,9 @@ class MCBarostat:
                             (specs/decisions.md 2026-07-03 D2).
 
         Returns:
-            (accepted, new_energy, new_forces)
-            On acceptance, new_energy is the base energy at the new configuration.
-            On rejection, returns (False, base component of current_energy, None).
+            (accepted, energy, forces)
+            On acceptance: (True, new_base_energy, new_forces).
+            On rejection: (False, current_energy, None).
         """
         kT = KB * temperature_K
         box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])

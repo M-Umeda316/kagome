@@ -476,6 +476,12 @@ class PolymerizationWorkflow:
             state.velocities = np.array(_ckpt['velocities'])
             state.cell = None if _ckpt['cell'] is None else np.array(_ckpt['cell'])
             state.step = int(_ckpt['step'])
+            ckpt_labels = set(_ckpt['groups'].keys())
+            live_labels = set(self.groups.keys())
+            if ckpt_labels != live_labels:
+                logger.warning(
+                    'Checkpoint group labels %s != live labels %s',
+                    sorted(ckpt_labels), sorted(live_labels))
             for label, idxs in _ckpt['groups'].items():
                 if label in self.groups:
                     self.groups[label].atom_indices[:] = list(idxs)
