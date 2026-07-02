@@ -41,6 +41,39 @@ from kagome.workflows.manifest import RunManifest, _normalize_value
 
 logger = logging.getLogger(__name__)
 
+
+def _truncate_jsonl_after_step(path: Path, max_step: int) -> int:
+    """Remove JSONL lines whose 'step' field exceeds *max_step*.
+
+    Returns the number of lines removed. Lines without a parseable 'step'
+    field are kept (e.g. header records).
+    """
+    if not path.exists():
+        return 0
+    kept: list[str] = []
+    removed = 0
+    with open(path, 'r', encoding='utf-8') as f:
+        for raw in f:
+            raw = raw.rstrip('\n')
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                kept.append(raw)
+                continue
+            step = rec.get('step')
+            if step is not None and step > max_step:
+                removed += 1
+            else:
+                kept.append(raw)
+    if removed:
+        with open(path, 'w', encoding='utf-8') as f:
+            for line in kept:
+                f.write(line + '\n')
+        logger.info('Truncated %d post-checkpoint records from %s', removed, path.name)
+    return removed
+
 VDW_RADII: dict[str, float] = {
     'H': 1.20, 'C': 1.70, 'N': 1.55, 'O': 1.52, 'F': 1.47,
     'S': 1.80, 'Cl': 1.75, 'Cu': 1.40,
@@ -507,6 +540,14 @@ class PolymerizationWorkflow:
                 if not resuming:
                     self._topology_log.write_text('', encoding='utf-8')
                     self._write_topology_snapshot(state, cycle=-1)  # initial
+
+            if resuming and _ckpt is not None:
+                ckpt_step = int(_ckpt['step'])
+                _truncate_jsonl_after_step(
+                    output_dir / 'trajectory.jsonl', ckpt_step)
+                _truncate_jsonl_after_step(self._selection_log, ckpt_step)
+                if self._topology_log is not None:
+                    _truncate_jsonl_after_step(self._topology_log, ckpt_step)
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
