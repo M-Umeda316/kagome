@@ -120,6 +120,7 @@ def save_checkpoint(
     extra: dict | None = None,
     topology: BondTopology | None = None,
     topo_processed_formations: int = 0,
+    topo_processed_dissociations: int = 0,
 ) -> None:
     """Atomically write a checkpoint at a cycle boundary.
 
@@ -146,6 +147,7 @@ def save_checkpoint(
         # continue the same connectivity, not re-derive it from scratch.
         'topology_bonds': (topology.bonds() if topology is not None else None),
         'topo_processed_formations': topo_processed_formations,
+        'topo_processed_dissociations': topo_processed_dissociations,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + '.tmp')
@@ -298,14 +300,21 @@ class DefaultPostCycleUpdater:
         if not tracker:
             return
         formations = tracker.confirmed_formations()
+        confirmed_cids: set[int] = set()
         for ev in formations[self._processed_formations:]:
             self._remove_pair(groups, ev)
+            if ev.candidate_id >= 0:
+                confirmed_cids.add(ev.candidate_id)
         self._processed_formations = len(formations)
 
-        # Consume dissociations so freed leaving groups / reacted centres are not
-        # re-selected next cycle (remove_atom is idempotent if also consumed above).
         dissociations = tracker.confirmed_dissociations()
         for ev in dissociations[self._processed_dissociations:]:
+            if ev.candidate_id >= 0 and ev.candidate_id not in confirmed_cids:
+                logger.info(
+                    'Skipping dissociation (%d,%d) candidate_id=%d: '
+                    'no matching formation confirmed (H2)',
+                    ev.atom_a, ev.atom_b, ev.candidate_id)
+                continue
             self._remove_pair(groups, ev)
         self._processed_dissociations = len(dissociations)
 
@@ -412,6 +421,7 @@ class PolymerizationWorkflow:
         self._topology = (
             BondTopology.from_bonds(initial_bonds) if initial_bonds else None)
         self._topo_processed_formations = 0
+        self._topo_processed_dissociations = 0
         self._topology_log: Path | None = None
 
         if updater is not None:
@@ -505,6 +515,8 @@ class PolymerizationWorkflow:
                 self._topology = BondTopology.from_bonds(_ckpt['topology_bonds'])
                 self._topo_processed_formations = _ckpt.get(
                     'topo_processed_formations', 0)
+                self._topo_processed_dissociations = _ckpt.get(
+                    'topo_processed_dissociations', 0)
             self.logs = list(_ckpt['logs'])
             logger.info(
                 'Resuming from checkpoint: starting at cycle %d of %d '
@@ -622,6 +634,7 @@ class PolymerizationWorkflow:
                         extra=checkpoint_extra,
                         topology=self._topology,
                         topo_processed_formations=self._topo_processed_formations,
+                        topo_processed_dissociations=self._topo_processed_dissociations,
                     )
         finally:
             if writer:
@@ -1067,22 +1080,24 @@ class PolymerizationWorkflow:
 
     def _apply_topology_updates(self, state: SimulationState) -> bool:
         """Apply reaction edits to the explicit bond topology for newly confirmed
-        formations. Returns True if the topology changed this cycle.
+        formations and dissociations.
 
         Vinyl radical addition (propagation_map present): new radical_C-alpha_C
         sigma bond + C=C opening + closed-shell placeholder-H shed
         (apply_vinyl_addition).  Other chemistries: add the recorded formation
-        bond generically (condensation leaving-group edits are a follow-up).
+        bond generically.
+
+        Confirmed dissociations remove the corresponding bond from the topology
+        (L10: condensation leaving-group bond removal).
         """
         if self._topology is None or self.bond_tracker is None:
             return False
+        changed = False
+
         formations = self.bond_tracker.confirmed_formations()
-        new = formations[self._topo_processed_formations:]
-        for ev in new:
+        new_formations = formations[self._topo_processed_formations:]
+        for ev in new_formations:
             if self._propagation_map:
-                # Defensive: the selection valence guard should already prevent
-                # over-coordinating formations, but never emit an over-valent
-                # topology if one slips through — skip the edit and flag it.
                 bad = vinyl_addition_over_coordinates(
                     self._topology, ev.atom_a, ev.atom_b,
                     self._propagation_map, state.species,
@@ -1101,8 +1116,18 @@ class PolymerizationWorkflow:
                 )
             else:
                 self._topology.add_bond(ev.atom_a, ev.atom_b, 1.0)
+            changed = True
         self._topo_processed_formations = len(formations)
-        return bool(new)
+
+        dissociations = self.bond_tracker.confirmed_dissociations()
+        new_dissociations = dissociations[self._topo_processed_dissociations:]
+        for ev in new_dissociations:
+            if self._topology.has_bond(ev.atom_a, ev.atom_b):
+                self._topology.remove_bond(ev.atom_a, ev.atom_b)
+                changed = True
+        self._topo_processed_dissociations = len(dissociations)
+
+        return changed
 
     def _write_topology_snapshot(self, state: SimulationState, cycle: int) -> None:
         """Append the current full bond list to topology.jsonl (one JSON line).
@@ -1326,7 +1351,7 @@ class PolymerizationWorkflow:
         pairs: list[PairBias] = []
         label_list = template.groups
 
-        for cand in selected:
+        for cand_idx, cand in enumerate(selected):
             for ps in template.pairs:
                 if ps.constraint_only:
                     continue
@@ -1352,5 +1377,6 @@ class PolymerizationWorkflow:
                     idx_b=atom_b,
                     is_formation=ps.is_formation,
                     r0=r0,
+                    candidate_id=cand_idx,
                 ))
         return pairs

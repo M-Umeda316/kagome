@@ -126,6 +126,7 @@ class PairBias:
     idx_b: int
     is_formation: bool
     r0: float = 0.0
+    candidate_id: int = -1
 
 
 def total_bias(
