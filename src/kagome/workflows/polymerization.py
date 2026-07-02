@@ -42,11 +42,12 @@ from kagome.workflows.manifest import RunManifest, _normalize_value
 logger = logging.getLogger(__name__)
 
 
-def _truncate_jsonl_after_step(path: Path, max_step: int) -> int:
-    """Remove JSONL lines whose 'step' field exceeds *max_step*.
+def _truncate_jsonl_after(path: Path, max_value: int, field: str = 'step') -> int:
+    """Remove JSONL lines whose *field* exceeds *max_value*.
 
-    Returns the number of lines removed. Lines without a parseable 'step'
-    field are kept (e.g. header records).
+    Returns the number of lines removed. Lines without a parseable *field*
+    are kept (e.g. header records). ``field='step'`` suits trajectory/topology
+    logs; ``field='cycle'`` suits selection.jsonl, whose records carry no step.
     """
     if not path.exists():
         return 0
@@ -62,8 +63,8 @@ def _truncate_jsonl_after_step(path: Path, max_step: int) -> int:
             except json.JSONDecodeError:
                 kept.append(raw)
                 continue
-            step = rec.get('step')
-            if step is not None and step > max_step:
+            value = rec.get(field)
+            if value is not None and value > max_value:
                 removed += 1
             else:
                 kept.append(raw)
@@ -300,20 +301,23 @@ class DefaultPostCycleUpdater:
         if not tracker:
             return
         formations = tracker.confirmed_formations()
-        confirmed_cids: set[int] = set()
+        # candidate_id restarts at 0 every cycle, so key on (cycle, id) to
+        # stay correct even if this update spans more than one cycle.
+        confirmed_cids: set[tuple[int, int]] = set()
         for ev in formations[self._processed_formations:]:
             self._remove_pair(groups, ev)
             if ev.candidate_id >= 0:
-                confirmed_cids.add(ev.candidate_id)
+                confirmed_cids.add((ev.cycle, ev.candidate_id))
         self._processed_formations = len(formations)
 
         dissociations = tracker.confirmed_dissociations()
         for ev in dissociations[self._processed_dissociations:]:
-            if ev.candidate_id >= 0 and ev.candidate_id not in confirmed_cids:
+            if (ev.candidate_id >= 0
+                    and (ev.cycle, ev.candidate_id) not in confirmed_cids):
                 logger.info(
-                    'Skipping dissociation (%d,%d) candidate_id=%d: '
+                    'Skipping dissociation (%d,%d) cycle=%d candidate_id=%d: '
                     'no matching formation confirmed (H2)',
-                    ev.atom_a, ev.atom_b, ev.candidate_id)
+                    ev.atom_a, ev.atom_b, ev.cycle, ev.candidate_id)
                 continue
             self._remove_pair(groups, ev)
         self._processed_dissociations = len(dissociations)
@@ -501,7 +505,14 @@ class PolymerizationWorkflow:
             if hasattr(self._updater, 'chain_c_map'):
                 self._updater.chain_c_map = dict(_ckpt['updater_chain_c_map'])
             if self.bond_tracker is not None:
-                self.bond_tracker._events = list(_ckpt['tracker_events'])
+                restored_events = list(_ckpt['tracker_events'])
+                # Migrate events pickled before candidate_id existed: pickle
+                # restores __dict__ directly (no __init__), so the dataclass
+                # default never applies and asdict() would raise on save().
+                for ev in restored_events:
+                    if not hasattr(ev, 'candidate_id'):
+                        ev.candidate_id = -1
+                self.bond_tracker._events = restored_events
                 raw_reacted = _ckpt['tracker_reacted']
                 # Migrate v1 checkpoints: (int, int) -> (int, int, True)
                 migrated: set[tuple[int, int, bool]] = set()
@@ -561,11 +572,16 @@ class PolymerizationWorkflow:
 
             if resuming and _ckpt is not None:
                 ckpt_step = int(_ckpt['step'])
-                _truncate_jsonl_after_step(
+                _truncate_jsonl_after(
                     output_dir / 'trajectory.jsonl', ckpt_step)
-                _truncate_jsonl_after_step(self._selection_log, ckpt_step)
+                # selection.jsonl records carry only 'cycle': the checkpoint's
+                # next_cycle is the first cycle to be re-run, so records from
+                # cycle >= next_cycle are the mid-crash duplicates.
+                _truncate_jsonl_after(
+                    self._selection_log, int(_ckpt['next_cycle']) - 1,
+                    field='cycle')
                 if self._topology_log is not None:
-                    _truncate_jsonl_after_step(self._topology_log, ckpt_step)
+                    _truncate_jsonl_after(self._topology_log, ckpt_step)
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
@@ -869,6 +885,7 @@ class PolymerizationWorkflow:
     ) -> CycleLog:
         candidates = find_candidates(
             self.template, self.groups, state.positions, state.cell,
+            topology=self._topology,
         )
         scored = score_candidates(candidates)
 

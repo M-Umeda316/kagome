@@ -73,6 +73,14 @@ class ReactionTemplate:
                 raise ValueError(
                     f'ReactionTemplate {self.name!r}: pair group_b {ps.group_b!r} '
                     f'not in groups {self.groups}')
+            if ps.group_a == ps.group_b:
+                # Symmetric pairs map to a (i,i) key that the enumeration
+                # loop (prev_depth < depth) can never match — the distance
+                # window would be silently disabled (L4).
+                raise ValueError(
+                    f'ReactionTemplate {self.name!r}: pair ({ps.group_a!r}, '
+                    f'{ps.group_b!r}) references the same group; symmetric '
+                    'reactions are not supported by the candidate enumerator')
 
     def group_labels(self) -> set[str]:
         return set(self.groups)

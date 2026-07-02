@@ -83,8 +83,10 @@ class MCBarostat:
             positions:      (N, 3) array, modified in-place on acceptance
             species:        atom species list
             cell:           (3, 3) diagonal cell matrix, modified in-place on acceptance
-            current_energy: potential energy at current configuration (kcal/mol).
-                            Should include bias energy when bias_energy_fn is provided.
+            current_energy: BASE potential energy at the current configuration
+                            (kcal/mol), excluding bias. The bias contribution
+                            is handled internally via bias_energy_fn — passing
+                            base+bias here would double-count the old bias.
             calculator:     Calculator with compute(positions, species, cell) -> (E, F)
             rng:            random generator
             temperature_K:  current thermostat temperature (K)

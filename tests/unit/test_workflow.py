@@ -95,6 +95,108 @@ class TestDefaultPostCycleUpdater:
         upd.update(groups, tracker, self._state())  # same events again
         assert upd.processed_dissociations == 1
 
+    # ── H2: candidate-atomic (all-or-nothing) acceptance ──────────────
+
+    def test_dissociation_skipped_when_formation_not_confirmed(self):
+        """H2: a V^d-only confirmation must NOT consume the reactive sites."""
+        groups = self._groups()
+        # candidate 0's dissociation confirmed, but its formation did not.
+        diss = [BondEvent(step=1, cycle=0, atom_a=0, atom_b=1,
+                          event_type='confirmed_dissociation', distance=3.0,
+                          candidate_id=0)]
+        upd = DefaultPostCycleUpdater()
+        upd.update(groups, _FakeTracker([], diss), self._state())
+
+        # amine N and its H stay selectable — no site is lost.
+        assert 0 in groups['amine_N'].atom_indices
+        assert 1 in groups['amine_H'].atom_indices
+        assert upd.processed_dissociations == 1
+
+    def test_dissociation_applied_when_same_candidate_formation_confirmed(self):
+        groups = self._groups()
+        formations = [BondEvent(step=1, cycle=0, atom_a=0, atom_b=2,
+                                event_type='confirmed_formation', distance=1.5,
+                                candidate_id=0)]
+        diss = [BondEvent(step=1, cycle=0, atom_a=0, atom_b=1,
+                          event_type='confirmed_dissociation', distance=3.0,
+                          candidate_id=0)]
+        upd = DefaultPostCycleUpdater()
+        upd.update(groups, _FakeTracker(formations, diss), self._state())
+
+        assert 0 not in groups['amine_N'].atom_indices
+        assert 1 not in groups['amine_H'].atom_indices
+
+    def test_candidate_id_matching_is_per_cycle(self):
+        """candidate_id restarts each cycle: a cycle-1 dissociation must not
+        match a cycle-0 formation that happens to share the same id."""
+        groups = self._groups()
+        formations = [BondEvent(step=1, cycle=0, atom_a=10, atom_b=12,
+                                event_type='confirmed_formation', distance=1.5,
+                                candidate_id=0)]
+        diss = [BondEvent(step=5, cycle=1, atom_a=0, atom_b=1,
+                          event_type='confirmed_dissociation', distance=3.0,
+                          candidate_id=0)]
+        upd = DefaultPostCycleUpdater()
+        upd.update(groups, _FakeTracker(formations, diss), self._state())
+
+        # cycle-1 candidate 0 had no confirmed formation — sites preserved.
+        assert 0 in groups['amine_N'].atom_indices
+        assert 1 in groups['amine_H'].atom_indices
+
+    def test_legacy_events_without_candidate_id_are_applied(self):
+        """Events with candidate_id=-1 (activation, pre-H2 checkpoints) keep
+        the RF15 behavior: dissociation frees the atoms unconditionally."""
+        groups = self._groups()
+        diss = [BondEvent(step=1, cycle=0, atom_a=0, atom_b=1,
+                          event_type='confirmed_dissociation', distance=3.0)]
+        upd = DefaultPostCycleUpdater()
+        upd.update(groups, _FakeTracker([], diss), self._state())
+        assert 0 not in groups['amine_N'].atom_indices
+        assert 1 not in groups['amine_H'].atom_indices
+
+
+class TestTruncateJsonl:
+    """M2: resume must drop records written after the checkpoint."""
+
+    def test_truncates_by_step(self, tmp_path):
+        from kagome.workflows.polymerization import _truncate_jsonl_after
+        p = tmp_path / 'trajectory.jsonl'
+        lines = [
+            json.dumps({'_header': True, 'species': ['C']}),
+            json.dumps({'step': 100, 'cycle': 0}),
+            json.dumps({'step': 200, 'cycle': 1}),
+            json.dumps({'step': 300, 'cycle': 1}),  # post-checkpoint
+        ]
+        p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+        removed = _truncate_jsonl_after(p, 200)
+
+        assert removed == 1
+        kept = [json.loads(l) for l in p.read_text(encoding='utf-8').splitlines()]
+        assert len(kept) == 3  # header (no step) + steps 100, 200
+        assert all(rec.get('step', 0) <= 200 for rec in kept)
+
+    def test_truncates_by_cycle_for_selection_log(self, tmp_path):
+        from kagome.workflows.polymerization import _truncate_jsonl_after
+        p = tmp_path / 'selection.jsonl'
+        lines = [
+            json.dumps({'cycle': 0, 'n_selected': 2}),
+            json.dumps({'cycle': 1, 'n_selected': 1}),
+            json.dumps({'cycle': 2, 'n_selected': 3}),  # mid-crash duplicate
+        ]
+        p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+        # checkpoint next_cycle=2 → keep cycles <= 1
+        removed = _truncate_jsonl_after(p, 1, field='cycle')
+
+        assert removed == 1
+        kept = [json.loads(l) for l in p.read_text(encoding='utf-8').splitlines()]
+        assert [rec['cycle'] for rec in kept] == [0, 1]
+
+    def test_missing_file_is_noop(self, tmp_path):
+        from kagome.workflows.polymerization import _truncate_jsonl_after
+        assert _truncate_jsonl_after(tmp_path / 'nope.jsonl', 100) == 0
+
 
 def _make_simple_setup():
     template = ReactionTemplate(
