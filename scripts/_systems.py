@@ -160,6 +160,17 @@ def layout_bonds(
     return bonds
 
 
+def layout_species(specs: list[tuple[str, int, int]]) -> list[str]:
+    """Element symbols for a contiguous fragment layout (same order as
+    :func:`layout_bonds`).  Placement-free — used to validate a retroactive
+    reconstruction against a run's recorded ``species`` without re-placing atoms."""
+    out: list[str] = []
+    for smiles, count, seed in specs:
+        sp = [a.GetSymbol() for a in _rdkit_mol(smiles, seed).GetAtoms()]
+        out.extend(sp * count)
+    return out
+
+
 def vinyl_initial_bonds(
     n_monomers: int,
     n_initiators: int,
@@ -173,6 +184,57 @@ def vinyl_initial_bonds(
         (initiator_smiles, n_initiators, rdkit_seed),
         (monomer_smiles, n_monomers, rdkit_seed + 1),
     ])
+
+
+def vinyl_reaction_maps(
+    n_monomers: int,
+    n_initiators: int,
+    monomer_smiles: str = _MONOMER_SMILES,
+    initiator_smiles: str = _INITIATOR_SMILES,
+    rdkit_seed: int = 42,
+) -> tuple[dict[int, int], list[tuple[int, int]]]:
+    """Placement-free (propagation_map alpha->beta, azo_bonds) for the
+    :func:`build_vinyl_aibn_system` layout.  Pre-formed radicals have no azo
+    bonds, so the second element is empty.  For retroactive topology
+    reconstruction without re-placing atoms in a box (specs/decisions.md
+    2026-07-02)."""
+    local_alpha, local_beta = _find_vinyl_alpha_beta(monomer_smiles)
+    n_per_init = len(_rdkit_mol(initiator_smiles, rdkit_seed).GetAtoms())
+    n_per_mono = len(_rdkit_mol(monomer_smiles, rdkit_seed + 1).GetAtoms())
+    mono_offset = n_initiators * n_per_init
+    pmap = {
+        mono_offset + j * n_per_mono + local_alpha:
+        mono_offset + j * n_per_mono + local_beta
+        for j in range(n_monomers)
+    }
+    return pmap, []
+
+
+def full_aibn_reaction_maps(
+    n_monomers: int,
+    n_aibn: int,
+    monomer_smiles: str = _MONOMER_SMILES,
+    aibn_smiles: str = _AIBN_SMILES,
+    rdkit_seed: int = 42,
+) -> tuple[dict[int, int], list[tuple[int, int]]]:
+    """Placement-free (propagation_map alpha->beta, global azo C-N bonds) for the
+    :func:`build_full_aibn_system` layout (AIBN first, then monomers).  For
+    retroactive topology reconstruction without re-placing atoms in a box."""
+    local_alpha, local_beta = _find_vinyl_alpha_beta(monomer_smiles)
+    local_azo = _find_aibn_azo_bonds(aibn_smiles)
+    n_per_aibn = len(_rdkit_mol(aibn_smiles, rdkit_seed).GetAtoms())
+    n_per_mono = len(_rdkit_mol(monomer_smiles, rdkit_seed + 1).GetAtoms())
+    azo = [
+        (i * n_per_aibn + c, i * n_per_aibn + nn)
+        for i in range(n_aibn) for c, nn in local_azo
+    ]
+    mono_offset = n_aibn * n_per_aibn
+    pmap = {
+        mono_offset + j * n_per_mono + local_alpha:
+        mono_offset + j * n_per_mono + local_beta
+        for j in range(n_monomers)
+    }
+    return pmap, azo
 
 
 def full_aibn_initial_bonds(
