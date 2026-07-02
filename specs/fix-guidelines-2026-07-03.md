@@ -129,9 +129,77 @@ I2, I5-I8 は以下の理由で実装対象外とした:
 
 ---
 
+## 実装後の再検証で発見した問題 (2026-07-03 追記)
+
+実装完了後、コードを再読して横断チェックを実施。以下 5 件の漏れ・新規問題を発見し、
+コミット 2b7df7e で修正済み（全 374 テスト通過）。
+
+### V1. M2 の漏れ: selection.jsonl の truncation が no-op だった【修正済み】
+- **事実**: `_write_selection_audit` / `_write_valence_drop_audit` のレコードは
+  `cycle` フィールドのみ持ち `step` を持たない。step ベースの
+  `_truncate_jsonl_after_step` は selection.jsonl の全行を保持してしまい、
+  M2 が意図した重複除去がこのファイルには効いていなかった。
+- **修正**: `_truncate_jsonl_after(path, max_value, field=...)` に汎用化し、
+  selection.jsonl は `field='cycle'`、閾値 `next_cycle - 1` で切り詰める。
+
+### V2. checkpoint 互換バグ: 旧 BondEvent の candidate_id 欠落【修正済み】
+- **事実**: pickle は `__init__` を経由せず `__dict__` を直接復元するため、
+  candidate_id 追加**前**に保存された checkpoint の `tracker_events` を復元すると
+  属性が欠落したままになる。run 終了時の `tracker.save()` 内 `asdict(ev)` が
+  AttributeError で落ちる（resume した run が最後にクラッシュする）。
+- **修正**: 復元時に `hasattr` チェックで `candidate_id = -1` をバックフィル。
+
+### V3. L6 の未配線: topology ガードが呼び出し側で使われていなかった【修正済み】
+- **事実**: `find_candidates(topology=...)` 引数は実装したが、
+  `_run_biased_phase` の呼び出しで渡しておらず、結合済みペア除外が
+  実際には一度も発火しない状態だった。
+- **修正**: production 側の呼び出しに `topology=self._topology` を配線。
+  activation 側は解離テンプレート（結合済みペアが対象）のため渡さない。
+
+### V4. M1 docstring の矛盾: bias 二重計上を招く記述【修正済み】
+- **事実**: `try_step` の docstring は「current_energy は bias 込みで渡すべき」と
+  述べていたが、dE の内部計算は `Δbase + (new_bias − old_bias)` であり、
+  bias 込みで渡すと old_bias が二重計上される。実際の呼び出し側は base のみ
+  渡しており数学的に正しい（コードは正、docstring が誤り）。
+- **修正**: 「BASE energy のみ。bias は bias_energy_fn が内部処理」と明記。
+
+### V5. L4 の部分未対応: 対称ペア検証の欠落【修正済み】
+- **事実**: `__post_init__` はラベル一意性とペア所属は検証していたが、
+  レビュー L4 が指摘した `group_a == group_b`（対称ペア → 距離窓の黙殺）を
+  検証していなかった。
+- **修正**: 同一グループを参照するペアを ValueError で拒否。
+
+### V6. H2 照合の堅牢化（潜在問題の予防）【修正済み】
+- **事実**: candidate_id はサイクル毎に 0 から振り直される。updater の update()
+  が複数サイクル分のイベントを一括処理した場合（現行フローでは起きないが）、
+  別サイクルの同番号候補と誤照合しうる。
+- **修正**: 照合キーを `(ev.cycle, ev.candidate_id)` に変更。
+
+### 設計ノート（既知の挙動、修正不要と判断）
+- `run_activation` の解離イベントは candidate_id=-1 で記録される。
+  DefaultPostCycleUpdater では -1 は H2 ゲートをバイパスし無条件適用
+  (RF15 のレガシー挙動)。ビニル系は VinylChainPropagationUpdater
+  (formation のみ処理) を使うため影響なし。activation + DefaultPostCycleUpdater
+  を組み合わせる将来の化学系では要注意（テスト
+  `test_legacy_events_without_candidate_id_are_applied` が挙動を固定）。
+- `_apply_topology_updates` の dissociation 除去は candidate_id ゲートなし。
+  解離が check_outcomes で物理的に確定した以上、結合除去はトポロジーとして
+  正しい（グループ簿記のゲートとは意味が異なる）。
+
+### 追加テスト (tests/unit/test_workflow.py)
+- `test_dissociation_skipped_when_formation_not_confirmed` — H2 ゲートの本体
+- `test_dissociation_applied_when_same_candidate_formation_confirmed`
+- `test_candidate_id_matching_is_per_cycle` — V6 の回帰テスト
+- `test_legacy_events_without_candidate_id_are_applied` — RF15 互換
+- `TestTruncateJsonl` 3 件 — step/cycle truncation と欠損ファイル no-op
+
+---
+
 ## コミット一覧
 
 ```
+2b7df7e fix: close gaps found in post-implementation verification
+4eb21be docs(specs): add fix guidelines with verification results
 11fb704 docs(specs): add decision record for H2 candidate_id design
 8acb2e6 fix(reactive): atomic candidate acceptance and dissociation bond removal (H2/L10)
 180c319 chore: barostat docstring fix and checkpoint label mismatch warning (I1/I4)
