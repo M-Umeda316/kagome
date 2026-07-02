@@ -1,7 +1,8 @@
 """Bond event tracking for reaction monitoring.
 
-Records formation/dissociation attempts during biased phases and
-confirms outcomes after unbiased relaxation.
+Records formation/dissociation attempts during biased phases,
+detects tentative reactions in-bias (to end the biased segment),
+and confirms outcomes after unbiased relaxation.
 """
 from __future__ import annotations
 
@@ -46,9 +47,13 @@ class BondTracker:
         self._threshold_fraction = threshold_fraction
         self._events: list[BondEvent] = []
         self._pending: list[tuple[PairBias, int]] = []
-        # Pairs already confirmed (min,max index) so in-phase detection and the
-        # end-of-unbiased check never double-count the same reaction.
-        self._reacted: set[tuple[int, int]] = set()
+        # Pairs confirmed after unbiased relaxation — keyed by
+        # (min_idx, max_idx, is_formation) so the same pair can undergo
+        # formation and later dissociation in different cycles.
+        self._reacted: set[tuple[int, int, bool]] = set()
+        # Pairs tentatively detected during the current biased phase.
+        # Cleared at the start of each record_attempts call.
+        self._tentative: set[tuple[int, int]] = set()
 
     @staticmethod
     def _key(a: int, b: int) -> tuple[int, int]:
@@ -62,17 +67,23 @@ class BondTracker:
         cycle: int,
         cell: NDArray[np.floating] | None = None,
     ) -> list[BondEvent]:
-        """Detect reaction events DURING the biased phase (paper §2.2 step 3).
+        """Detect tentative reaction events DURING the biased phase.
 
-        A formation pair reacts when its separation falls below the vdW bonding
-        threshold (r ≤ threshold_fraction·r0 = 0.6·Σr_vdw); a dissociation pair
-        reacts when it rises above it. Newly reacted pairs are recorded once and
-        returned so the caller can end the biased segment (run-until-reaction).
+        A formation pair is tentatively detected when its separation falls
+        below the vdW bonding threshold; a dissociation pair when it rises
+        above it.  Tentative events are recorded for auditing but do NOT
+        count as confirmed — confirmation happens only in ``check_outcomes``
+        after unbiased relaxation (specs/decisions.md 2026-07-03 D1).
+
+        Returns tentative events so the caller can end the biased segment.
         """
         newly: list[BondEvent] = []
         for pair in pairs:
-            key = self._key(pair.idx_a, pair.idx_b)
-            if key in self._reacted:
+            pair_key = self._key(pair.idx_a, pair.idx_b)
+            reacted_key = (*pair_key, pair.is_formation)
+            if reacted_key in self._reacted:
+                continue
+            if pair_key in self._tentative:
                 continue
             r_vec = minimum_image(
                 positions[pair.idx_b] - positions[pair.idx_a], cell,
@@ -84,15 +95,15 @@ class BondTracker:
                 reacted = is_dissociated(r, pair.r0, self._threshold_fraction)
             if not reacted:
                 continue
-            etype = ('confirmed_formation' if pair.is_formation
-                     else 'confirmed_dissociation')
+            etype = ('tentative_formation' if pair.is_formation
+                     else 'tentative_dissociation')
             ev = BondEvent(
                 step=step, cycle=cycle,
                 atom_a=pair.idx_a, atom_b=pair.idx_b,
                 event_type=etype, distance=r, r0=pair.r0,
             )
             self._events.append(ev)
-            self._reacted.add(key)
+            self._tentative.add(pair_key)
             newly.append(ev)
         return newly
 
@@ -105,6 +116,7 @@ class BondTracker:
         cell: NDArray[np.floating] | None = None,
     ) -> None:
         self._pending.clear()
+        self._tentative.clear()
         for pair in pairs:
             r_vec = minimum_image(
                 positions[pair.idx_b] - positions[pair.idx_a], cell,
@@ -126,8 +138,10 @@ class BondTracker:
     ) -> list[BondEvent]:
         confirmed: list[BondEvent] = []
         for pair, cycle in self._pending:
-            if self._key(pair.idx_a, pair.idx_b) in self._reacted:
-                continue  # already confirmed during the biased phase
+            pair_key = self._key(pair.idx_a, pair.idx_b)
+            reacted_key = (*pair_key, pair.is_formation)
+            if reacted_key in self._reacted:
+                continue
             r_vec = minimum_image(
                 positions[pair.idx_b] - positions[pair.idx_a], cell,
             )
@@ -141,7 +155,7 @@ class BondTracker:
                         distance=r, r0=pair.r0,
                     )
                     self._events.append(ev)
-                    self._reacted.add(self._key(pair.idx_a, pair.idx_b))
+                    self._reacted.add(reacted_key)
                     confirmed.append(ev)
             else:
                 if is_dissociated(r, pair.r0, self._threshold_fraction):
@@ -152,7 +166,7 @@ class BondTracker:
                         distance=r, r0=pair.r0,
                     )
                     self._events.append(ev)
-                    self._reacted.add(self._key(pair.idx_a, pair.idx_b))
+                    self._reacted.add(reacted_key)
                     confirmed.append(ev)
         self._pending.clear()
         return confirmed

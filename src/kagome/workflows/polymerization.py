@@ -58,7 +58,7 @@ ATOMIC_MASSES: dict[str, float] = {
 # completed cycles). The static parts (species, template, calculator/weights)
 # are NOT stored — the resuming process rebuilds them and overrides the dynamic
 # state below. Resume is bit-exact because the numpy Generator state is saved.
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 def load_checkpoint(path: Path) -> dict:
@@ -442,7 +442,15 @@ class PolymerizationWorkflow:
                 self._updater.chain_c_map = dict(_ckpt['updater_chain_c_map'])
             if self.bond_tracker is not None:
                 self.bond_tracker._events = list(_ckpt['tracker_events'])
-                self.bond_tracker._reacted = set(_ckpt['tracker_reacted'])
+                raw_reacted = _ckpt['tracker_reacted']
+                # Migrate v1 checkpoints: (int, int) -> (int, int, True)
+                migrated: set[tuple[int, int, bool]] = set()
+                for item in raw_reacted:
+                    if len(item) == 2:
+                        migrated.add((*item, True))
+                    else:
+                        migrated.add(tuple(item))
+                self.bond_tracker._reacted = migrated
             if self._topology is not None and _ckpt.get('topology_bonds') is not None:
                 self._topology = BondTopology.from_bonds(_ckpt['topology_bonds'])
                 self._topo_processed_formations = _ckpt.get(
@@ -873,8 +881,9 @@ class PolymerizationWorkflow:
                 )
                 if events:
                     logger.info(
-                        'Cycle %d biased: reaction event at step %d (%d pair(s)) '
-                        '- ending biased phase', cycle, step_in_phase + 1, len(events),
+                        'Cycle %d biased: tentative reaction at step %d (%d pair(s)) '
+                        '- ending biased phase for unbiased confirmation',
+                        cycle, step_in_phase + 1, len(events),
                     )
                     break
 
