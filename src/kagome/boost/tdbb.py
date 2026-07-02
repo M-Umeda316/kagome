@@ -151,6 +151,10 @@ def total_bias(
         )
         r = np.linalg.norm(r_vec)
         if r < 1e-12:
+            if pair.is_formation:
+                energy += state.f1_formation * (1.0 - float(np.exp(-params.f2 * pair.r0 ** 2)))
+            else:
+                energy += state.f1_dissociation
             continue
         e_ij = r_vec / r
 
@@ -211,6 +215,10 @@ def total_bias_fast(
         r = math.sqrt(dx * dx + dy * dy + dz * dz)
         distances.append(r)
         if r < 1e-12:
+            if pair.is_formation:
+                energy += f1_form * (1.0 - math.exp(-f2 * pair.r0 * pair.r0))
+            else:
+                energy += f1_dissoc
             continue
         inv_r = 1.0 / r
 

@@ -36,6 +36,7 @@ from kagome.reactive.selection import (
     select_non_overlapping,
 )
 from kagome.integrators.init_velocities import instant_temperature_K
+from kagome.analysis.conversion import monomer_site_count
 from kagome.workflows.manifest import RunManifest, _normalize_value
 
 logger = logging.getLogger(__name__)
@@ -415,7 +416,17 @@ class PolymerizationWorkflow:
         サイクルの次から継続する（trajectory/selection は追記）。checkpoint_extra
         は checkpoint に保存する追加情報（例: production spin）。
         """
-        n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
+        if n_monomers is not None:
+            n_reactive_sites = n_monomers
+        else:
+            n_reactive_sites = monomer_site_count(self.groups)
+            if n_reactive_sites == 0:
+                n_reactive_sites = sum(len(g.atom_indices) for g in self.groups.values())
+                logger.warning(
+                    'monomer_site_count returned 0 (no vinyl_alpha_C group); '
+                    'falling back to all-groups sum %d for n_reactive_sites',
+                    n_reactive_sites,
+                )
 
         # Resume from a cycle-boundary checkpoint: restore the mutated dynamic
         # state and continue at the saved cycle. The static parts (species,
@@ -815,7 +826,12 @@ class PolymerizationWorkflow:
         else:
             selected = select_non_overlapping(scored)
 
+        pre_valence = set(id(c) for c in selected)
         selected = self._valence_filter(selected, state, cycle)
+        if self._selection_log is not None:
+            dropped_ids = pre_valence - set(id(c) for c in selected)
+            if dropped_ids:
+                self._write_valence_drop_audit(cycle, len(dropped_ids))
 
         active_pairs = self._build_pair_biases(selected, state.species)
 
@@ -1095,6 +1111,18 @@ class PolymerizationWorkflow:
                 cycle, len(shown), len(rejected), record['rejected_truncated'],
             )
 
+    def _write_valence_drop_audit(self, cycle: int, n_dropped: int) -> None:
+        """Append a valence-drop record to the selection audit log (L7)."""
+        if self._selection_log is None:
+            return
+        record = {
+            'cycle': cycle,
+            'event': 'valence_drop',
+            'n_dropped': n_dropped,
+        }
+        with open(self._selection_log, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record) + '\n')
+
     def run_activation(
         self,
         state: SimulationState,
@@ -1118,7 +1146,7 @@ class PolymerizationWorkflow:
         Paper anchor: Table S1 — Activation row, V^d applied to C-N azo bonds.
         """
         if rng is None:
-            rng = np.random.default_rng(self.config.seed)
+            rng = np.random.default_rng([self.config.seed, 1])
 
         candidates = find_candidates(
             activation_template, activation_groups, state.positions, state.cell,
