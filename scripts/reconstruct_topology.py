@@ -18,8 +18,6 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
-
 from kagome.reactive.topology import (
     BondTopology, apply_vinyl_addition, over_coordinated_atoms,
 )
@@ -36,28 +34,27 @@ def _read_species_and_meta(run: Path) -> tuple[list[str], dict]:
 
 
 def _rebuild(path_kind: str, n_monomers: int, n_units: int, seed: int):
+    """Placement-free reconstruction of (species, azo, propagation_map, bonds).
+
+    Only index arithmetic on the per-fragment RDKit mols is needed — the builders'
+    box placement is irrelevant to topology and would fail for large systems that
+    do not fit the default box (that was the "could not place molecule" error).
+    """
     from scripts._systems import (
-        build_full_aibn_system, build_vinyl_aibn_system,
-        full_aibn_initial_bonds, vinyl_initial_bonds,
+        _AIBN_SMILES, _INITIATOR_SMILES, _MONOMER_SMILES,
+        full_aibn_reaction_maps, layout_bonds, layout_species, vinyl_reaction_maps,
     )
-    rng = np.random.default_rng(seed)
     if path_kind == 'activation':
-        _, sp, azo, _, groups, pmap, _ = build_full_aibn_system(
-            n_monomers=n_monomers, n_aibn=n_units, box_size=40.0, rng=rng,
-            rdkit_seed=seed)
-        bonds = full_aibn_initial_bonds(n_monomers=n_monomers, n_aibn=n_units,
-                                        rdkit_seed=seed)
-        return sp, azo, groups, pmap, bonds
-    _, sp, _, groups, pmap, _ = build_vinyl_aibn_system(
-        n_monomers=n_monomers, n_initiators=n_units, box_size=40.0, rng=rng,
-        rdkit_seed=seed)
-    bonds = vinyl_initial_bonds(n_monomers=n_monomers, n_initiators=n_units,
-                                rdkit_seed=seed)
-    return sp, [], groups, pmap, bonds
+        specs = [(_AIBN_SMILES, n_units, seed), (_MONOMER_SMILES, n_monomers, seed + 1)]
+        pmap, azo = full_aibn_reaction_maps(n_monomers, n_units, rdkit_seed=seed)
+    else:
+        specs = [(_INITIATOR_SMILES, n_units, seed), (_MONOMER_SMILES, n_monomers, seed + 1)]
+        pmap, azo = vinyl_reaction_maps(n_monomers, n_units, rdkit_seed=seed)
+    return layout_species(specs), azo, pmap, layout_bonds(specs)
 
 
 def _detect_layout(species: list[str], n_monomers: int, seed: int):
-    """Return (path_kind, n_units, azo, pmap, initial_bonds) whose rebuilt
+    """Return (path_kind, n_units, azo, pmap, initial_bonds) whose reconstructed
     species matches *species* exactly."""
     n = len(species)
     candidates = []
@@ -67,12 +64,12 @@ def _detect_layout(species: list[str], n_monomers: int, seed: int):
     if n % 12 == 0 and (n // 12 - n_monomers) > 0:
         candidates.append(('non-activation', n // 12 - n_monomers))
     for kind, n_units in candidates:
-        sp, azo, groups, pmap, bonds = _rebuild(kind, n_monomers, n_units, seed)
+        sp, azo, pmap, bonds = _rebuild(kind, n_monomers, n_units, seed)
         if sp == species:
             return kind, n_units, azo, pmap, bonds
     raise SystemExit(
         f'could not reconstruct layout for {n} atoms / {n_monomers} monomers; '
-        'pass --n-monomers / --n-units explicitly.')
+        'pass --n-monomers explicitly.')
 
 
 def main() -> None:
