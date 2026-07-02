@@ -12,6 +12,7 @@ _MONOMER_SMILES = 'C=CC(=O)OC'   # methyl acrylate
 # since _find_vinyl_alpha_beta accepts a 0-H beta carbon (2026-06-20).
 _METHACRYLATE_SMILES = 'C=C(C)C(=O)OC'  # methyl methacrylate (tertiary radical)
 _INITIATOR_SMILES = 'CC(C)C#N'   # isobutyronitrile (closed-shell IBN radical model)
+_AIBN_SMILES = 'CC(C)(C#N)N=NC(C)(C)C#N'  # azobisisobutyronitrile (intact, for activation)
 _DIAMINE_SMILES = 'NCCCCCCN'     # hexamethylenediamine
 _DIACID_SMILES = 'OC(=O)CCCCC(=O)O'  # adipic acid
 
@@ -115,6 +116,79 @@ def _rdkit_3d(smiles: str, seed: int = 42) -> tuple[np.ndarray, list[str]]:
     positions = np.array(conf.GetPositions(), dtype=np.float64)
     species = [atom.GetSymbol() for atom in mol.GetAtoms()]
     return positions, species
+
+
+def _rdkit_local_bonds(smiles: str, seed: int = 42) -> list[tuple[int, int, float]]:
+    """Return the molecule's intramolecular bonds as ``(i, j, order)`` in the
+    SAME atom ordering as ``_rdkit_3d`` (AddHs + embed).
+
+    Connectivity is embedding-independent, but we build from the same
+    ``_rdkit_mol`` so local indices align 1:1 with the builder's positions and
+    the group index arithmetic.  Order is RDKit's ``GetBondTypeAsDouble``
+    (1.0 single, 1.5 aromatic, 2.0 double, 3.0 triple).
+    """
+    mol = _rdkit_mol(smiles, seed)
+    bonds: list[tuple[int, int, float]] = []
+    for b in mol.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        bonds.append((int(i), int(j), float(b.GetBondTypeAsDouble())))
+    return bonds
+
+
+def layout_bonds(
+    specs: list[tuple[str, int, int]],
+) -> list[tuple[int, int, float]]:
+    """Global intramolecular bond topology for a contiguous fragment layout.
+
+    ``specs`` is the ordered ``[(smiles, count, rdkit_seed), ...]`` of the
+    placement — the SAME order the builders use in ``_place_fragments_in_box``
+    (fragments laid out contiguously, each occupying ``len(AddHs(mol))`` atoms).
+    Returns ``(i, j, order)`` bonds in global indices that line up 1:1 with the
+    builder's ``positions``/``groups``.  Non-breaking companion for trajectory
+    topology output (specs/decisions.md 2026-07-02); a consistency test asserts
+    the layout matches the builders.
+    """
+    bonds: list[tuple[int, int, float]] = []
+    offset = 0
+    for smiles, count, seed in specs:
+        local = _rdkit_local_bonds(smiles, seed=seed)
+        n_per = len(_rdkit_mol(smiles, seed).GetAtoms())
+        for k in range(count):
+            base = offset + k * n_per
+            bonds.extend((base + a, base + b, o) for a, b, o in local)
+        offset += count * n_per
+    return bonds
+
+
+def vinyl_initial_bonds(
+    n_monomers: int,
+    n_initiators: int,
+    monomer_smiles: str = _MONOMER_SMILES,
+    initiator_smiles: str = _INITIATOR_SMILES,
+    rdkit_seed: int = 42,
+) -> list[tuple[int, int, float]]:
+    """Initial topology for :func:`build_vinyl_aibn_system` (pre-formed radicals:
+    initiators first, then monomers)."""
+    return layout_bonds([
+        (initiator_smiles, n_initiators, rdkit_seed),
+        (monomer_smiles, n_monomers, rdkit_seed + 1),
+    ])
+
+
+def full_aibn_initial_bonds(
+    n_monomers: int,
+    n_aibn: int,
+    monomer_smiles: str = _MONOMER_SMILES,
+    aibn_smiles: str = _AIBN_SMILES,
+    rdkit_seed: int = 42,
+) -> list[tuple[int, int, float]]:
+    """Initial (intact-AIBN) topology for :func:`build_full_aibn_system` (AIBN
+    first, then monomers).  The two azo C-N bonds per AIBN are removed from the
+    tracked topology after activation dissociates them (run_vinyl_aibn)."""
+    return layout_bonds([
+        (aibn_smiles, n_aibn, rdkit_seed),
+        (monomer_smiles, n_monomers, rdkit_seed + 1),
+    ])
 
 
 def _find_vinyl_alpha_beta(smiles: str) -> tuple[int, int]:
@@ -318,6 +392,16 @@ def build_vinyl_aibn_system(
 
     Paper anchor: Fig. 1, Section 2, Table S1 (ij+ik+jl criterion).
     Design: specs/decisions.md — "T-G1: vinyl radical polymerization system".
+
+    NOTE (closed-shell approximation, specs/decisions.md 2026-07-02): the default
+    initiator is isobutyronitrile (``_INITIATOR_SMILES``), a *closed-shell* model
+    whose radical carbon carries a placeholder H standing in for the unpaired
+    electron.  On the first addition that carbon would become 5-coordinate in the
+    raw geometry; the emitted topology idealizes this by shedding the placeholder
+    H (see reactive/topology.apply_vinyl_addition), but the H atom remains in the
+    coordinates.  For valence-faithful initiator chemistry (genuine 3-coordinate
+    radicals, no placeholder H) use the ``--activation`` path
+    (:func:`build_full_aibn_system`), which decomposes intact AIBN.
     """
     # ── generate single-molecule 3D templates ──
     init_pos, init_sp = _rdkit_3d(initiator_smiles, seed=rdkit_seed)
@@ -557,8 +641,8 @@ def build_nylon66_system(
 
 
 # ── AIBN decomposition (Activation) ────────────────────────────────────────
-
-_AIBN_SMILES = 'CC(C)(C#N)N=NC(C)(C)C#N'
+# _AIBN_SMILES is defined in the top SMILES-constants block (needed earlier by
+# full_aibn_initial_bonds' default arg).
 
 
 def _find_aibn_azo_bonds(smiles: str = _AIBN_SMILES) -> list[tuple[int, int]]:

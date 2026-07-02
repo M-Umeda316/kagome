@@ -39,6 +39,7 @@ class TrajectoryWriter:
         metadata: dict[str, Any] | None = None,
         n_reactive_sites: int | None = None,
         append: bool = False,
+        initial_bonds: list[tuple[int, int, float]] | None = None,
     ) -> None:
         self._path = path
         self._save_interval = save_interval
@@ -60,6 +61,11 @@ class TrajectoryWriter:
         if n_reactive_sites is not None:
             # Correct denominator for alpha(t) = N_reacted / N_reactive_sites
             header['n_reactive_sites'] = n_reactive_sites
+        if initial_bonds is not None:
+            # Initial intramolecular connectivity so viewers use real bonds
+            # instead of distance inference (specs/decisions.md 2026-07-02).
+            # Time-evolving bonds live in topology.jsonl.
+            header['bonds'] = [[int(i), int(j), float(o)] for i, j, o in initial_bonds]
         if metadata:
             header['metadata'] = metadata
         self._file.write(json.dumps(header) + '\n')

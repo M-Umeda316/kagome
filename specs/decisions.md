@@ -1148,3 +1148,78 @@ Use this template for each decision.
 - 評価: 前項(50cyc/43%)の延長として **半スケール TDBB workflow で転化率 73% まで単調伸長を達成**。論文追試の科学目標(定性トレンド一致)をより高転化で補強。数値厳密一致は非目標(既決)。
 - Licensing/commercial impact: なし。
 - Follow-up: (a) さらに高転化を見たい場合は同 checkpoint(cycle100)から `--n-cycles 150` 等で再延長可(末期鈍化のため伸び幅は逓減)。(b) density プロット・0.68Å 残留クラッシュ(minimize 未収束)は引き続き別件。
+
+## 2026-07-02: フルスケール(200+10)100cyc の転化率50% は正常、ただしトラジェクトリに化学的不整合を確認 — 4レイヤー修正に着手
+- Context: 別マシンで論文フルスケール(200 monomer + 10 AIBN, notes.md)を 100 cycle 完走。転化率 α ≈ 50%。半スケール(100 monomer)100cyc=73% との差の原因と、トラジェクトリ観察で見えた化学的不整合の切り分け。
+- 転化率50%の評価(正常): α = confirmed_formations / n_monomers(2026-06-27 決定, Fig.2 α=1−[M]/[M]₀)。本実装の TDBB は概ね 1 形成/cycle(鎖端で候補選択→バイアス→1確定)で進むため、**同一 cycle 数なら転化率は n_monomers にほぼ反比例**。半スケール(100mon)100cyc=73形成=73% に対し、フルスケール(200mon)100cyc≈100形成=50% は整合。飽和ではなく単調増加の途中で、論文の 60–80% には cycle 増(フルスケールで概算 120–160+ cyc)で到達見込み。checkpoint から `--n-cycles` 増で延長可。
+- 観測された不整合(ユーザ報告, ビューア表示由来と確認): (1) 価電子数を無視した結合(過配位に見える)。(2) ビニル部位でない原子間の分子間結合。**観測の出所はビューアの距離推定表示**(OVITO/VMD 等が座標から結合を自動描画)であることをユーザ確認。
+- 根本原因(コード読解で特定):
+  1. 記録上は非ビニル結合は出得ない: `PolymerizationWorkflow._build_pair_biases`(polymerization.py:1079-1106)が `constraint_only`(i-k, j-l)を除外 → バイアス=BondTracker 記録対象は radical_C–vinyl_alpha_C の i-j ペアのみ。bonds.jsonl の confirmed_formation は構造上必ずビニル部位。
+  2. trajectory は座標のみで結合トポロジーを持たない: `TrajectoryFrame`(io/trajectory.py:14-28)は positions のみ、bonds フィールドなし。ビューアが距離推定 → 最大 f1=250 kcal/mol の引力バイアスが**分子ごと**近接させるため、エステル基・H など非ビニル原子間にも見かけの結合が描かれる。→ 観測(2)の正体。
+  3. 反応後に C=C 二重結合を開く処理が無い: `VinylChainPropagationUpdater`(polymerization.py:270-332)は群メンバーシップ上でラジカルを beta_C へ移すだけで、幾何・価数は sp3 生成物へ緩和されない。alpha_C は「beta_C との二重結合 ~1.33Å + 新規 radical_C 結合 + H + COOCH₃」で過配位に見える。→ 観測(1)の正体。
+  4. 形成判定は幾何のみ: `bonds.is_formed`(r ≤ 0.6·Σr_vdw ≈ 2.04Å for C-C)で価数/占有チェック無し。
+- 本質: バイアスで原子を近接させイベントを数えるだけで、実際の化学反応(二重結合開裂・価数付替・sp3 緩和)を行っていない。転化率カウントは正しく増えるが、トラジェクトリは化学的に破綻して見える。
+- Paper anchor: notes.md Table S1(vinyl: i-j V^f, i-k/j-l constraint only)、Eq.6-7(reactive groups/candidate)、radical addition の頭尾機構(_find_vinyl_alpha_beta docstring)。価数保存は radical + C=C → C-C + 新ラジカル(beta)で本来保たれるべき。
+- Decision(4レイヤー修正, ユーザ承認済み):
+  1. **トポロジー出力**(安全・科学的意味不変): RDKit mol から各フラグメントの結合(次数付き)を抽出→グローバル index へオフセット。確定形成で radical_C–vinyl_alpha_C 単結合を追加、当該 monomer の C=C を単結合へ開裂反映。TrajectoryFrame/Writer に bonds を出力しビューアの距離推定を排除。→ 観測(1)(2)を直接解消。
+  2. **価数/占有ガード**: 候補生成・形成確定に価数/占有チェックを追加、飽和原子・過配位を選ばせない/確定させない。反応モデルの科学的意味に関わるため根拠を本 decision に集約。
+  3. **生成物の緩和強化**: 確定後のスピン状態・unbiased 緩和・局所 minimize で sp3 生成物へ緩和し過配位幾何を解消。
+  4. **最小再現先行**: 小スケール run で記録/座標/スピンを切り分け、修正前後比較のベースラインとする。
+- Scientific risk: レイヤー1は出力のみで risk なし。レイヤー2-3 は反応モデルに踏み込むため、TDBB の科学的意味を変えないこと(候補=幾何 Eq.7、バイアス=Eq.2-3 を保持)を条件に段階導入。
+- Licensing/commercial impact: なし(RDKit=BSD, 既存依存)。
+- Follow-up: レイヤー1実装+テスト+最小再現 → レイヤー2 → レイヤー3 の順。各段階でトラジェクトリのビューア表示が化学的に妥当か確認。
+
+## 2026-07-02: Layer 1(トポロジー出力)実装完了 — ビューアの見かけ結合/過配位を解消
+- 実装:
+  - `src/kagome/reactive/topology.py`(新規): `BondTopology`(次数付き結合集合, coordination/valence 参照)+ `apply_vinyl_addition`。ラジカル付加の価数保存編集を1関数に集約 — (1)ラジカル中心が既に4配位(閉殻開始剤モデル)なら余剰 H 結合を1本除去、(2)radical_C–alpha_C 単結合を追加、(3)当該 monomer の alpha=beta を単結合へ開裂。配位数で開始剤(4配位→H除去)と伝播ラジカル(3配位→そのまま)を自動判別。
+  - `scripts/_systems.py`: `layout_bonds(specs)`(連続フラグメント配置から次数付き結合を抽出しグローバル index へ)+ 薄いラッパ `vinyl_initial_bonds`/`full_aibn_initial_bonds`。戻り値は非破壊(既存の 6/7-tuple 呼び出し site を壊さない)。`_AIBN_SMILES` を先頭定数ブロックへ移動(前方参照解消)。
+  - `src/kagome/workflows/polymerization.py`: `PolymerizationWorkflow(initial_bonds=...)` を追加。確定形成ごとに `_apply_topology_updates` で topology を編集し、変化時に `topology.jsonl` へスナップショット追記。trajectory ヘッダに初期 `bonds` を出力。checkpoint に topology 状態を保存/復元(resume で連続)。
+  - `src/kagome/io/trajectory.py`: ヘッダに `bonds`。`src/kagome/io/readers.py`: `read_topology_snapshots`/`bonds_at_step`。
+  - `scripts/run_vinyl_aibn.py`: 経路別に初期結合を計算し workflow へ(best-effort, 失敗しても run は継続)。活性化経路は解離した azo C-N 結合を activation 後に topology から除去(→ イソブチロニトリルラジカル2個 + N2, 価数正しい)。
+  - `scripts/export_xyz.py`: `--format mol2` 追加。`topology.jsonl` を読みフレーム毎の明示結合(次数付き)で MOL2 出力 → Winmostar/OVITO/VMD が距離推定せず実結合を表示。既定は従来 xyz(後方互換)。
+- 検証: `tests/unit/test_topology.py`(13 tests: BondTopology, apply_vinyl_addition, ビルダー整合, workflow E2E 出力)。最小再現(4mono+1init, ToyCalculator, 形成注入)で **header 55 結合 / 過配位ゼロ / C=C 開裂 order=1.0 / 余剰H除去(結合数維持)/ MOL2 出力成功**。全ユニット 361 passed, 1 skipped(回帰なし)。
+- 重要な発見(Layer 2/3 で扱う): 開始剤が閉殻モデル(isobutyronitrile `CC(C)C#N`)のため、ラジカル炭素が実 AIBN ラジカルより H を1つ多く持つ。付加時に5配位(価数違反)になる。Layer 1 では出力上その余剰 H 結合を落として理想化トポロジーを描く(物理座標には H が残る)。物理的に正しい解は開殻ラジカルモデル(H 原子自体を除去+スピン)で、Layer 3 の選択肢。該当は開始剤炭素のみ(各鎖初回付加)。
+- 使い方: 再 run すると trajectory に bonds が自動付与。既存 run は `python scripts/export_xyz.py <run>/trajectory.jsonl --format mol2` で MOL2 化(topology.jsonl があれば時間発展結合、無ければヘッダ初期結合)。
+- Scientific risk: なし(出力のみ、TDBB の候補=幾何/バイアスは不変)。Licensing: なし。
+- Follow-up: Layer 2(価数/占有ガード)→ Layer 3(緩和 or 開殻モデル)。フルスケール run は活性化経路なので、次回 run から MOL2 で価数を実確認。
+
+## 2026-07-02: Layer 2(価数/占有ガード)実装完了 — 価数安全性を不変条件として保証
+- 実装:
+  - `reactive/topology.py`: `over_coordinated_atoms(topology, species)`(全原子の過配位スキャン)+ `vinyl_addition_over_coordinates(topology, radical_c, alpha_c, propagation_map, species)`(コピー上で付加編集を dry-run し、過配位になる原子を返す。空=価数安全)。閉殻開始剤の H 除去も dry-run に含むので、4配位ラジカルは誤って弾かれない。
+  - `workflows/polymerization.py`: `_valence_filter` を biased phase の選択後に挿入。形成ペア(is_formation かつ not constraint_only)を `_formation_pair_positions` で解決し、過配位になる候補を除外・WARN ログ。topology 無し/非vinyl では no-op。加えて `_apply_topology_updates` に防御チェック — 万一すり抜けた形成が過配位を起こすなら topology 編集を skip し ERROR ログ(出力トポロジーは常に価数正しく保つ)。
+- 位置づけ: 反応済み原子は群更新で除去されるため通常フローでは発火しないが、**価数安全性を「群簿記の創発的性質」から「保証される不変条件」へ格上げ**。簿記バグ・伝播エッジケース・幾何的に飽和した候補を選択段階で捕捉し、監査ログに残す(CLAUDE.md「反応ペア選択判断の記録」に合致)。TDBB の候補=幾何(Eq.7)・バイアス(Eq.2-3)は不変。
+- 検証: `test_topology.py` に5件追加(有効付加は非フラグ / 飽和alpha はフラグ / 閉殻ラジカルはH除去で非フラグ / 過配位スキャン / workflow `_valence_filter` が飽和候補を drop)。全ユニット **366 passed, 1 skipped**(回帰なし)。
+- Scientific risk: 低。正常系の挙動は不変(発火しない)。発火時は化学的に不可能な形成を防ぐのみ。Licensing: なし。
+- Follow-up: Layer 3。ユーザ要望により**開始剤の閉殻→開殻モデルを検討**(H原子除去+スピン)。まず調査/設計から(スピン周りの過去の困難 decisions.md を踏まえる)。
+
+## 2026-07-02: Layer 3 調査 — 活性化経路の開始剤ラジカルは既に開殻(価数正しい)、spare-H は非活性化経路のみ
+- 調査結果(実測): `build_full_aibn_system`(活性化経路)のラジカル中心は、intact AIBN で 4配位(2CH₃+CN+azo-N)。activation で azo C-N を除去すると **3配位(C×3, H無し)= 真の開殻ラジカル**。Layer 1 の `apply_vinyl_addition` で付加すると 4配位になり過配位ゼロ(2ラジカル×付加を実測、over-valent=[])。
+- 帰結: **ユーザのフルスケール run は活性化経路(`--activation`)なので、Layer 1 適用だけで開始剤も含め価数正しい**。spare-H 由来の過配位は `build_vinyl_aibn_system`(非活性化、`_INITIATOR_SMILES='CC(C)C#N'` イソブチロニトリルの閉殻簡易モデル、ラジカル炭素に H が1つ多い)でのみ発生。これは小規模テスト/デモ用の簡易経路。
+- スピン対応現状: backend は `set_spin`/`supports_spin` 実装済(orb spin=1既定, aimnet mult)。活性化経路は activation 後に総スピン=n_radicals+1(cap 可)へ切替済。系レベルの総多重度で扱う。
+- Layer 3 の再定義(調査を踏まえ):
+  - (A) **生成物の幾何緩和**: 形成後の座標は分子ごと引き寄せで歪む可能性。既存 unbiased(2000 steps)で緩和されるはずだが、形成直後の局所 minimize(FIRE, 反応領域限定)追加で sp3 生成物への緩和を確実化する余地。物理トラジェクトリ(表示でなく座標)の改善。低リスク。
+  - (B) **非活性化経路の開殻化**: `build_vinyl_aibn_system` の開始剤を実ラジカル(spare-H 原子を除去、原子数-1/開始剤)へ変更 → 下流 index/ n_per_init シフト+スピン。規模中。**代替**: 非活性化経路は閉殻近似と明記し、化学的に厳密な run は `--activation` を推奨(活性化経路は既に正しい)。低リスクで実質十分。
+- 推奨: (B) は代替(ドキュメント+活性化推奨)で十分な可能性が高い。(A) は形成直後緩和を入れるか、まず MOL2 で実 run の座標歪みを確認してから判断。ユーザ判断待ち。
+- Licensing: なし。
+
+## 2026-07-02: Layer 3 実装 — (B) ドキュメント+活性化推奨を実装、(A) 緩和は実 run 検証後に判断(ユーザ決定)
+- ユーザ決定: (A) 幾何緩和=「まず実 run を MOL2 で確認」してから要否判断 / (B) 非活性化経路=「ドキュメント+活性化推奨」(実ラジカルビルドはしない)。
+- (B) 実装:
+  - `scripts/_systems.py build_vinyl_aibn_system` docstring に閉殻近似の注記(ラジカル炭素の placeholder H、初回付加で raw 幾何は5配位、出力トポロジーは H を落として理想化、価数厳密には `--activation` 推奨)。
+  - `scripts/run_vinyl_aibn.py` 非活性化分岐に INFO ログで同旨の推奨(実行時に気づける)。
+- (A) 支援ツール実装: `scripts/check_topology_valence.py`(新規)。run の topology.jsonl を読み、(1)スナップショット毎の過配位原子(Layer1/2 で0のはず)、(2)フレーム毎の非結合最近接距離(座標歪み=分子ごと引き寄せの定量指標、scipy cKDTree)を報告。MOL2 目視と併せ (A) の要否を定量判断可能。Windows cp932 対応で出力は ASCII。
+- 使い方(実 run 検証): `python scripts/export_xyz.py <run>/trajectory.jsonl --format mol2`(目視)+ `python scripts/check_topology_valence.py <run>`(定量)。過配位0かつ最近接非結合距離が常識的(>1.0–1.2Å)なら (A) 緩和は不要。<1.0Å が頻発するなら形成直後の局所 minimize を追加検討。
+- 状態: (A) の緩和実装は**実 run の MOL2/定量チェック結果待ち**(条件付き follow-up)。現時点で actionable な (B)+ツールは完了。全ユニット 366 passed, 1 skipped(回帰なし)。
+- Licensing: なし。
+- Follow-up: ユーザが実 run(活性化, フルスケール)を MOL2 化 + check_topology_valence で確認 → 過配位0を実証(想定)。座標歪みが問題なら Layer 3(A) 局所 minimize を実装。
+
+## 2026-07-02: 既存 half-scale run(runs/s6_half_50c)で検証 — 価数は正しい(観測はビューア由来と確定)、幾何クラッシュは既知の別問題
+- 背景: 再 run 不要で検証するため、topology 導入前の run から `bonds.jsonl`(確定形成記録)を遡って再構築。`scripts/reconstruct_topology.py`(新規)で初期トポロジー(full_aibn)→ azo C-N 除去 → 73形成を step 順に `apply_vinyl_addition` 適用 → `topology.jsonl` を生成。
+- 対象: runs/s6_half_50c(活性化経路, 5 AIBN + 100 methyl acrylate = 1320原子, orb-orbmol_v2, seed7, 100cyc, 73形成, α=73%)。再構築の species レイアウトが run と完全一致(妥当性確認)。
+- 価数検証(結果): **過配位原子ゼロ**。C 配位数分布 `{2:10(ニトリルC), 3:164, 4:266}` すべて化学的に妥当。→ **ユーザ観測の「価電子無視/非ビニル結合」は記録された反応ではなく、座標のみトラジェクトリに対するビューアの距離推定アーティファクトと実データで確定**(診断②を実証)。Layer 1 の MOL2 出力で解消。
+- 幾何検証(結果): 実 orb トラジェクトリ(259フレームサンプル)の非結合最近接距離 = **0.65Å**(step 30890, cycle13 unbiased)。全サンプルフレームに <1.2Å 非結合ペア。最悪接触はすべて **H-H**(0.65–0.72Å, 分子内 geminal・分子間の両方, <1.0Å が48ペア)。反応部位(C-C)ではない。→ これは decisions.md 既記の「0.68Å 残留クラッシュ(minimize 未収束)」= **初期配置/最小化由来の既知の別問題で、反応化学・価数とは独立**。
+- Layer 3(A) への含意: 幾何クラッシュは実在するが**形成非依存(H-H, 初期minimize 由来)**なので、「形成直後の局所 minimize」では解消しない。正しい対処は**初期構造の minimize 収束改善**(fmax 厳格化/ステップ増、または prep 段の圧縮・緩和見直し)。post-formation 緩和は不要と判断。
+- 成果物: runs/s6_half_50c/topology.jsonl(再構築), traj_stride50.mol2(104フレーム/14MB, 明示結合付き, 目視確認用)。`scripts/reconstruct_topology.py`, `export_xyz.py --stride`(大トラジェクトリ間引き)。
+- 評価: **Layer 1+2 が実データで有効性を実証**。ユーザの主懸念(価数不整合)は「表示の問題」と確定し解消。残る幾何クラッシュは別トラック(初期minimize)。
+- Licensing: なし。
+- Follow-up: (a) ユーザが traj_stride50.mol2 を Winmostar/OVITO/VMD で目視 → 見かけ結合が消えたか最終確認。(b) 0.65Å H-H クラッシュ対策として初期 minimize 収束改善を別タスク化(fmax/steps 調整の小 run で検証)。(c) フルスケール run も同様に reconstruct_topology で遡及検証可能。
