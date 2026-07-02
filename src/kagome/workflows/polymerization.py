@@ -663,10 +663,15 @@ class PolymerizationWorkflow:
                 and self.barostat is not None
                 and state.cell is not None
                 and self.barostat.should_attempt(step_in_phase)):
+            bias_fn = None
+            if active_pairs is not None and boost is not None and tdbb is not None:
+                def bias_fn(pos, bx):
+                    return total_bias_fast(active_pairs, pos, boost, tdbb, bx)[0]
             accepted, new_base_e, new_base_f = self.barostat.try_step(
                 state.positions, state.species, state.cell,
                 base_energy, self.calculator, rng,
                 _integrator_temperature(self.integrator, state),
+                bias_energy_fn=bias_fn,
             )
             if accepted and new_base_f is not None:
                 base_energy = new_base_e

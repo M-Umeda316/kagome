@@ -75,6 +75,7 @@ class MCBarostat:
         calculator: object,  # src.backends.base.Calculator
         rng: np.random.Generator,
         temperature_K: float,
+        bias_energy_fn: object | None = None,
     ) -> tuple[bool, float, NDArray[np.floating]]:
         """Attempt an isotropic volume change.
 
@@ -82,14 +83,20 @@ class MCBarostat:
             positions:      (N, 3) array, modified in-place on acceptance
             species:        atom species list
             cell:           (3, 3) diagonal cell matrix, modified in-place on acceptance
-            current_energy: potential energy at current configuration (kcal/mol)
+            current_energy: potential energy at current configuration (kcal/mol).
+                            Should include bias energy when bias_energy_fn is provided.
             calculator:     Calculator with compute(positions, species, cell) -> (E, F)
             rng:            random generator
             temperature_K:  current thermostat temperature (K)
+            bias_energy_fn: optional callable(positions, box) -> float that returns
+                            the bias energy at a given configuration. When provided,
+                            the acceptance criterion includes ΔE_bias
+                            (specs/decisions.md 2026-07-03 D2).
 
         Returns:
             (accepted, new_energy, new_forces)
-            new_energy and new_forces reflect the accepted configuration.
+            On acceptance, new_energy is the base energy at the new configuration.
+            On rejection, returns (False, base component of current_energy, None).
         """
         kT = KB * temperature_K
         box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
@@ -106,9 +113,15 @@ class MCBarostat:
         new_positions = positions * scale
         new_cell = cell * scale
 
-        new_energy, new_forces = calculator.compute(new_positions, species, new_cell)
+        new_base_energy, new_forces = calculator.compute(new_positions, species, new_cell)
 
-        dE = new_energy - current_energy
+        dE = new_base_energy - current_energy
+        if bias_energy_fn is not None:
+            new_box = np.array([new_cell[0, 0], new_cell[1, 1], new_cell[2, 2]])
+            new_bias = float(bias_energy_fn(new_positions, new_box))
+            old_bias = float(bias_energy_fn(positions, box))
+            dE += new_bias - old_bias
+
         dV = V_new - V_old
         # Jacobian term for a uniform-in-ln(V) proposal is -(N+1)*kT*ln(V'/V):
         # the +1 over the uniform-in-V form is the d(lnV) measure (RF19b). The
@@ -125,7 +138,7 @@ class MCBarostat:
                 'MCBarostat accepted: delta_H=%.3f kcal/mol, V %.3f->%.3f A^3, scale=%.5f',
                 delta_H, V_old, V_new, scale,
             )
-            return True, new_energy, new_forces
+            return True, new_base_energy, new_forces
         else:
             logger.debug(
                 'MCBarostat rejected: delta_H=%.3f kcal/mol, acc_prob=%.4f',
