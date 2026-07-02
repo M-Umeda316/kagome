@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from kagome.geometry import wrap_positions_fast
+from kagome.geometry import validated_box, wrap_positions_fast
 from kagome.units import FORCE_CONV, KB, force_to_accel_fast, precompute_inv_masses
 
 
@@ -31,15 +31,19 @@ class LangevinIntegrator:
     def __init__(self, params: LangevinParams) -> None:
         self.params = params
         self._cached_dt: float | None = None
-        self._cached_masses_id: int | None = None
+        self._cached_masses: NDArray[np.floating] | None = None
+        self._cached_temperature_K: float | None = None
+        self._cached_friction: float | None = None
         self._c1: float = 0.0
         self._c2: NDArray[np.floating] | float = 0.0
         self._inv_masses: NDArray[np.floating] | None = None
         self._box: NDArray[np.floating] | None = None
 
     def _update_cache(self, dt: float, masses: NDArray[np.floating] | None) -> None:
-        masses_id = id(masses) if masses is not None else None
-        if dt == self._cached_dt and masses_id == self._cached_masses_id:
+        if (dt == self._cached_dt
+                and masses is self._cached_masses
+                and self.params.temperature_K == self._cached_temperature_K
+                and self.params.friction_per_fs == self._cached_friction):
             return
         gamma = self.params.friction_per_fs
         kT = KB * self.params.temperature_K
@@ -51,14 +55,18 @@ class LangevinIntegrator:
             self._c2 = np.sqrt(kT * FORCE_CONV * (1.0 - self._c1 ** 2))
         self._inv_masses = precompute_inv_masses(masses)
         self._cached_dt = dt
-        self._cached_masses_id = masses_id
+        self._cached_masses = masses
+        self._cached_temperature_K = self.params.temperature_K
+        self._cached_friction = self.params.friction_per_fs
 
     def _get_box(self, cell: NDArray[np.floating] | None) -> NDArray[np.floating] | None:
         if cell is None:
             return None
-        d0, d1, d2 = cell[0, 0], cell[1, 1], cell[2, 2]
-        if self._box is None or self._box[0] != d0 or self._box[1] != d1 or self._box[2] != d2:
-            self._box = np.array([d0, d1, d2])
+        box = validated_box(cell)
+        if box is None:
+            return None
+        if self._box is None or self._box[0] != box[0] or self._box[1] != box[1] or self._box[2] != box[2]:
+            self._box = box
         return self._box
 
     def pre_force(

@@ -132,8 +132,8 @@ class TestBondTracker:
 
     # ── check_reactions_during_bias (paper §2.2 step 3) ──────────────
 
-    def test_in_bias_formation_detected(self):
-        """Formation pair reacts in-bias when r ≤ threshold·r0."""
+    def test_in_bias_formation_tentative(self):
+        """Formation pair emits tentative (not confirmed) in-bias."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_formation_pair(r0=2.0)
         positions = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
@@ -141,13 +141,14 @@ class TestBondTracker:
             [pair], positions, step=10, cycle=0,
         )
         assert len(events) == 1
-        assert events[0].event_type == 'confirmed_formation'
+        assert events[0].event_type == 'tentative_formation'
         assert events[0].distance == pytest.approx(1.5)
         assert events[0].step == 10
         assert events[0].cycle == 0
+        assert len(tracker.confirmed_formations()) == 0
 
-    def test_in_bias_dissociation_detected(self):
-        """Dissociation pair reacts in-bias when r > threshold·r0."""
+    def test_in_bias_dissociation_tentative(self):
+        """Dissociation pair emits tentative (not confirmed) in-bias."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_dissociation_pair(r0=1.5)
         positions = np.array([[0.0, 0.0, 0.0], [2.5, 0.0, 0.0]])
@@ -155,10 +156,11 @@ class TestBondTracker:
             [pair], positions, step=10, cycle=0,
         )
         assert len(events) == 1
-        assert events[0].event_type == 'confirmed_dissociation'
+        assert events[0].event_type == 'tentative_dissociation'
+        assert len(tracker.confirmed_dissociations()) == 0
 
     def test_in_bias_no_duplicate_detection(self):
-        """Once confirmed in-bias, a second call does not re-detect the same pair."""
+        """Once tentatively detected, a second call does not re-detect the same pair."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_formation_pair(r0=2.0)
         positions = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
@@ -173,8 +175,8 @@ class TestBondTracker:
         )
         assert len(second) == 0
 
-    def test_check_outcomes_skips_in_bias_confirmed(self):
-        """check_outcomes does not double-count pairs already confirmed during bias."""
+    def test_tentative_confirmed_after_unbiased_relaxation(self):
+        """Tentative in-bias detection → confirmed by check_outcomes when still close."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_formation_pair(r0=2.0)
         positions_close = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
@@ -184,10 +186,29 @@ class TestBondTracker:
             [pair], positions_close, step=5, cycle=0,
         )
         assert len(in_bias) == 1
+        assert in_bias[0].event_type == 'tentative_formation'
 
         outcomes = tracker.check_outcomes(positions_close, step=200)
-        assert len(outcomes) == 0
+        assert len(outcomes) == 1
+        assert outcomes[0].event_type == 'confirmed_formation'
         assert len(tracker.confirmed_formations()) == 1
+
+    def test_tentative_not_confirmed_when_drifted_apart(self):
+        """Tentative in-bias detection → NOT confirmed if pair drifts apart."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        pair = self._make_formation_pair(r0=2.0)
+        positions_close = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        positions_far = np.array([[0.0, 0.0, 0.0], [3.5, 0.0, 0.0]])
+
+        tracker.record_attempts([pair], positions_close, step=0, cycle=0)
+        in_bias = tracker.check_reactions_during_bias(
+            [pair], positions_close, step=5, cycle=0,
+        )
+        assert len(in_bias) == 1
+
+        outcomes = tracker.check_outcomes(positions_far, step=200)
+        assert len(outcomes) == 0
+        assert len(tracker.confirmed_formations()) == 0
 
     def test_in_bias_formation_not_detected_when_far(self):
         """Formation pair does NOT react when r > threshold·r0."""

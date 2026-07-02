@@ -1223,3 +1223,37 @@ Use this template for each decision.
 - 評価: **Layer 1+2 が実データで有効性を実証**。ユーザの主懸念(価数不整合)は「表示の問題」と確定し解消。残る幾何クラッシュは別トラック(初期minimize)。
 - Licensing: なし。
 - Follow-up: (a) ユーザが traj_stride50.mol2 を Winmostar/OVITO/VMD で目視 → 見かけ結合が消えたか最終確認。(b) 0.65Å H-H クラッシュ対策として初期 minimize 収束改善を別タスク化(fmax/steps 調整の小 run で検証)。(c) フルスケール run も同様に reconstruct_topology で遡及検証可能。
+
+## 2026-07-03: D1 — 反応確定タイミング: バイアス中は暫定検知、非バイアス緩和後に確定
+- Context: `check_reactions_during_bias` は r ≤ r0 到達時に即 `confirmed_formation` を発行し `_reacted` に追加するため、非バイアス緩和後の `check_outcomes` で再判定されない。f1 最大 250 kcal/mol の人工引力下での近接は化学結合の証拠にならず、バイアス除去後にペアが離れても確定反応として残る。レビュー指摘 H1。
+- Paper anchor: §2.2 step 3 — 反応が検知されたらバイアス相を終了し、非バイアス相で緩和。論文は「緩和後に確定」を明示していないが、biased/unbiased 交互プロトコルの趣旨は「バイアスで遷移状態を突破し、緩和後に持続する結合のみ化学反応とみなす」と解釈。
+- Decision: バイアス中の閾値到達は `tentative_formation` / `tentative_dissociation` として記録し、バイアス相終了のトリガーにのみ使う。確定 (`confirmed_*`) の発行は非バイアス緩和後の `check_outcomes` に一本化する。`_reacted` には暫定検知時点では追加しない。
+- Alternatives considered: (a) 即 confirm 維持 + docstring 修正 — TDBB を「遷移状態突破=結合成立」と解釈する立場。棄却: 250 kcal/mol の井戸は遷移状態バリアを大幅に超えるため、近接が持続的結合の証拠にならない。(b) バイアス中に検知したペアのみ check_outcomes で再判定 — 実装複雑化に対して利点なし。
+- Scientific risk: Low. 真に結合が成立するペアは緩和後も r ≤ r0 を維持するはずであり、confirmed 率は低下しない。偽陽性の排除により α・DPn の精度が向上。
+- Licensing/commercial impact: None.
+- Follow-up: bonds.py の BondTracker, polymerization.py の _run_biased_phase を修正。H2 (候補単位の原子的受理) と同時に実装。
+
+## 2026-07-03: D2 — MC バロスタット受理判定にバイアスエネルギー変化を含める
+- Context: バイアス相の NPT 体積試行で `try_step` に渡るのは `base_energy` のみで、体積スケールによるバイアスエネルギー変化 ΔV_bias が受理判定に含まれない。f2=10 Å⁻² の勾配最大点で f1=250 のとき |dV/dr|≈670 kcal/(mol·Å)。最大体積移動 (ΔlnV=0.01) で r≈3 Å のペアは Δr≈0.01 Å → ΔV_bias は数 kcal/mol/ペア。kT(333 K)≈0.66 kcal/mol に対して無視できない。レビュー指摘 M1。
+- Paper anchor: §2 — NPT ensemble。
+- Decision: try_step にバイアスエネルギー再計算コールバックを渡し、ΔH = Δ(E_base + E_bias) + PΔV − (N+1)kT·lnV'/V で受理判定する。バイアスが無い場合(非バイアス相)はコールバック=None で従来と同一動作。
+- Alternatives considered: (a) バイアス相中はバロスタット無効化 — 実装コスト最小だがバイアス相の密度が制御されない。(b) 現状維持 + 意図的除外を記録 — 物理的に不整合が残る。
+- Scientific risk: Low. 正しい NPT サンプリング。バイアス相中のバロスタット受理率が若干変わるが、密度制御がより正確になる。
+- Licensing/commercial impact: None.
+- Follow-up: mc_barostat.py の try_step にコールバック引数追加、polymerization.py の _md_step からクロージャを渡す。
+
+## 2026-07-03: I3 — boost.advance() の Eq.5 離散化
+- Context: ループ先頭で boost.advance() を呼ぶため、ループ内 1 ステップ目の f1=γ·1、ループ前の力評価(最初の half-kick 用)は f1=0。
+- Paper anchor: Eq. 5 — f1(t)=min(γt, f1_max)、t=0 から開始。
+- Decision: これは f1(t)=γt を t=0 から離散化した正しい形。ループ前 (t=0) で f1=0、ループ内 step 1 で f1=γ·1。記録として残す。
+- Scientific risk: None.
+- Follow-up: None.
+
+## 2026-07-03: H2 — 候補単位の原子的受理 (candidate_id)
+- Context: 縮合系（ナイロン）では 1 候補に formation (N-C) と dissociation (N-H, C-OH) の複数ペアがある。V^d だけ確定し V^f が不成立の場合、DefaultPostCycleUpdater がアミン N を全グループから除去してしまい、反応サイトが不可逆に失われる。
+- Paper anchor: Table S2 — 縮合テンプレートの formation/dissociation 対。
+- Decision: PairBias と BondEvent に candidate_id (int) を追加。_build_pair_biases が同一候補の全ペアに同じ ID を付与。DefaultPostCycleUpdater は同一 candidate_id の formation が confirmed された場合のみ dissociation のグループ編集を適用する。
+- Alternatives considered: (a) updater を候補結果オブジェクトに変更 — API 変更が大きく後方互換性問題。(b) formation/dissociation を cycle 内 step 近接で紐付け — タイミング依存で脆弱。
+- Scientific risk: None. ビニル系では dissociation イベントがないため影響なし。縮合系のサイト保存が正しくなる。
+- Licensing/commercial impact: None.
+- Follow-up: 縮合系のエンドツーエンドテストで検証。

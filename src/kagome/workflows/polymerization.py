@@ -36,9 +36,44 @@ from kagome.reactive.selection import (
     select_non_overlapping,
 )
 from kagome.integrators.init_velocities import instant_temperature_K
+from kagome.analysis.conversion import monomer_site_count
 from kagome.workflows.manifest import RunManifest, _normalize_value
 
 logger = logging.getLogger(__name__)
+
+
+def _truncate_jsonl_after(path: Path, max_value: int, field: str = 'step') -> int:
+    """Remove JSONL lines whose *field* exceeds *max_value*.
+
+    Returns the number of lines removed. Lines without a parseable *field*
+    are kept (e.g. header records). ``field='step'`` suits trajectory/topology
+    logs; ``field='cycle'`` suits selection.jsonl, whose records carry no step.
+    """
+    if not path.exists():
+        return 0
+    kept: list[str] = []
+    removed = 0
+    with open(path, 'r', encoding='utf-8') as f:
+        for raw in f:
+            raw = raw.rstrip('\n')
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                kept.append(raw)
+                continue
+            value = rec.get(field)
+            if value is not None and value > max_value:
+                removed += 1
+            else:
+                kept.append(raw)
+    if removed:
+        with open(path, 'w', encoding='utf-8') as f:
+            for line in kept:
+                f.write(line + '\n')
+        logger.info('Truncated %d post-checkpoint records from %s', removed, path.name)
+    return removed
 
 VDW_RADII: dict[str, float] = {
     'H': 1.20, 'C': 1.70, 'N': 1.55, 'O': 1.52, 'F': 1.47,
@@ -58,7 +93,7 @@ ATOMIC_MASSES: dict[str, float] = {
 # completed cycles). The static parts (species, template, calculator/weights)
 # are NOT stored — the resuming process rebuilds them and overrides the dynamic
 # state below. Resume is bit-exact because the numpy Generator state is saved.
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 def load_checkpoint(path: Path) -> dict:
@@ -86,6 +121,7 @@ def save_checkpoint(
     extra: dict | None = None,
     topology: BondTopology | None = None,
     topo_processed_formations: int = 0,
+    topo_processed_dissociations: int = 0,
 ) -> None:
     """Atomically write a checkpoint at a cycle boundary.
 
@@ -112,6 +148,7 @@ def save_checkpoint(
         # continue the same connectivity, not re-derive it from scratch.
         'topology_bonds': (topology.bonds() if topology is not None else None),
         'topo_processed_formations': topo_processed_formations,
+        'topo_processed_dissociations': topo_processed_dissociations,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + '.tmp')
@@ -264,14 +301,24 @@ class DefaultPostCycleUpdater:
         if not tracker:
             return
         formations = tracker.confirmed_formations()
+        # candidate_id restarts at 0 every cycle, so key on (cycle, id) to
+        # stay correct even if this update spans more than one cycle.
+        confirmed_cids: set[tuple[int, int]] = set()
         for ev in formations[self._processed_formations:]:
             self._remove_pair(groups, ev)
+            if ev.candidate_id >= 0:
+                confirmed_cids.add((ev.cycle, ev.candidate_id))
         self._processed_formations = len(formations)
 
-        # Consume dissociations so freed leaving groups / reacted centres are not
-        # re-selected next cycle (remove_atom is idempotent if also consumed above).
         dissociations = tracker.confirmed_dissociations()
         for ev in dissociations[self._processed_dissociations:]:
+            if (ev.candidate_id >= 0
+                    and (ev.cycle, ev.candidate_id) not in confirmed_cids):
+                logger.info(
+                    'Skipping dissociation (%d,%d) cycle=%d candidate_id=%d: '
+                    'no matching formation confirmed (H2)',
+                    ev.atom_a, ev.atom_b, ev.cycle, ev.candidate_id)
+                continue
             self._remove_pair(groups, ev)
         self._processed_dissociations = len(dissociations)
 
@@ -378,6 +425,7 @@ class PolymerizationWorkflow:
         self._topology = (
             BondTopology.from_bonds(initial_bonds) if initial_bonds else None)
         self._topo_processed_formations = 0
+        self._topo_processed_dissociations = 0
         self._topology_log: Path | None = None
 
         if updater is not None:
@@ -415,7 +463,17 @@ class PolymerizationWorkflow:
         サイクルの次から継続する（trajectory/selection は追記）。checkpoint_extra
         は checkpoint に保存する追加情報（例: production spin）。
         """
-        n_reactive_sites = n_monomers if n_monomers is not None else sum(len(g.atom_indices) for g in self.groups.values())
+        if n_monomers is not None:
+            n_reactive_sites = n_monomers
+        else:
+            n_reactive_sites = monomer_site_count(self.groups)
+            if n_reactive_sites == 0:
+                n_reactive_sites = sum(len(g.atom_indices) for g in self.groups.values())
+                logger.warning(
+                    'monomer_site_count returned 0 (no vinyl_alpha_C group); '
+                    'falling back to all-groups sum %d for n_reactive_sites',
+                    n_reactive_sites,
+                )
 
         # Resume from a cycle-boundary checkpoint: restore the mutated dynamic
         # state and continue at the saved cycle. The static parts (species,
@@ -432,6 +490,12 @@ class PolymerizationWorkflow:
             state.velocities = np.array(_ckpt['velocities'])
             state.cell = None if _ckpt['cell'] is None else np.array(_ckpt['cell'])
             state.step = int(_ckpt['step'])
+            ckpt_labels = set(_ckpt['groups'].keys())
+            live_labels = set(self.groups.keys())
+            if ckpt_labels != live_labels:
+                logger.warning(
+                    'Checkpoint group labels %s != live labels %s',
+                    sorted(ckpt_labels), sorted(live_labels))
             for label, idxs in _ckpt['groups'].items():
                 if label in self.groups:
                     self.groups[label].atom_indices[:] = list(idxs)
@@ -441,12 +505,29 @@ class PolymerizationWorkflow:
             if hasattr(self._updater, 'chain_c_map'):
                 self._updater.chain_c_map = dict(_ckpt['updater_chain_c_map'])
             if self.bond_tracker is not None:
-                self.bond_tracker._events = list(_ckpt['tracker_events'])
-                self.bond_tracker._reacted = set(_ckpt['tracker_reacted'])
+                restored_events = list(_ckpt['tracker_events'])
+                # Migrate events pickled before candidate_id existed: pickle
+                # restores __dict__ directly (no __init__), so the dataclass
+                # default never applies and asdict() would raise on save().
+                for ev in restored_events:
+                    if not hasattr(ev, 'candidate_id'):
+                        ev.candidate_id = -1
+                self.bond_tracker._events = restored_events
+                raw_reacted = _ckpt['tracker_reacted']
+                # Migrate v1 checkpoints: (int, int) -> (int, int, True)
+                migrated: set[tuple[int, int, bool]] = set()
+                for item in raw_reacted:
+                    if len(item) == 2:
+                        migrated.add((*item, True))
+                    else:
+                        migrated.add(tuple(item))
+                self.bond_tracker._reacted = migrated
             if self._topology is not None and _ckpt.get('topology_bonds') is not None:
                 self._topology = BondTopology.from_bonds(_ckpt['topology_bonds'])
                 self._topo_processed_formations = _ckpt.get(
                     'topo_processed_formations', 0)
+                self._topo_processed_dissociations = _ckpt.get(
+                    'topo_processed_dissociations', 0)
             self.logs = list(_ckpt['logs'])
             logger.info(
                 'Resuming from checkpoint: starting at cycle %d of %d '
@@ -488,6 +569,19 @@ class PolymerizationWorkflow:
                 if not resuming:
                     self._topology_log.write_text('', encoding='utf-8')
                     self._write_topology_snapshot(state, cycle=-1)  # initial
+
+            if resuming and _ckpt is not None:
+                ckpt_step = int(_ckpt['step'])
+                _truncate_jsonl_after(
+                    output_dir / 'trajectory.jsonl', ckpt_step)
+                # selection.jsonl records carry only 'cycle': the checkpoint's
+                # next_cycle is the first cycle to be re-run, so records from
+                # cycle >= next_cycle are the mid-crash duplicates.
+                _truncate_jsonl_after(
+                    self._selection_log, int(_ckpt['next_cycle']) - 1,
+                    field='cycle')
+                if self._topology_log is not None:
+                    _truncate_jsonl_after(self._topology_log, ckpt_step)
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
@@ -556,6 +650,7 @@ class PolymerizationWorkflow:
                         extra=checkpoint_extra,
                         topology=self._topology,
                         topo_processed_formations=self._topo_processed_formations,
+                        topo_processed_dissociations=self._topo_processed_dissociations,
                     )
         finally:
             if writer:
@@ -655,10 +750,15 @@ class PolymerizationWorkflow:
                 and self.barostat is not None
                 and state.cell is not None
                 and self.barostat.should_attempt(step_in_phase)):
+            bias_fn = None
+            if active_pairs is not None and boost is not None and tdbb is not None:
+                def bias_fn(pos, bx):
+                    return total_bias_fast(active_pairs, pos, boost, tdbb, bx)[0]
             accepted, new_base_e, new_base_f = self.barostat.try_step(
                 state.positions, state.species, state.cell,
                 base_energy, self.calculator, rng,
                 _integrator_temperature(self.integrator, state),
+                bias_energy_fn=bias_fn,
             )
             if accepted and new_base_f is not None:
                 base_energy = new_base_e
@@ -785,6 +885,7 @@ class PolymerizationWorkflow:
     ) -> CycleLog:
         candidates = find_candidates(
             self.template, self.groups, state.positions, state.cell,
+            topology=self._topology,
         )
         scored = score_candidates(candidates)
 
@@ -802,7 +903,12 @@ class PolymerizationWorkflow:
         else:
             selected = select_non_overlapping(scored)
 
+        pre_valence = set(id(c) for c in selected)
         selected = self._valence_filter(selected, state, cycle)
+        if self._selection_log is not None:
+            dropped_ids = pre_valence - set(id(c) for c in selected)
+            if dropped_ids:
+                self._write_valence_drop_audit(cycle, len(dropped_ids))
 
         active_pairs = self._build_pair_biases(selected, state.species)
 
@@ -873,8 +979,9 @@ class PolymerizationWorkflow:
                 )
                 if events:
                     logger.info(
-                        'Cycle %d biased: reaction event at step %d (%d pair(s)) '
-                        '- ending biased phase', cycle, step_in_phase + 1, len(events),
+                        'Cycle %d biased: tentative reaction at step %d (%d pair(s)) '
+                        '- ending biased phase for unbiased confirmation',
+                        cycle, step_in_phase + 1, len(events),
                     )
                     break
 
@@ -990,22 +1097,24 @@ class PolymerizationWorkflow:
 
     def _apply_topology_updates(self, state: SimulationState) -> bool:
         """Apply reaction edits to the explicit bond topology for newly confirmed
-        formations. Returns True if the topology changed this cycle.
+        formations and dissociations.
 
         Vinyl radical addition (propagation_map present): new radical_C-alpha_C
         sigma bond + C=C opening + closed-shell placeholder-H shed
         (apply_vinyl_addition).  Other chemistries: add the recorded formation
-        bond generically (condensation leaving-group edits are a follow-up).
+        bond generically.
+
+        Confirmed dissociations remove the corresponding bond from the topology
+        (L10: condensation leaving-group bond removal).
         """
         if self._topology is None or self.bond_tracker is None:
             return False
+        changed = False
+
         formations = self.bond_tracker.confirmed_formations()
-        new = formations[self._topo_processed_formations:]
-        for ev in new:
+        new_formations = formations[self._topo_processed_formations:]
+        for ev in new_formations:
             if self._propagation_map:
-                # Defensive: the selection valence guard should already prevent
-                # over-coordinating formations, but never emit an over-valent
-                # topology if one slips through — skip the edit and flag it.
                 bad = vinyl_addition_over_coordinates(
                     self._topology, ev.atom_a, ev.atom_b,
                     self._propagation_map, state.species,
@@ -1024,8 +1133,18 @@ class PolymerizationWorkflow:
                 )
             else:
                 self._topology.add_bond(ev.atom_a, ev.atom_b, 1.0)
+            changed = True
         self._topo_processed_formations = len(formations)
-        return bool(new)
+
+        dissociations = self.bond_tracker.confirmed_dissociations()
+        new_dissociations = dissociations[self._topo_processed_dissociations:]
+        for ev in new_dissociations:
+            if self._topology.has_bond(ev.atom_a, ev.atom_b):
+                self._topology.remove_bond(ev.atom_a, ev.atom_b)
+                changed = True
+        self._topo_processed_dissociations = len(dissociations)
+
+        return changed
 
     def _write_topology_snapshot(self, state: SimulationState, cycle: int) -> None:
         """Append the current full bond list to topology.jsonl (one JSON line).
@@ -1081,6 +1200,18 @@ class PolymerizationWorkflow:
                 cycle, len(shown), len(rejected), record['rejected_truncated'],
             )
 
+    def _write_valence_drop_audit(self, cycle: int, n_dropped: int) -> None:
+        """Append a valence-drop record to the selection audit log (L7)."""
+        if self._selection_log is None:
+            return
+        record = {
+            'cycle': cycle,
+            'event': 'valence_drop',
+            'n_dropped': n_dropped,
+        }
+        with open(self._selection_log, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record) + '\n')
+
     def run_activation(
         self,
         state: SimulationState,
@@ -1104,7 +1235,7 @@ class PolymerizationWorkflow:
         Paper anchor: Table S1 — Activation row, V^d applied to C-N azo bonds.
         """
         if rng is None:
-            rng = np.random.default_rng(self.config.seed)
+            rng = np.random.default_rng([self.config.seed, 1])
 
         candidates = find_candidates(
             activation_template, activation_groups, state.positions, state.cell,
@@ -1204,6 +1335,17 @@ class PolymerizationWorkflow:
                         'Activation: C-N dissociation at step %d, atoms (%d, %d), r=%.2f A',
                         step_in_phase + 1, p.idx_a, p.idx_b, r,
                     )
+                    if self.bond_tracker:
+                        from kagome.reactive.bonds import BondEvent
+                        self.bond_tracker._events.append(BondEvent(
+                            step=state.step,
+                            cycle=-1,
+                            atom_a=p.idx_a,
+                            atom_b=p.idx_b,
+                            event_type='confirmed_dissociation',
+                            distance=r,
+                            r0=dissoc_threshold,
+                        ))
 
             if len(dissociated) == len(pairs):
                 logger.info(
@@ -1226,7 +1368,7 @@ class PolymerizationWorkflow:
         pairs: list[PairBias] = []
         label_list = template.groups
 
-        for cand in selected:
+        for cand_idx, cand in enumerate(selected):
             for ps in template.pairs:
                 if ps.constraint_only:
                     continue
@@ -1252,5 +1394,6 @@ class PolymerizationWorkflow:
                     idx_b=atom_b,
                     is_formation=ps.is_formation,
                     r0=r0,
+                    candidate_id=cand_idx,
                 ))
         return pairs

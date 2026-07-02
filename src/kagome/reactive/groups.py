@@ -59,6 +59,29 @@ class ReactionTemplate:
     groups: list[str]
     pairs: list[PairSpec]
 
+    def __post_init__(self) -> None:
+        if len(self.groups) != len(set(self.groups)):
+            dupes = [g for g in self.groups if self.groups.count(g) > 1]
+            raise ValueError(
+                f'ReactionTemplate {self.name!r}: duplicate group labels {set(dupes)}')
+        for ps in self.pairs:
+            if ps.group_a not in self.groups:
+                raise ValueError(
+                    f'ReactionTemplate {self.name!r}: pair group_a {ps.group_a!r} '
+                    f'not in groups {self.groups}')
+            if ps.group_b not in self.groups:
+                raise ValueError(
+                    f'ReactionTemplate {self.name!r}: pair group_b {ps.group_b!r} '
+                    f'not in groups {self.groups}')
+            if ps.group_a == ps.group_b:
+                # Symmetric pairs map to a (i,i) key that the enumeration
+                # loop (prev_depth < depth) can never match — the distance
+                # window would be silently disabled (L4).
+                raise ValueError(
+                    f'ReactionTemplate {self.name!r}: pair ({ps.group_a!r}, '
+                    f'{ps.group_b!r}) references the same group; symmetric '
+                    'reactions are not supported by the candidate enumerator')
+
     def group_labels(self) -> set[str]:
         return set(self.groups)
 

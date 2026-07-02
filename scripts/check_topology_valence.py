@@ -32,18 +32,25 @@ def _resolve_paths(target: Path) -> tuple[Path, Path]:
 
 def _min_nonbonded_distance(
     positions: np.ndarray, bonds: list[tuple[int, int, float]], cutoff: float,
+    box: np.ndarray | None = None,
 ) -> tuple[float, int]:
-    """Return (min non-bonded distance, count below cutoff) using a KD-tree."""
+    """Return (min non-bonded distance, count below cutoff) using a KD-tree.
+
+    When *box* is a (3,) array of cell lengths, PBC-aware distances are used
+    via cKDTree(boxsize=...) (M6 fix).
+    """
     try:
         from scipy.spatial import cKDTree
     except ImportError:
         return float('nan'), -1
     bonded = {(min(i, j), max(i, j)) for i, j, _ in bonds}
-    tree = cKDTree(positions)
+    tree_kw: dict = {}
+    if box is not None:
+        tree_kw['boxsize'] = box.astype(float)
+    tree = cKDTree(positions, **tree_kw)
     pairs = tree.query_pairs(r=cutoff, output_type='ndarray')
     below = 0
     gmin = float('inf')
-    # Also track global min via nearest-neighbour query (excludes self).
     dists, idx = tree.query(positions, k=2)
     for a, (d, b) in enumerate(zip(dists[:, 1], idx[:, 1])):
         key = (min(a, int(b)), max(a, int(b)))
@@ -62,11 +69,14 @@ def main() -> None:
     p.add_argument('--topology', type=Path, default=None)
     p.add_argument('--contact-cutoff', type=float, default=1.2,
                    help='report non-bonded pairs closer than this (A). Default 1.2.')
+    p.add_argument('--box', type=float, nargs=3, default=None, metavar=('LX', 'LY', 'LZ'),
+                   help='PBC box lengths in A for periodic distance calc (M6).')
     args = p.parse_args()
 
     traj_path, topo_default = _resolve_paths(args.target)
     topo_path = args.topology or topo_default
 
+    box = np.array(args.box) if args.box else None
     header, frames = read_trajectory(traj_path)
     species = header['species']
     snapshots = read_topology_snapshots(topo_path)
@@ -97,7 +107,7 @@ def main() -> None:
     for frame in frames:
         bonds = bonds_at_step(snapshots, frame.step)
         pos = np.asarray(frame.positions, dtype=float)
-        gmin, below = _min_nonbonded_distance(pos, bonds, args.contact_cutoff)
+        gmin, below = _min_nonbonded_distance(pos, bonds, args.contact_cutoff, box=box)
         if below == -1:
             print('geometry: scipy not available - skipping close-contact scan')
             break

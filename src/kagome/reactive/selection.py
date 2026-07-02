@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 
 from kagome.geometry import minimum_image
 from kagome.reactive.groups import ReactiveGroup, ReactionTemplate, PairSpec
+from kagome.reactive.topology import BondTopology
 
 
 @dataclass
@@ -36,6 +37,7 @@ def find_candidates(
     groups: dict[str, ReactiveGroup],
     positions: NDArray[np.floating],
     cell: NDArray[np.floating] | None = None,
+    topology: BondTopology | None = None,
 ) -> list[Candidate]:
     """Enumerate candidate tuples satisfying distance bounds.  Eq. 7.
 
@@ -43,22 +45,29 @@ def find_candidates(
     (distance window filtering).  Pairs with score_pair=False (e.g. nylon
     k-l water formation) are bias-only and do not constrain candidate
     selection.
+
+    When *topology* is provided, formation pairs whose atoms are already
+    bonded are excluded (L6 guard).
     """
     group_atoms = [groups[label].atom_indices for label in template.groups]
     label_list = template.groups
 
     pair_specs: dict[tuple[int, int], PairSpec] = {}
+    formation_group_pairs: set[tuple[int, int]] = set()
     for ps in template.pairs:
         if not ps.score_pair:
             continue
         idx_a = label_list.index(ps.group_a)
         idx_b = label_list.index(ps.group_b)
         pair_specs[(min(idx_a, idx_b), max(idx_a, idx_b))] = ps
+        if ps.is_formation:
+            formation_group_pairs.add((min(idx_a, idx_b), max(idx_a, idx_b)))
 
     candidates: list[Candidate] = []
     _enumerate_recursive(
         group_atoms, label_list, pair_specs, positions, candidates,
         depth=0, chosen=[], running_score=0.0, cell=cell,
+        topology=topology, formation_group_pairs=formation_group_pairs,
     )
     return candidates
 
@@ -73,6 +82,8 @@ def _enumerate_recursive(
     chosen: list[int],
     running_score: float,
     cell: NDArray[np.floating] | None = None,
+    topology: BondTopology | None = None,
+    formation_group_pairs: set[tuple[int, int]] | None = None,
 ) -> None:
     if depth == len(group_atoms):
         out.append(Candidate(
@@ -82,6 +93,8 @@ def _enumerate_recursive(
         return
 
     for atom_idx in group_atoms[depth]:
+        if atom_idx in chosen:
+            continue
         ok = True
         added_score = 0.0
 
@@ -94,6 +107,11 @@ def _enumerate_recursive(
             if d < ps.r_min or d > ps.r_max:
                 ok = False
                 break
+            if (topology is not None and formation_group_pairs
+                    and (min(prev_depth, depth), max(prev_depth, depth)) in formation_group_pairs
+                    and topology.has_bond(chosen[prev_depth], atom_idx)):
+                ok = False
+                break
             added_score += d
 
         if not ok:
@@ -103,6 +121,7 @@ def _enumerate_recursive(
         _enumerate_recursive(
             group_atoms, label_list, pair_specs, positions, out,
             depth + 1, chosen, running_score + added_score, cell=cell,
+            topology=topology, formation_group_pairs=formation_group_pairs,
         )
         chosen.pop()
 

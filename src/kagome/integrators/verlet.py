@@ -6,7 +6,7 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from kagome.geometry import wrap_positions_fast
+from kagome.geometry import validated_box, wrap_positions_fast
 from kagome.units import force_to_accel_fast, precompute_inv_masses
 
 
@@ -44,22 +44,23 @@ class VelocityVerletIntegrator:
 
     def __init__(self) -> None:
         self._inv_masses: NDArray[np.floating] | None = None
-        self._masses_id: int | None = None
+        self._cached_masses: NDArray[np.floating] | None = None
         self._box: NDArray[np.floating] | None = None
 
     def _get_inv_masses(self, masses: NDArray[np.floating] | None) -> NDArray[np.floating] | None:
-        mid = id(masses) if masses is not None else None
-        if mid != self._masses_id:
+        if masses is not self._cached_masses:
             self._inv_masses = precompute_inv_masses(masses)
-            self._masses_id = mid
+            self._cached_masses = masses
         return self._inv_masses
 
     def _get_box(self, cell: NDArray[np.floating] | None) -> NDArray[np.floating] | None:
         if cell is None:
             return None
-        d0, d1, d2 = cell[0, 0], cell[1, 1], cell[2, 2]
-        if self._box is None or self._box[0] != d0 or self._box[1] != d1 or self._box[2] != d2:
-            self._box = np.array([d0, d1, d2])
+        box = validated_box(cell)
+        if box is None:
+            return None
+        if self._box is None or self._box[0] != box[0] or self._box[1] != box[1] or self._box[2] != box[2]:
+            self._box = box
         return self._box
 
     def pre_force(

@@ -78,6 +78,7 @@ def fit_conversion_exponential(
     steps: NDArray[np.integer],
     alpha: NDArray[np.floating],
     timestep_fs: float = 0.25,
+    production_start_step: int = 0,
 ) -> tuple[float, float]:
     """Fit α(t) = 1 - exp(-kp_eff * t) and return (kp_eff, r_squared).
 
@@ -87,6 +88,9 @@ def fit_conversion_exponential(
         steps:       step indices (integer), shape (N,)
         alpha:       conversion values in [0, 1], shape (N,)
         timestep_fs: MD timestep in fs (converts steps -> physical time)
+        production_start_step: global step at which production begins;
+            subtracted from *steps* before converting to physical time
+            so the fit starts at t=0 (L8).
 
     Returns:
         kp_eff:    effective polymerization rate constant (1/fs)
@@ -100,7 +104,7 @@ def fit_conversion_exponential(
             'Install with: pip install kagome[fit]'
         ) from e
 
-    t = steps.astype(np.float64) * timestep_fs  # convert to physical time (fs)
+    t = (steps.astype(np.float64) - production_start_step) * timestep_fs
 
     # Guard: need at least some non-zero alpha and non-trivial data
     if alpha.max() < 1e-9 or len(t) < 3:
