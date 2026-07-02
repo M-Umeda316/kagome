@@ -1248,3 +1248,12 @@ Use this template for each decision.
 - Decision: これは f1(t)=γt を t=0 から離散化した正しい形。ループ前 (t=0) で f1=0、ループ内 step 1 で f1=γ·1。記録として残す。
 - Scientific risk: None.
 - Follow-up: None.
+
+## 2026-07-03: H2 — 候補単位の原子的受理 (candidate_id)
+- Context: 縮合系（ナイロン）では 1 候補に formation (N-C) と dissociation (N-H, C-OH) の複数ペアがある。V^d だけ確定し V^f が不成立の場合、DefaultPostCycleUpdater がアミン N を全グループから除去してしまい、反応サイトが不可逆に失われる。
+- Paper anchor: Table S2 — 縮合テンプレートの formation/dissociation 対。
+- Decision: PairBias と BondEvent に candidate_id (int) を追加。_build_pair_biases が同一候補の全ペアに同じ ID を付与。DefaultPostCycleUpdater は同一 candidate_id の formation が confirmed された場合のみ dissociation のグループ編集を適用する。
+- Alternatives considered: (a) updater を候補結果オブジェクトに変更 — API 変更が大きく後方互換性問題。(b) formation/dissociation を cycle 内 step 近接で紐付け — タイミング依存で脆弱。
+- Scientific risk: None. ビニル系では dissociation イベントがないため影響なし。縮合系のサイト保存が正しくなる。
+- Licensing/commercial impact: None.
+- Follow-up: 縮合系のエンドツーエンドテストで検証。
