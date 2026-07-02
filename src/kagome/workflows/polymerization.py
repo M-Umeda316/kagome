@@ -25,6 +25,9 @@ from kagome.integrators.verlet import Integrator, VelocityVerletIntegrator
 from kagome.io.trajectory import TrajectoryFrame, TrajectoryWriter
 from kagome.reactive.bonds import BondTracker, is_dissociated
 from kagome.reactive.groups import ReactiveGroup, ReactionTemplate
+from kagome.reactive.topology import (
+    BondTopology, apply_vinyl_addition, vinyl_addition_over_coordinates,
+)
 from kagome.reactive.selection import (
     Candidate,
     audited_selection,
@@ -81,6 +84,8 @@ def save_checkpoint(
     rng: np.random.Generator,
     logs: list[CycleLog],
     extra: dict | None = None,
+    topology: BondTopology | None = None,
+    topo_processed_formations: int = 0,
 ) -> None:
     """Atomically write a checkpoint at a cycle boundary.
 
@@ -103,6 +108,10 @@ def save_checkpoint(
         'rng_state': rng.bit_generator.state,
         'logs': list(logs),
         'extra': extra or {},
+        # Explicit bond topology (specs/decisions.md 2026-07-02): resume must
+        # continue the same connectivity, not re-derive it from scratch.
+        'topology_bonds': (topology.bonds() if topology is not None else None),
+        'topo_processed_formations': topo_processed_formations,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + '.tmp')
@@ -348,6 +357,7 @@ class PolymerizationWorkflow:
         propagation_target_group: str = 'radical_C',
         chain_c_map: dict[int, int] | None = None,
         updater: PostCycleUpdater | None = None,
+        initial_bonds: list[tuple[int, int, float]] | None = None,
     ) -> None:
         self.config = config
         self.calculator = calculator
@@ -359,6 +369,16 @@ class PolymerizationWorkflow:
         self.logs: list[CycleLog] = []
         # Per-cycle candidate-selection audit (RF18); set in run() when output_dir given.
         self._selection_log: Path | None = None
+
+        # Explicit bond topology (specs/decisions.md 2026-07-02): when initial
+        # bonds are supplied we track connectivity through the run so the
+        # trajectory carries real bonds (no distance-inferred spurious/over-
+        # valent bonds in the viewer). None => topology output disabled.
+        self._propagation_map = propagation_map or {}
+        self._topology = (
+            BondTopology.from_bonds(initial_bonds) if initial_bonds else None)
+        self._topo_processed_formations = 0
+        self._topology_log: Path | None = None
 
         if updater is not None:
             self._updater = updater
@@ -423,6 +443,10 @@ class PolymerizationWorkflow:
             if self.bond_tracker is not None:
                 self.bond_tracker._events = list(_ckpt['tracker_events'])
                 self.bond_tracker._reacted = set(_ckpt['tracker_reacted'])
+            if self._topology is not None and _ckpt.get('topology_bonds') is not None:
+                self._topology = BondTopology.from_bonds(_ckpt['topology_bonds'])
+                self._topo_processed_formations = _ckpt.get(
+                    'topo_processed_formations', 0)
             self.logs = list(_ckpt['logs'])
             logger.info(
                 'Resuming from checkpoint: starting at cycle %d of %d '
@@ -458,6 +482,13 @@ class PolymerizationWorkflow:
             if not resuming:
                 self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
 
+            # Explicit bond-topology history (specs/decisions.md 2026-07-02).
+            if self._topology is not None:
+                self._topology_log = output_dir / 'topology.jsonl'
+                if not resuming:
+                    self._topology_log.write_text('', encoding='utf-8')
+                    self._write_topology_snapshot(state, cycle=-1)  # initial
+
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
             writer = TrajectoryWriter(
@@ -467,6 +498,8 @@ class PolymerizationWorkflow:
                 metadata={'config_path': config_path, 'seed': self.config.seed},
                 n_reactive_sites=n_reactive_sites,
                 append=resuming,  # keep prior frames when resuming
+                initial_bonds=(self._topology.bonds()
+                               if self._topology is not None else None),
             )
 
         rng = np.random.default_rng(self.config.seed)
@@ -506,7 +539,7 @@ class PolymerizationWorkflow:
                 self.logs.append(log_unbiased)
                 logger.info('Cycle %d unbiased: %d steps', cycle, log_unbiased.steps)
 
-                self._update_groups_after_cycle(state)
+                self._update_groups_after_cycle(state, cycle)
 
                 if checkpoint_path is not None:
                     # Save AFTER the group update so resume starts cleanly at the
@@ -521,6 +554,8 @@ class PolymerizationWorkflow:
                         rng=rng,
                         logs=self.logs,
                         extra=checkpoint_extra,
+                        topology=self._topology,
+                        topo_processed_formations=self._topo_processed_formations,
                     )
         finally:
             if writer:
@@ -767,6 +802,8 @@ class PolymerizationWorkflow:
         else:
             selected = select_non_overlapping(scored)
 
+        selected = self._valence_filter(selected, state, cycle)
+
         active_pairs = self._build_pair_biases(selected, state.species)
 
         if self.bond_tracker:
@@ -850,6 +887,56 @@ class PolymerizationWorkflow:
             min_pair_distance=min_form_dist,
         )
 
+    def _formation_pair_positions(self) -> tuple[int, int] | None:
+        """Index positions (in template.groups) of the biased formation pair's
+        two groups — the atoms whose bond would form.  None if not resolvable."""
+        label_list = self.template.groups
+        for ps in self.template.pairs:
+            if ps.is_formation and not ps.constraint_only:
+                try:
+                    return label_list.index(ps.group_a), label_list.index(ps.group_b)
+                except ValueError:
+                    return None
+        return None
+
+    def _valence_filter(
+        self, selected: list[Candidate], state: SimulationState, cycle: int,
+    ) -> list[Candidate]:
+        """Layer-2 occupancy guard: drop selected candidates whose formation
+        would over-coordinate an atom in the current topology (specs/decisions.md
+        2026-07-02).  Makes valence-safety a guaranteed invariant rather than an
+        emergent property of group bookkeeping; a no-op when topology tracking is
+        off or for non-vinyl chemistries.
+        """
+        if self._topology is None or not self._propagation_map:
+            return selected
+        pos = self._formation_pair_positions()
+        if pos is None:
+            return selected
+        ia, ib = pos
+        kept: list[Candidate] = []
+        dropped = 0
+        for cand in selected:
+            radical_c = cand.atom_indices[ia]
+            alpha_c = cand.atom_indices[ib]
+            bad = vinyl_addition_over_coordinates(
+                self._topology, radical_c, alpha_c,
+                self._propagation_map, state.species,
+            )
+            if bad:
+                dropped += 1
+                logger.warning(
+                    'Cycle %d valence guard: dropped candidate (radical %d + '
+                    'alpha %d) — would over-coordinate atoms %s',
+                    cycle, radical_c, alpha_c, bad,
+                )
+            else:
+                kept.append(cand)
+        if dropped:
+            logger.info('Cycle %d valence guard: dropped %d/%d candidate(s)',
+                        cycle, dropped, len(selected))
+        return kept
+
     def _run_unbiased_phase(
         self,
         state: SimulationState,
@@ -893,8 +980,71 @@ class PolymerizationWorkflow:
             steps=self.config.unbiased_steps,
         )
 
-    def _update_groups_after_cycle(self, state: SimulationState) -> None:
+    def _update_groups_after_cycle(
+        self, state: SimulationState, cycle: int | None = None,
+    ) -> None:
         self._updater.update(self.groups, self.bond_tracker, state)
+        changed = self._apply_topology_updates(state)
+        if changed and cycle is not None:
+            self._write_topology_snapshot(state, cycle)
+
+    def _apply_topology_updates(self, state: SimulationState) -> bool:
+        """Apply reaction edits to the explicit bond topology for newly confirmed
+        formations. Returns True if the topology changed this cycle.
+
+        Vinyl radical addition (propagation_map present): new radical_C-alpha_C
+        sigma bond + C=C opening + closed-shell placeholder-H shed
+        (apply_vinyl_addition).  Other chemistries: add the recorded formation
+        bond generically (condensation leaving-group edits are a follow-up).
+        """
+        if self._topology is None or self.bond_tracker is None:
+            return False
+        formations = self.bond_tracker.confirmed_formations()
+        new = formations[self._topo_processed_formations:]
+        for ev in new:
+            if self._propagation_map:
+                # Defensive: the selection valence guard should already prevent
+                # over-coordinating formations, but never emit an over-valent
+                # topology if one slips through — skip the edit and flag it.
+                bad = vinyl_addition_over_coordinates(
+                    self._topology, ev.atom_a, ev.atom_b,
+                    self._propagation_map, state.species,
+                )
+                if bad:
+                    logger.error(
+                        'Confirmed formation (radical %d + alpha %d) would '
+                        'over-coordinate %s; topology edit skipped (recorded '
+                        'formation count is unaffected).',
+                        ev.atom_a, ev.atom_b, bad,
+                    )
+                    continue
+                apply_vinyl_addition(
+                    self._topology, ev.atom_a, ev.atom_b,
+                    self._propagation_map, state.species,
+                )
+            else:
+                self._topology.add_bond(ev.atom_a, ev.atom_b, 1.0)
+        self._topo_processed_formations = len(formations)
+        return bool(new)
+
+    def _write_topology_snapshot(self, state: SimulationState, cycle: int) -> None:
+        """Append the current full bond list to topology.jsonl (one JSON line).
+
+        Written only when connectivity changed, so the file is a compact,
+        replayable history: line 0 is the initial topology (cycle -1), each later
+        line the connectivity after a cycle that formed a bond.  The XYZ exporter
+        replays it to attach the correct bonds to each frame.
+        """
+        if self._topology_log is None or self._topology is None:
+            return
+        record = {
+            'step': state.step,
+            'cycle': cycle,
+            'n_bonds': len(self._topology),
+            'bonds': [[i, j, o] for i, j, o in self._topology.bonds()],
+        }
+        with open(self._topology_log, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record) + '\n')
 
     # Cap on rejected candidates written per cycle; large systems can enumerate
     # many. Selected candidates are always written in full.

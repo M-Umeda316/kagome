@@ -31,7 +31,10 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import numpy as np
 
-from scripts._systems import build_vinyl_aibn_system, build_full_aibn_system, build_activation_template
+from scripts._systems import (
+    build_vinyl_aibn_system, build_full_aibn_system, build_activation_template,
+    vinyl_initial_bonds, full_aibn_initial_bonds,
+)
 from kagome.backends.base import Calculator
 from kagome.boost.tdbb import TDBBParams
 from kagome.integrators.init_velocities import maxwell_boltzmann_velocities
@@ -425,6 +428,34 @@ def main() -> None:
         config.minimize, config.minimize_fmax, config.equil_steps,
     )
 
+    # Initial bond topology for trajectory output (specs/decisions.md 2026-07-02):
+    # viewers use real connectivity instead of distance inference. Best-effort —
+    # never fail the expensive run over topology extraction.
+    init_bonds = None
+    try:
+        if args.activation:
+            init_bonds = full_aibn_initial_bonds(
+                n_monomers=args.n_monomers, n_aibn=args.n_initiators,
+                rdkit_seed=args.seed,
+            )
+        else:
+            init_bonds = vinyl_initial_bonds(
+                n_monomers=args.n_monomers, n_initiators=args.n_initiators,
+                initiator_smiles=_init_smiles, rdkit_seed=args.seed,
+            )
+            logger.info(
+                'Non-activation path: initiator is the CLOSED-SHELL '
+                'isobutyronitrile model (radical C carries a placeholder H; '
+                'raw geometry over-coordinates by 1 on the first addition, '
+                'idealized in the emitted topology). For valence-faithful '
+                'initiator chemistry, use --activation (decomposes intact AIBN '
+                'to genuine 3-coordinate radicals). See specs/decisions.md '
+                '2026-07-02.'
+            )
+    except Exception as exc:  # noqa: BLE001 — topology output is non-critical
+        logger.warning('Bond-topology extraction failed (%s); trajectory will '
+                       'carry no explicit bonds.', exc)
+
     wf = PolymerizationWorkflow(
         config, calc, template, groups,
         integrator=integrator,
@@ -433,6 +464,7 @@ def main() -> None:
         propagation_map=propagation_map,
         propagation_target_group='radical_C',
         chain_c_map=chain_c_map,
+        initial_bonds=init_bonds,
     )
 
     n_activation_dissoc = 0
@@ -491,6 +523,14 @@ def main() -> None:
         )
         n_activation_dissoc = len(dissociated)
         logger.info('Activation result: %d C-N bonds dissociated', n_activation_dissoc)
+
+        # Reflect activation in the tracked topology: the dissociated azo C-N
+        # bonds are broken, leaving two isobutyronitrile radicals + N2 per AIBN
+        # (valence-correct). The post-activation topology is what wf.run() emits
+        # as the initial trajectory connectivity.
+        if wf._topology is not None:
+            for c_idx, n_idx in dissociated:
+                wf._topology.remove_bond(c_idx, n_idx)
 
         if dissociated:
             n_radicals = len(groups['radical_C'].atom_indices)
