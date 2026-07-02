@@ -1287,6 +1287,17 @@ class PolymerizationWorkflow:
                         'Activation: C-N dissociation at step %d, atoms (%d, %d), r=%.2f A',
                         step_in_phase + 1, p.idx_a, p.idx_b, r,
                     )
+                    if self.bond_tracker:
+                        from kagome.reactive.bonds import BondEvent
+                        self.bond_tracker._events.append(BondEvent(
+                            step=state.step,
+                            cycle=-1,
+                            atom_a=p.idx_a,
+                            atom_b=p.idx_b,
+                            event_type='confirmed_dissociation',
+                            distance=r,
+                            r0=dissoc_threshold,
+                        ))
 
             if len(dissociated) == len(pairs):
                 logger.info(

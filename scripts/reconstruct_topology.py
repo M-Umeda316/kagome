@@ -20,6 +20,7 @@ from pathlib import Path
 
 from kagome.reactive.topology import (
     BondTopology, apply_vinyl_addition, over_coordinated_atoms,
+    vinyl_addition_over_coordinates,
 )
 
 
@@ -93,22 +94,32 @@ def main() -> None:
           f'{len(species)} atoms, seed {seed}')
 
     topo = BondTopology.from_bonds(init_bonds)
-    for c, nn in azo:  # activation dissociated the azo C-N bonds
-        topo.remove_bond(c, nn)
 
     events = [json.loads(l) for l in open(args.run / 'bonds.jsonl', encoding='utf-8')]
+    dissoc = [e for e in events if e['event_type'] == 'confirmed_dissociation']
+    if dissoc:
+        for e in dissoc:
+            topo.remove_bond(e['atom_a'], e['atom_b'])
+    else:
+        for c, nn in azo:
+            topo.remove_bond(c, nn)
+
     conf = sorted((e for e in events if e['event_type'] == 'confirmed_formation'),
                   key=lambda e: e['step'])
 
     out = args.run / 'topology.jsonl'
     with open(out, 'w', encoding='utf-8') as f:
-        # initial snapshot (cycle -1) at the first recorded step, or 0.
-        first_step = conf[0]['step'] if conf else 0
         f.write(json.dumps({
             'step': 0, 'cycle': -1, 'n_bonds': len(topo),
             'bonds': [[i, j, o] for i, j, o in topo.bonds()],
         }) + '\n')
+        skipped = 0
         for e in conf:
+            bad = vinyl_addition_over_coordinates(
+                topo, e['atom_a'], e['atom_b'], pmap, species)
+            if bad:
+                skipped += 1
+                continue
             apply_vinyl_addition(topo, e['atom_a'], e['atom_b'], pmap, species)
             f.write(json.dumps({
                 'step': e['step'], 'cycle': e['cycle'], 'n_bonds': len(topo),
@@ -116,7 +127,7 @@ def main() -> None:
             }) + '\n')
 
     over = over_coordinated_atoms(topo, species)
-    print(f'replayed {len(conf)} confirmed formations -> {out}')
+    print(f'replayed {len(conf)} confirmed formations ({skipped} skipped by valence guard) -> {out}')
     print('valence: ' + ('OK - no over-coordinated atoms' if not over
                          else f'OVER-COORDINATED: {over}'))
 
