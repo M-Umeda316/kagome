@@ -60,7 +60,7 @@ def find_candidates(
         idx_a = label_list.index(ps.group_a)
         idx_b = label_list.index(ps.group_b)
         pair_specs[(min(idx_a, idx_b), max(idx_a, idx_b))] = ps
-        if ps.is_formation:
+        if ps.is_formation and not ps.constraint_only:
             formation_group_pairs.add((min(idx_a, idx_b), max(idx_a, idx_b)))
 
     candidates: list[Candidate] = []

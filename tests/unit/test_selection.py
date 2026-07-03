@@ -343,3 +343,77 @@ class TestFourGroupTemplate:
         ])
         cands = find_candidates(template, groups, positions)
         assert len(cands) == 1
+
+
+class TestTopologyGuardWithConstraints:
+    """L6 topology guard must NOT reject candidates based on constraint_only pairs.
+
+    Regression: constraint_only pairs (e.g. radical_C-chain_C) whose atoms are
+    bonded in the initial topology were incorrectly included in
+    formation_group_pairs, causing ALL candidates to be rejected at cycle 0.
+    """
+
+    def test_constraint_bonded_pair_does_not_block_candidates(self):
+        """4-group vinyl template: radical_C-chain_C constraint pair is bonded
+        in the initial topology, but candidates must still be found."""
+        from kagome.reactive.topology import BondTopology
+
+        template = ReactionTemplate(
+            name='vinyl_test',
+            groups=['radical_C', 'vinyl_alpha_C', 'chain_C', 'vinyl_beta_C'],
+            pairs=[
+                PairSpec('radical_C', 'vinyl_alpha_C', is_formation=True,
+                         r_min=1.0, r_max=6.0),
+                PairSpec('radical_C', 'chain_C', is_formation=True,
+                         r_min=0.0, r_max=3.0, constraint_only=True),
+                PairSpec('vinyl_alpha_C', 'vinyl_beta_C', is_formation=True,
+                         r_min=0.0, r_max=3.0, constraint_only=True),
+            ],
+        )
+        groups = {
+            'radical_C':      ReactiveGroup('radical_C', [0]),
+            'vinyl_alpha_C':  ReactiveGroup('vinyl_alpha_C', [3]),
+            'chain_C':        ReactiveGroup('chain_C', [1]),
+            'vinyl_beta_C':   ReactiveGroup('vinyl_beta_C', [4]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],   # 0: radical_C
+            [1.5, 0.0, 0.0],   # 1: chain_C (bonded to radical_C)
+            [5.0, 5.0, 5.0],   # 2: filler
+            [4.0, 0.0, 0.0],   # 3: vinyl_alpha_C (4 Å from radical_C)
+            [5.3, 0.0, 0.0],   # 4: vinyl_beta_C (1.3 Å from alpha)
+        ])
+        topo = BondTopology.from_bonds([(0, 1, 1.0), (3, 4, 2.0)])
+
+        cands_no_topo = find_candidates(template, groups, positions)
+        assert len(cands_no_topo) >= 1
+
+        cands_with_topo = find_candidates(template, groups, positions, topology=topo)
+        assert len(cands_with_topo) >= 1, (
+            'Topology guard on constraint_only pair blocked all candidates'
+        )
+
+    def test_actual_formation_pair_bonded_is_excluded(self):
+        """The main formation pair (radical_C-alpha_C) should be excluded when
+        those atoms are already bonded (L6 original intent)."""
+        from kagome.reactive.topology import BondTopology
+
+        template = ReactionTemplate(
+            name='simple_formation',
+            groups=['A', 'B'],
+            pairs=[PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=5.0)],
+        )
+        groups = {
+            'A': ReactiveGroup('A', [0]),
+            'B': ReactiveGroup('B', [1]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ])
+        topo = BondTopology.from_bonds([(0, 1, 1.0)])
+
+        cands = find_candidates(template, groups, positions, topology=topo)
+        assert len(cands) == 0, (
+            'Already-bonded main formation pair should be excluded'
+        )
