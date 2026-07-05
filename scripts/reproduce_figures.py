@@ -193,19 +193,50 @@ def plot_density_profile(
         for f in frames
         if f.step in event_steps and f.positions
     }
+    # Per-event cell for the PBC midpoint correction (NPT: box varies per frame).
+    cells_at_event: dict[int, np.ndarray] = {
+        f.step: np.array(f.cell)
+        for f in frames
+        if f.step in event_steps and f.cell is not None
+    }
 
     if not positions_at_event:
         print('No trajectory frames match bond event steps -- skipping density plot.')
         return
 
-    all_z = np.concatenate([pos[:, 2] for pos in positions_at_event.values()])
-    z_min, z_max = float(all_z.min()), float(all_z.max())
-    z_bins = np.linspace(z_min, z_max, n_z_bins + 1)
+    # Representative cell (mean over all sampled frames that recorded one). Used
+    # for the default cross-sectional area and z-bin range so the profile follows
+    # the paper definition rho_rxn(z) = N_rxn(z)/(A*dz*N_frames) instead of the
+    # data min/max span. See specs/decisions.md 2026-07-06 (A1/A2/A3).
+    frame_cells = [np.array(f.cell) for f in frames if f.cell is not None]
 
-    area_xy = cell_xy_area if cell_xy_area is not None else (z_max - z_min) ** 2
+    if cell_xy_area is not None:
+        area_xy = cell_xy_area
+    elif frame_cells:
+        mean_cell = np.mean(frame_cells, axis=0)
+        area_xy = float(abs(mean_cell[0, 0] * mean_cell[1, 1]))
+    else:
+        raise ValueError(
+            'Density profile needs a cross-sectional area: no cell recorded in '
+            'the trajectory frames and --cell-xy-area not given. Re-run with a '
+            'periodic trajectory (frames carry a cell) or pass --cell-xy-area. '
+            'The old (z_max-z_min)**2 fallback was not a valid xy area.'
+        )
+
+    if frame_cells:
+        # Wrapped positions live in [0, Lz); bin over the full box height.
+        lz = float(np.mean([c[2, 2] for c in frame_cells]))
+        z_bins = np.linspace(0.0, lz, n_z_bins + 1)
+    else:
+        all_z = np.concatenate([pos[:, 2] for pos in positions_at_event.values()])
+        z_bins = np.linspace(float(all_z.min()), float(all_z.max()), n_z_bins + 1)
+
+    # N_frames is every sampled trajectory frame in the analysis window (paper
+    # definition), NOT the number of event steps (A2).
     density = reaction_density_profile(
         formations, positions_at_event, z_bins, area_xy,
-        n_frames=len(positions_at_event),
+        n_frames=len(frames),
+        cells_at_event=cells_at_event or None,
     )
 
     z_centers = 0.5 * (z_bins[:-1] + z_bins[1:])
@@ -315,7 +346,8 @@ def main() -> None:
                         help='MD timestep in fs (for Eq. 11 exponential fit). Default 1.0.')
     parser.add_argument('--cell-xy-area', type=float, default=None,
                         help='Cross-sectional area (Å²) for density normalization. '
-                             'Defaults to (z_range)² if omitted.')
+                             'If omitted, computed from the trajectory cell '
+                             '(mean Lx*Ly); errors if no cell was recorded.')
     parser.add_argument('--summary', type=Path, nargs='+', default=None,
                         help='summary.json file(s) for S2 diagnostics plot.')
     parser.add_argument('--output-dir', type=Path, default=Path('runs/smoke/figures'))

@@ -19,6 +19,7 @@ def reaction_density_profile(
     area_xy: float,
     n_frames: int = 1,
     cell: NDArray[np.floating] | None = None,
+    cells_at_event: dict[int, NDArray[np.floating]] | None = None,
 ) -> NDArray[np.floating]:
     """Depth-resolved reaction density (PDF p.12, unnumbered).
 
@@ -26,8 +27,13 @@ def reaction_density_profile(
     positions_at_event: {step: positions_array} for each event step
     z_bins: bin edges along z-axis (Å)
     area_xy: cross-sectional area in Å²
-    n_frames: number of frames averaged over
-    cell: (3,3) cell matrix for PBC midpoint correction (None = no PBC)
+    n_frames: number of frames averaged over (all sampled trajectory frames in
+        the analysis window, per the paper's N_frames — NOT the number of events)
+    cell: (3,3) cell matrix for PBC midpoint correction (None = no PBC).
+        Used as the fallback when ``cells_at_event`` has no entry for an event.
+    cells_at_event: {step: (3,3) cell} giving the box at each event's frame.
+        NPT lets the box vary, so the midpoint correction must use the event's
+        own cell; falls back to ``cell`` when a step is absent.
 
     Returns density array of shape (len(z_bins)-1,).
     """
@@ -38,7 +44,10 @@ def reaction_density_profile(
         if ev.step not in positions_at_event:
             continue
         pos = positions_at_event[ev.step]
-        z_mid = _pbc_midpoint_z(pos[ev.atom_a], pos[ev.atom_b], cell)
+        ev_cell = cell
+        if cells_at_event is not None and ev.step in cells_at_event:
+            ev_cell = cells_at_event[ev.step]
+        z_mid = _pbc_midpoint_z(pos[ev.atom_a], pos[ev.atom_b], ev_cell)
         bin_idx = np.searchsorted(z_bins, z_mid, side='right') - 1
         if 0 <= bin_idx < len(counts):
             counts[bin_idx] += 1

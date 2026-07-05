@@ -613,6 +613,7 @@ class PolymerizationWorkflow:
                         energy_bias=0.0,
                         energy_total=0.0,
                         positions=state.positions.tolist(),
+                        cell=None if state.cell is None else state.cell.tolist(),
                     ))
                 if self.config.minimize:
                     self._minimize(state, writer)
@@ -815,6 +816,7 @@ class PolymerizationWorkflow:
                     energy_total=energy,
                     positions=state.positions.tolist(),
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
+                    cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
         logger.info('Equilibration: %d steps complete', self.config.equil_steps)
@@ -971,6 +973,7 @@ class PolymerizationWorkflow:
                     n_candidates=len(candidates),
                     n_selected=len(selected),
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
+                    cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
             if self.bond_tracker is not None:
@@ -1077,6 +1080,7 @@ class PolymerizationWorkflow:
                     energy_total=energy,
                     positions=state.positions.tolist(),
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
+                    cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
         if self.bond_tracker:

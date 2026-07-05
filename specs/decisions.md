@@ -1257,3 +1257,32 @@ Use this template for each decision.
 - Scientific risk: None. ビニル系では dissociation イベントがないため影響なし。縮合系のサイト保存が正しくなる。
 - Licensing/commercial impact: None.
 - Follow-up: 縮合系のエンドツーエンドテストで検証。
+
+## 2026-07-06: A1/A2/A3 — 密度プロファイルの PBC・N_frames・面積を論文定義に整合(ユーザー承認 2026-07-06)
+- Context: `scripts/reproduce_figures.py::plot_density_profile` が (1) `reaction_density_profile` に `cell` を渡さず PBC 中点補正を無効化、(2) `n_frames` にイベント発生 step 数 `len(positions_at_event)` を渡し論文定義(全サンプリングフレーム数)と乖離、(3) セル未指定時の面積を `(z_max−z_min)**2`(xy 断面積として無意味)でフォールバックしていた。レビュー指摘 A1/A2/A3。
+- Paper anchor: PDF p.12 unnumbered eq. ρ_rxn(z) = N_rxn(z) / (A · Δz · N_frames)。A は xy 断面積、N_frames は解析窓の全サンプリングフレーム数。
+- Decision:
+  (a) `TrajectoryFrame` に `cell`(オプション, 既定 None)を追加し、initial/equilibration/biased/unbiased の各フレーム書き込みで `state.cell` を記録する(NPT で箱が変動するため per-frame)。旧トラジェクトリは cell 欠落 → None で後方互換。
+  (b) `reaction_density_profile` に `cells_at_event`(step→cell)を追加。イベントごとにそのフレームのセルで PBC 中点補正する。
+  (c) `n_frames = len(frames)`(全サンプリングフレーム)。イベント step 数は使わない。
+  (d) 面積 A は `--cell-xy-area` 指定時はそれ、未指定時はフレームセルの平均 Lx·Ly。セルも面積も無ければ明示エラーで中断(旧 `(z_max−z_min)**2` フォールバックは廃止)。
+  (e) z ビン範囲はセルがあれば [0, ⟨Lz⟩) を既定(wrap 済み座標 [0,Lz) に整合)。データ min/max 依存はセル無し・面積指定時のみのフォールバックとして残す。
+- Ask-first 該当: z ビン範囲の [0, Lz) 既定化は「図の平均化・範囲変更」に該当するが、本修正は論文定義への接近であり、2026-07-06 にユーザー承認済み。
+- Alternatives considered: (a) 単一 cell(初期箱)で全イベント処理 — NPT で箱が変わるため中点・面積が不正確。棄却。(b) 面積を per-event の Lx·Ly で可変にする — ρ の定義は固定 A を前提とするため、平均 A を採用。
+- Scientific risk: 中。図の縦軸スケール(絶対密度)と z 範囲が変わる。過去 run の密度図は再生成が必要。定義正確化のため許容。
+- Licensing/commercial impact: None.
+- Follow-up: `tests/unit/test_density.py` に PBC 中点・N_frames 正規化・面積欠落エラーのテストを追加。
+
+## 2026-07-06: A5 — 縮合(nylon)1 反応 = 主形成ペア 1 件で計数、水形成イベントはバイアス・トポロジー用途のみ(ユーザー承認 2026-07-06)
+- Context: nylon テンプレートの amine_H–carboxyl_OH ペアは `is_formation=True, score_pair=False` だが `constraint_only=False` のため `_build_pair_biases` で通常の formation PairBias になり、独立に `confirmed_formation` を発行しうる。結果 1 縮合反応(アミド結合 1 本 + 水 1 分子)が amine_N–carboxyl_C と amine_H–carboxyl_OH の 2 件の confirmed_formation として α(t)・Carothers p に二重計上される。レビュー指摘 A5。
+- Paper anchor: PDF p.22 Table S2(縮合テンプレートの formation/dissociation 対)、Fig.4b-c(Carothers p)。1 縮合反応 = アミド結合 1 本。
+- Decision: 物理的には amine_H–carboxyl_OH の近接バイアス(水の O–H 形成方向)は正しい挙動なのでバイアス自体は維持し、計数だけを主反応(amine_N–carboxyl_C)に限定する。
+  (a) `PairSpec` に `count_as_reaction: bool = True` を追加。nylon の amine_H–carboxyl_OH に `count_as_reaction=False` を設定。
+  (b) `PairBias` と `BondEvent` に `counts_as_reaction`(bool, 既定 True)を伝播。`_build_pair_biases` が `ps.count_as_reaction` を PairBias に載せ、BondTracker が BondEvent に載せて `bonds.jsonl` に記録する。欠落時 True 扱いで後方互換。
+  (c) `BondTracker.confirmed_formations()` は全イベントのまま。計数側(reproduce_figures.py / run_nylon66.py)がイベント読み込み直後に `counts_as_reaction=True` のみをフィルタしてから conversion / carothers に渡す。analysis 関数の引数仕様は不変(docstring に前提明記)。
+- 既存記録 decisions.md 2026-06-13(水は明示モデル化しない)との整合: 水分子そのものは生成せず、TDBB は距離のみバイアスする点は不変。本決定は「水形成方向のバイアスイベントを反応計数に含めない」だけを追加規定する。
+- Ask-first 該当: 計数定義の変更(縮合 1 反応 = 主形成ペア 1 件)は 2026-07-06 にユーザー承認済み。
+- Alternatives considered: `candidate_id` によるユニーク化(同一候補の複数 formation を 1 と数える)— スキーマ変更不要だが「どちらが主反応か」の情報が残らず、density での位置も曖昧になるため棄却。
+- Scientific risk: 中。nylon の α(t)・p が従来比で下がる(二重計上の解消)。vinyl は amine_H 等を持たず、constraint_only の連鎖ペアは _build_pair_biases で除外済みのため計数不変。
+- Licensing/commercial impact: None.
+- Follow-up: 合成イベント列(同一 candidate_id で 2 formation)で α・p が 1 反応分になるユニットテストを追加。bonds.jsonl 旧フォーマット読み込み互換を担保。
