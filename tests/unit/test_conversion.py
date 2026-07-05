@@ -177,6 +177,56 @@ class TestFitConversionExponential:
         assert 'skipping fit' in caplog.text
 
 
+class TestCondensationCounting:
+    """A5: one nylon condensation (amide bond + water) must count as one
+    reaction, not two, in alpha(t) and Carothers p."""
+
+    def _condensation_events(self):
+        # Same candidate: the amide bond (counts) and the water O-H (bias-only).
+        return [
+            BondEvent(step=100, cycle=0, atom_a=0, atom_b=1,
+                      event_type='confirmed_formation', distance=1.5,
+                      candidate_id=0, counts_as_reaction=True),
+            BondEvent(step=100, cycle=0, atom_a=2, atom_b=3,
+                      event_type='confirmed_formation', distance=0.95,
+                      candidate_id=0, counts_as_reaction=False),
+        ]
+
+    def test_alpha_counts_condensation_once(self):
+        events = self._condensation_events()
+        steps = np.array([0, 100, 200], dtype=np.int64)
+
+        counted = [e for e in events if e.counts_as_reaction]
+        _, alpha = conversion_timeseries(counted, n_total_sites=4, step_range=steps)
+        assert alpha[1] == pytest.approx(0.25)  # 1 reaction / 4
+
+        # Without the filter both formations count -> double (regression guard).
+        _, alpha_double = conversion_timeseries(events, n_total_sites=4, step_range=steps)
+        assert alpha_double[1] == pytest.approx(0.50)
+
+    def test_carothers_p_counts_condensation_once(self):
+        from kagome.analysis.carothers import dpn_from_bonds
+        events = self._condensation_events()
+        n_bonds = len([e for e in events
+                       if e.event_type == 'confirmed_formation' and e.counts_as_reaction])
+        assert n_bonds == 1
+        # 4 functional groups (2 amine_N + 2 carboxyl_C) -> p = 1/(4/2) = 0.5
+        dpn = dpn_from_bonds(n_bonds=n_bonds, n_functional_groups=4)
+        assert dpn == pytest.approx(1.0 / (1.0 - 0.5))
+
+    def test_vinyl_events_unaffected(self):
+        """vinyl formations carry counts_as_reaction=True (default), so the
+        filter is a no-op for vinyl."""
+        events = [
+            BondEvent(step=100, cycle=0, atom_a=0, atom_b=1,
+                      event_type='confirmed_formation', distance=1.5),
+            BondEvent(step=200, cycle=1, atom_a=2, atom_b=3,
+                      event_type='confirmed_formation', distance=1.5),
+        ]
+        counted = [e for e in events if e.counts_as_reaction]
+        assert len(counted) == 2
+
+
 class TestConversionTimeseriesStepRange:
     """A6: sampling on a supplied step grid must match the dense default at the
     same steps (the grid only changes resolution, not the values)."""

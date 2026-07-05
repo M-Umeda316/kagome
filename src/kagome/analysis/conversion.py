@@ -52,6 +52,11 @@ def conversion_timeseries(
 
     n_total_sites should be the initial monomer count (PDF p.9 Fig.2,
     α = 1 − [M]/[M]₀).  Returns (steps, alpha) arrays.
+
+    Counting convention (A5): every ``confirmed_formation`` in *events* is
+    counted.  Callers that mix in bias-only water-forming events (nylon k-l)
+    must drop ``counts_as_reaction=False`` events before calling, so one
+    condensation = one amide bond (specs/decisions.md 2026-07-06).
     """
     formations = [e for e in events if e.event_type == 'confirmed_formation']
     if not formations:

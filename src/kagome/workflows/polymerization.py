@@ -1399,5 +1399,6 @@ class PolymerizationWorkflow:
                     is_formation=ps.is_formation,
                     r0=r0,
                     candidate_id=cand_idx,
+                    counts_as_reaction=ps.count_as_reaction,
                 ))
         return pairs

@@ -39,6 +39,10 @@ class BondEvent:
     distance: float
     r0: float = 0.0
     candidate_id: int = -1
+    # Whether a confirmed formation counts toward alpha/Carothers p. Default
+    # True keeps old bonds.jsonl (field absent) backward compatible; nylon
+    # water-forming k-l events carry False (specs/decisions.md 2026-07-06 A5).
+    counts_as_reaction: bool = True
 
 
 class BondTracker:
@@ -103,6 +107,7 @@ class BondTracker:
                 atom_a=pair.idx_a, atom_b=pair.idx_b,
                 event_type=etype, distance=r, r0=pair.r0,
                 candidate_id=pair.candidate_id,
+                counts_as_reaction=pair.counts_as_reaction,
             )
             self._events.append(ev)
             self._tentative.add(pair_key)
@@ -130,6 +135,7 @@ class BondTracker:
                 atom_a=pair.idx_a, atom_b=pair.idx_b,
                 event_type=etype, distance=r, r0=pair.r0,
                 candidate_id=pair.candidate_id,
+                counts_as_reaction=pair.counts_as_reaction,
             ))
             self._pending.append((pair, cycle))
 
@@ -157,6 +163,7 @@ class BondTracker:
                         event_type='confirmed_formation',
                         distance=r, r0=pair.r0,
                         candidate_id=pair.candidate_id,
+                        counts_as_reaction=pair.counts_as_reaction,
                     )
                     self._events.append(ev)
                     self._reacted.add(reacted_key)
@@ -169,6 +176,7 @@ class BondTracker:
                         event_type='confirmed_dissociation',
                         distance=r, r0=pair.r0,
                         candidate_id=pair.candidate_id,
+                        counts_as_reaction=pair.counts_as_reaction,
                     )
                     self._events.append(ev)
                     self._reacted.add(reacted_key)

@@ -141,6 +141,11 @@ def plot_conversion_vs_step(
         print(f'No bond events in {bonds_path} --skipping conversion plot.')
         return
 
+    # A5: exclude bias-only water-forming events (nylon k-l) from the reaction
+    # count so one condensation = one amide bond. Old bonds.jsonl lack the field
+    # and load as counts_as_reaction=True (unchanged behaviour for vinyl).
+    events = [e for e in events if e.counts_as_reaction]
+
     step_range, alpha = conversion_timeseries(
         events, n_total_sites, step_range=step_range,
     )

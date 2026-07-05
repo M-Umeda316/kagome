@@ -38,6 +38,11 @@ def dpn_from_bonds(
     modeled here. ``n_functional_groups`` is the total number of reactive end
     groups (A + B); for equimolar systems each type contributes
     ``n_functional_groups / 2``.
+
+    Counting convention (A5): ``n_bonds`` is the number of amide bonds, i.e.
+    ``confirmed_formation`` events with ``counts_as_reaction=True``. Bias-only
+    water-forming k-l events must be excluded by the caller so one condensation
+    counts once (specs/decisions.md 2026-07-06).
     """
     if n_functional_groups <= 0:
         return 1.0

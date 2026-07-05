@@ -254,9 +254,18 @@ def main() -> None:
         n_monomers=n_reactive_sites,
     )
 
-    n_form = len(tracker.confirmed_formations())
+    # A5: count one condensation per amide bond (amine_N-carboxyl_C). The paired
+    # water-forming k-l event carries counts_as_reaction=False and is excluded,
+    # so it is not double-counted toward Carothers p / alpha(t).
+    all_formations = tracker.confirmed_formations()
+    counted_formations = [e for e in all_formations if e.counts_as_reaction]
+    n_form = len(counted_formations)
+    n_form_all = len(all_formations)
     n_dissoc = len(tracker.confirmed_dissociations())
-    logger.info('Confirmed formations: %d, dissociations: %d', n_form, n_dissoc)
+    logger.info(
+        'Confirmed formations: %d counted (%d total incl. water-forming), '
+        'dissociations: %d', n_form, n_form_all, n_dissoc,
+    )
     summary = {
         'total_steps': state.step,
         'n_diamines': args.n_diamines,
@@ -285,12 +294,28 @@ def main() -> None:
         ],
     }
 
+    # Primary nylon metric is the Carothers extent of reaction p (decisions.md
+    # 2026-07-06 / 2026-06-19 RF2:852): one amide bond per counted condensation.
+    from kagome.analysis.carothers import dpn_from_bonds
+    dpn = dpn_from_bonds(n_bonds=n_form, n_functional_groups=n_reactive_sites)
+    p_extent = n_form / (n_reactive_sites / 2) if n_reactive_sites > 0 else 0.0
+    summary['carothers_p'] = p_extent
+    summary['carothers_dpn'] = dpn
+    logger.info('Carothers: p=%.4f, DPn=%.3f (n_bonds=%d, n_groups=%d)',
+                p_extent, dpn, n_form, n_reactive_sites)
+
     out_path = args.output_dir / 'summary.json'
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
     logger.info('Done. Results in %s', args.output_dir)
 
-    print('\nTo generate figures:')
+    print('\nPrimary nylon metric is Carothers p (extent of reaction): '
+          f'p={p_extent:.4f}, DPn={dpn:.3f}. See summary.json.')
+    print(
+        '\nTo generate figures (alpha(t)/Eq.11 is a secondary view; its '
+        'denominator --n-reactive-sites is the count of reactive end groups, '
+        f'amine_N + carboxyl_C = {n_reactive_sites}):'
+    )
     print(
         f'  python scripts/reproduce_figures.py '
         f'--trajectory {args.output_dir}/trajectory.jsonl '
