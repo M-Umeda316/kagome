@@ -569,8 +569,13 @@ class PolymerizationWorkflow:
 
             # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
             # must be reconstructable from artifacts, not just n_candidates counts.
-            self._selection_log = output_dir / 'selection.jsonl'
-            if not resuming:
+            # run_activation (S1) may already have set the log to this path and
+            # freshly truncated it; in that case do NOT re-truncate here or the
+            # activation-phase records would be lost.
+            selection_log_path = output_dir / 'selection.jsonl'
+            already_logging = self._selection_log == selection_log_path
+            self._selection_log = selection_log_path
+            if not resuming and not already_logging:
                 self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
 
             # Explicit bond-topology history (specs/decisions.md 2026-07-02).
@@ -1190,9 +1195,16 @@ class PolymerizationWorkflow:
     # many. Selected candidates are always written in full.
     _MAX_REJECTED_LOGGED = 500
 
-    def _write_selection_audit(self, cycle: int, decisions: list) -> None:
+    def _write_selection_audit(
+        self, cycle: int, decisions: list, phase: str = 'production',
+    ) -> None:
         """Append one JSON line recording the cycle's candidate ranking and the
-        non-overlap selection/rejection decisions (RF18)."""
+        non-overlap selection/rejection decisions (RF18).
+
+        ``phase`` distinguishes the activation selection (S1) from the production
+        cycles. It is only emitted when non-default so existing production records
+        stay byte-identical; readers treat a missing ``phase`` as 'production'.
+        """
         if self._selection_log is None:
             return
         selected = [d for d in decisions if d.selected]
@@ -1212,6 +1224,8 @@ class PolymerizationWorkflow:
                 for d in shown
             ],
         }
+        if phase != 'production':
+            record['phase'] = phase
         with open(self._selection_log, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record) + '\n')
         if record['rejected_truncated']:
@@ -1242,6 +1256,7 @@ class PolymerizationWorkflow:
         activation_f2: float = 0.3,
         activation_f1_max: float = 250.0,
         rng: np.random.Generator | None = None,
+        output_dir: Path | None = None,
     ) -> list[tuple[int, int]]:
         """Run AIBN activation phase: V^d on azo C-N bonds until dissociation.
 
@@ -1262,7 +1277,26 @@ class PolymerizationWorkflow:
             activation_template, activation_groups, state.positions, state.cell,
         )
         scored = score_candidates(candidates)
-        selected = select_non_overlapping(scored)
+
+        # S1: audit the activation-phase selection to selection.jsonl. run_activation
+        # runs outside run(), so wire the log target explicitly. If output_dir is
+        # given, freshly initialise the log here (activation is the first phase, so
+        # this is the run's start point); run() detects the pre-set log and will not
+        # re-truncate it, preserving these activation records.
+        if output_dir is not None:
+            self._selection_log = output_dir / 'selection.jsonl'
+            self._selection_log.parent.mkdir(parents=True, exist_ok=True)
+            self._selection_log.write_text('', encoding='utf-8')
+        if self._selection_log is not None:
+            selected, decisions = audited_selection(scored)
+            self._write_selection_audit(-1, decisions, phase='activation')
+        else:
+            logger.warning(
+                'Activation selection not audited: no output_dir given and no '
+                'selection log set. Pass output_dir= to record the activation '
+                'candidate selection to selection.jsonl (S1).'
+            )
+            selected = select_non_overlapping(scored)
 
         import os
         if os.environ.get('KAGOME_DIAG_STARVATION'):
