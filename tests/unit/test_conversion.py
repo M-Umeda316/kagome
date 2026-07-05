@@ -137,3 +137,65 @@ class TestFitConversionExponential:
         alpha = self._synthetic_alpha(1e-4, steps)
         with pytest.raises((ImportError, TypeError)):
             fit_conversion_exponential(steps, alpha)
+
+    def test_production_start_step_recovers_kp(self):
+        """A4/L8: with a production lead-in, only production_start_step lets the
+        fit measure k_p from t=0; ignoring it under-estimates k_p."""
+        pytest.importorskip('scipy')
+        kp_true = 5e-4
+        prod_start = 2000
+        steps = np.arange(prod_start, prod_start + 10000, 100, dtype=np.int64)
+        t_rel = (steps - prod_start).astype(np.float64) * 0.25
+        alpha = 1.0 - np.exp(-kp_true * t_rel)
+
+        kp_wired, r2 = fit_conversion_exponential(
+            steps, alpha, timestep_fs=0.25, production_start_step=prod_start,
+        )
+        assert kp_wired == pytest.approx(kp_true, rel=0.05)
+        assert r2 > 0.99
+
+        kp_unwired, _ = fit_conversion_exponential(steps, alpha, timestep_fs=0.25)
+        # Absolute-time fit sees a delayed rise and under-estimates k_p.
+        assert kp_unwired < kp_wired
+
+    def test_warns_on_zero_alpha(self, caplog):
+        pytest.importorskip('scipy')
+        import logging
+        steps = np.arange(0, 1000, 10, dtype=np.int64)
+        alpha = np.zeros(len(steps))
+        with caplog.at_level(logging.WARNING):
+            fit_conversion_exponential(steps, alpha)
+        assert 'skipping fit' in caplog.text
+
+    def test_warns_on_too_few_points(self, caplog):
+        pytest.importorskip('scipy')
+        import logging
+        steps = np.array([0, 1], dtype=np.int64)
+        alpha = np.array([0.0, 0.5])
+        with caplog.at_level(logging.WARNING):
+            fit_conversion_exponential(steps, alpha)
+        assert 'skipping fit' in caplog.text
+
+
+class TestConversionTimeseriesStepRange:
+    """A6: sampling on a supplied step grid must match the dense default at the
+    same steps (the grid only changes resolution, not the values)."""
+
+    def test_explicit_grid_matches_default(self):
+        events = [
+            BondEvent(step=150, cycle=0, atom_a=0, atom_b=1,
+                      event_type='confirmed_formation', distance=1.8),
+            BondEvent(step=420, cycle=1, atom_a=2, atom_b=3,
+                      event_type='confirmed_formation', distance=1.9),
+        ]
+        # Dense default (every step up to max event).
+        dense_steps, dense_alpha = conversion_timeseries(events, n_total_sites=4)
+        # Coarse grid sampled from the dense one.
+        coarse = np.array([0, 100, 200, 300, 400, 500], dtype=np.int64)
+        _, coarse_alpha = conversion_timeseries(
+            events, n_total_sites=4, step_range=coarse,
+        )
+        dense_lookup = {int(s): a for s, a in zip(dense_steps, dense_alpha)}
+        for s, a in zip(coarse, coarse_alpha):
+            if int(s) in dense_lookup:
+                assert a == pytest.approx(dense_lookup[int(s)])

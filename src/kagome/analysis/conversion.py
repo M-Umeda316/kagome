@@ -6,11 +6,15 @@ Paper: arXiv:2511.22874.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from numpy.typing import NDArray
 
 from kagome.reactive.bonds import BondEvent
 from kagome.reactive.groups import ReactiveGroup
+
+logger = logging.getLogger(__name__)
 
 
 def monomer_site_count(groups: dict[str, ReactiveGroup], monomer_group: str = 'vinyl_alpha_C') -> int:
@@ -108,6 +112,11 @@ def fit_conversion_exponential(
 
     # Guard: need at least some non-zero alpha and non-trivial data
     if alpha.max() < 1e-9 or len(t) < 3:
+        logger.warning(
+            'fit_conversion_exponential: skipping fit (alpha.max=%.3g, n_points=%d); '
+            'need alpha>0 and >=3 points. Returning (kp=0, R2=0).',
+            float(alpha.max()) if alpha.size else 0.0, len(t),
+        )
         return 0.0, 0.0
 
     # Clip alpha to avoid log(0) in curve_fit internals
@@ -119,7 +128,11 @@ def fit_conversion_exponential(
     try:
         popt, _ = curve_fit(model, t, alpha_clipped, p0=[1e-4], bounds=(0, np.inf), maxfev=5000)
         kp_eff = float(popt[0])
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.warning(
+            'fit_conversion_exponential: curve_fit did not converge (%s); '
+            'returning (kp=0, R2=0).', e,
+        )
         return 0.0, 0.0
 
     residuals = alpha_clipped - model(t, kp_eff)

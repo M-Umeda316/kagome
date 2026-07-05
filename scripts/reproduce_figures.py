@@ -124,15 +124,26 @@ def plot_conversion_vs_step(
     n_total_sites: int,
     output_dir: Path,
     timestep_fs: float = 1.0,
+    production_start_step: int = 0,
+    step_range: np.ndarray | None = None,
 ) -> None:
-    """Plot conversion α(t) with Eq. 11 exponential fit overlay."""
+    """Plot conversion α(t) with Eq. 11 exponential fit overlay.
+
+    production_start_step shifts the fit's t=0 to the start of production so
+    k_p is not under-estimated by the equilibration/activation lead-in (L8/A4).
+    step_range, when given, samples α on that grid (e.g. trajectory frame steps)
+    instead of every MD step, avoiding a several-hundred-thousand-iteration
+    Python loop (A6).
+    """
     events = read_bond_events(bonds_path)
 
     if not events:
         print(f'No bond events in {bonds_path} --skipping conversion plot.')
         return
 
-    step_range, alpha = conversion_timeseries(events, n_total_sites)
+    step_range, alpha = conversion_timeseries(
+        events, n_total_sites, step_range=step_range,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -141,10 +152,16 @@ def plot_conversion_vs_step(
     ax.plot(time_ps, alpha * 100.0, linewidth=1.0, color='tab:brown',
             label='Simulation')
 
-    kp_eff, r_sq = fit_conversion_exponential(step_range, alpha, timestep_fs)
+    kp_eff, r_sq = fit_conversion_exponential(
+        step_range, alpha, timestep_fs,
+        production_start_step=production_start_step,
+    )
     if kp_eff > 0:
-        t_fit = np.linspace(0, float(time_ps[-1]), 500)
-        alpha_fit = (1.0 - np.exp(-kp_eff * t_fit * 1000.0)) * 100.0
+        # The fit is defined in production-relative time, so overlay it starting
+        # at the production onset on the raw-time axis.
+        t_prod_ps = production_start_step * timestep_fs / 1000.0
+        t_fit = np.linspace(t_prod_ps, float(time_ps[-1]), 500)
+        alpha_fit = (1.0 - np.exp(-kp_eff * (t_fit - t_prod_ps) * 1000.0)) * 100.0
         ax.plot(t_fit, alpha_fit, '--', color='tab:red', linewidth=1.2,
                 label=f'Eq. 11 fit: $k_{{p,eff}}$={kp_eff:.2e} fs$^{{-1}}$')
         ax.text(0.98, 0.60, f'$R^2$ = {r_sq:.3f}',
@@ -324,6 +341,29 @@ def plot_s2_diagnostics(
     print(f'Saved s2_diagnostics.png/.pdf to {output_dir}')
 
 
+def _infer_production_start_step(manifest_path: Path) -> int | None:
+    """Best-effort production-onset step from a run's manifest.json.
+
+    Sums the pre-production step counts recorded in ``extra`` (equilibration and,
+    when present, activation). Returns None if neither field is available so the
+    caller can warn and fall back to 0. The --production-start-step CLI arg is the
+    reliable override when equilibration was run outside the workflow manifest.
+    """
+    import json
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    extra = data.get('extra') or {}
+    equil = extra.get('equil_steps')
+    activation = extra.get('activation_steps')
+    if equil is None and activation is None:
+        return None
+    return int(equil or 0) + int(activation or 0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Reproduce figures from trajectory')
     parser.add_argument('--trajectory', type=Path, default=None)
@@ -344,6 +384,12 @@ def main() -> None:
                         help='Target temperature in K for reference line in temperature plot')
     parser.add_argument('--timestep-fs', type=float, default=1.0,
                         help='MD timestep in fs (for Eq. 11 exponential fit). Default 1.0.')
+    parser.add_argument('--production-start-step', type=int, default=None,
+                        dest='production_start_step',
+                        help='Global step where production (the cycle loop) begins; '
+                             'the Eq. 11 fit measures k_p from t=0 there (L8/A4). '
+                             'If omitted, inferred from manifest.json '
+                             '(equil_steps + activation_steps), else 0.')
     parser.add_argument('--cell-xy-area', type=float, default=None,
                         help='Cross-sectional area (Å²) for density normalization. '
                              'If omitted, computed from the trajectory cell '
@@ -365,7 +411,30 @@ def main() -> None:
         plot_temperature_vs_step(args.trajectory, args.output_dir, args.target_temperature)
 
     if args.trajectory is not None and args.bonds is not None:
-        header, _ = read_trajectory(args.trajectory)
+        header, frames = read_trajectory(args.trajectory)
+
+        # Sample alpha(t) on the recorded frame steps rather than every MD step
+        # (A6): turns a several-hundred-thousand-iteration loop into one pass over
+        # the (few thousand) sampled frames.
+        step_range = None
+        if frames:
+            step_range = np.array(sorted({f.step for f in frames}), dtype=np.int64)
+
+        # Production onset for the Eq. 11 fit (L8/A4): CLI arg wins; else infer
+        # from the run manifest; else 0 with a warning.
+        production_start = args.production_start_step
+        if production_start is None:
+            inferred = _infer_production_start_step(args.bonds.parent / 'manifest.json')
+            if inferred is None:
+                print(
+                    'WARNING: could not infer --production-start-step from '
+                    'manifest.json (no equil_steps/activation_steps); using 0. '
+                    'k_p may be under-estimated if the run had an '
+                    'equilibration/activation lead-in.'
+                )
+                production_start = 0
+            else:
+                production_start = inferred
 
         # Priority: explicit CLI arg > trajectory header > deprecated fallback
         n_sites = args.n_reactive_sites
@@ -385,7 +454,9 @@ def main() -> None:
             n_sites = n_atoms
 
         plot_conversion_vs_step(args.bonds, n_sites, args.output_dir,
-                               timestep_fs=args.timestep_fs)
+                               timestep_fs=args.timestep_fs,
+                               production_start_step=production_start,
+                               step_range=step_range)
         plot_density_profile(
             args.bonds, args.trajectory, args.output_dir,
             cell_xy_area=args.cell_xy_area,
