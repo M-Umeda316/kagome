@@ -349,10 +349,12 @@ def plot_s2_diagnostics(
 def _infer_production_start_step(manifest_path: Path) -> int | None:
     """Best-effort production-onset step from a run's manifest.json.
 
-    Sums the pre-production step counts recorded in ``extra`` (equilibration and,
-    when present, activation). Returns None if neither field is available so the
-    caller can warn and fall back to 0. The --production-start-step CLI arg is the
-    reliable override when equilibration was run outside the workflow manifest.
+    Priority (A4): ``extra['production_start_step']`` — the exact post-equilibration
+    step the workflow recorded — is used first. Otherwise falls back to summing the
+    pre-production step counts recorded in ``extra`` (equilibration and, when
+    present, activation). Returns None if none of these are available so the caller
+    can warn and fall back to 0. The --production-start-step CLI arg is the reliable
+    override when equilibration was run outside the workflow manifest.
     """
     import json
     if not manifest_path.exists():
@@ -362,6 +364,10 @@ def _infer_production_start_step(manifest_path: Path) -> int | None:
     except (OSError, json.JSONDecodeError):
         return None
     extra = data.get('extra') or {}
+    # The workflow records the true production onset directly; prefer it.
+    recorded = extra.get('production_start_step')
+    if recorded is not None:
+        return int(recorded)
     equil = extra.get('equil_steps')
     activation = extra.get('activation_steps')
     if equil is None and activation is None:

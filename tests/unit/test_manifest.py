@@ -96,6 +96,83 @@ class TestRunManifest:
         assert ex['backend'] == 'toy'
 
 
+class TestAppendResume:
+    """W1: resume must preserve the original run's provenance, not overwrite it."""
+
+    def _fresh(self, tmp_path):
+        manifest = RunManifest(
+            config_path='c', seed=7, backend='toy', output_dir=str(tmp_path),
+            extra={'equil_steps': 500},
+        )
+        out = tmp_path / 'manifest.json'
+        manifest.save(out)
+        return out, manifest
+
+    def test_original_git_sha_preserved(self, tmp_path):
+        out, manifest = self._fresh(tmp_path)
+        original_sha = manifest.git_sha
+        original_ts = manifest.timestamp
+
+        ok = RunManifest.append_resume(out, ckpt_step=1234, ckpt_cycle=5)
+        assert ok is True
+        data = json.loads(out.read_text(encoding='utf-8'))
+        # Top-level provenance of the original run is untouched.
+        assert data['git_sha'] == original_sha
+        assert data['timestamp'] == original_ts
+        assert data['seed'] == 7
+
+    def test_resume_history_grows_by_one(self, tmp_path):
+        out, _ = self._fresh(tmp_path)
+        RunManifest.append_resume(out, ckpt_step=100, ckpt_cycle=1)
+        RunManifest.append_resume(out, ckpt_step=200, ckpt_cycle=2)
+        data = json.loads(out.read_text(encoding='utf-8'))
+        history = data['extra']['resume_history']
+        assert len(history) == 2
+        assert history[0]['ckpt_step'] == 100
+        assert history[0]['ckpt_cycle'] == 1
+        assert history[1]['ckpt_step'] == 200
+        for entry in history:
+            assert 'timestamp' in entry
+            assert 'git_sha' in entry
+            assert isinstance(entry['git_dirty'], bool)
+
+    def test_original_extra_preserved(self, tmp_path):
+        out, _ = self._fresh(tmp_path)
+        RunManifest.append_resume(out, ckpt_step=10, ckpt_cycle=0)
+        data = json.loads(out.read_text(encoding='utf-8'))
+        assert data['extra']['equil_steps'] == 500
+
+    def test_result_is_valid_json(self, tmp_path):
+        out, _ = self._fresh(tmp_path)
+        RunManifest.append_resume(out, ckpt_step=10, ckpt_cycle=0)
+        # Must parse cleanly (no truncation/corruption).
+        json.loads(out.read_text(encoding='utf-8'))
+
+    def test_missing_file_returns_false(self, tmp_path):
+        missing = tmp_path / 'nope.json'
+        assert RunManifest.append_resume(missing, ckpt_step=1, ckpt_cycle=1) is False
+
+
+class TestProductionStartStep:
+    """A4: record the post-equilibration production onset for k_p fitting."""
+
+    def test_records_step_into_extra(self, tmp_path):
+        manifest = RunManifest(
+            config_path='c', seed=1, backend='toy', output_dir=str(tmp_path),
+        )
+        out = tmp_path / 'manifest.json'
+        manifest.save(out)
+        RunManifest.record_production_start_step(out, 2048)
+        data = json.loads(out.read_text(encoding='utf-8'))
+        assert data['extra']['production_start_step'] == 2048
+
+    def test_no_op_when_file_missing(self, tmp_path):
+        missing = tmp_path / 'nope.json'
+        # Should not raise.
+        RunManifest.record_production_start_step(missing, 100)
+        assert not missing.exists()
+
+
 class TestGitProvenance:
     """RF17: dirty-working-tree detection so a recorded SHA is trustworthy."""
 

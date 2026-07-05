@@ -267,6 +267,29 @@ class TestPolymerizationWorkflow:
         for d in rec['rejected']:
             assert d['reason'].startswith('overlap')
 
+    def test_manifest_records_production_start_step(self, tmp_path):
+        """A4: post-equilibration production onset is recorded in manifest.json."""
+        template = ReactionTemplate(
+            name='m', groups=['A', 'B'],
+            pairs=[PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=10.0)],
+        )
+        groups = {'A': ReactiveGroup('A', [0, 1]), 'B': ReactiveGroup('B', [2, 3])}
+        config = PolymerizationConfig(
+            biased_steps=2, unbiased_steps=2, n_cycles=1, seed=1, equil_steps=5,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0, 0, 0], [5, 0, 0], [1, 0, 0], [6, 0, 0]], dtype=float),
+            velocities=np.zeros((4, 3)),
+            species=['C'] * 4,
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path)
+
+        data = json.loads((tmp_path / 'manifest.json').read_text(encoding='utf-8'))
+        # 5 equilibration steps ran before the cycle loop; minimize is off.
+        assert data['extra']['production_start_step'] == 5
+
     def test_deterministic_with_seed(self):
         template, groups = _make_simple_setup()
         config = PolymerizationConfig(

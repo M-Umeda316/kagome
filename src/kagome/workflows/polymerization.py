@@ -536,26 +536,36 @@ class PolymerizationWorkflow:
                 len(self.bond_tracker.confirmed_formations()) if self.bond_tracker else 0,
             )
 
+        manifest_path = output_dir / 'manifest.json' if output_dir else None
         if output_dir:
-            effective_params = _normalize_value(asdict(self.config))
-            effective_params['backend'] = self.calculator.name
-            # Resolved weights identity (RF17): two runs with the same backend
-            # name but different weights are otherwise indistinguishable.
-            effective_params['model_id'] = getattr(
-                self.calculator, 'model_id', self.calculator.name)
-            # alpha(t) denominator (RF17): also lives in the trajectory header, but
-            # record it in the manifest so provenance is complete without the JSONL.
-            effective_params['n_reactive_sites'] = n_reactive_sites
-            effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
-            effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
-            manifest = RunManifest(
-                config_path=config_path,
-                seed=self.config.seed,
-                backend=self.calculator.name,
-                output_dir=str(output_dir),
-                extra=effective_params,
-            )
-            manifest.save(output_dir / 'manifest.json')
+            if resuming and manifest_path.exists():
+                # W1: preserve the original run's provenance. Overwriting would
+                # erase the git_sha/timestamp of the code that produced most of
+                # the trajectory; instead append a resume record.
+                ckpt_step = int(_ckpt['step']) if _ckpt is not None else state.step
+                ckpt_cycle = (
+                    int(_ckpt['next_cycle']) if _ckpt is not None else start_cycle)
+                RunManifest.append_resume(manifest_path, ckpt_step, ckpt_cycle)
+            else:
+                effective_params = _normalize_value(asdict(self.config))
+                effective_params['backend'] = self.calculator.name
+                # Resolved weights identity (RF17): two runs with the same backend
+                # name but different weights are otherwise indistinguishable.
+                effective_params['model_id'] = getattr(
+                    self.calculator, 'model_id', self.calculator.name)
+                # alpha(t) denominator (RF17): also lives in the trajectory header, but
+                # record it in the manifest so provenance is complete without the JSONL.
+                effective_params['n_reactive_sites'] = n_reactive_sites
+                effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
+                effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
+                manifest = RunManifest(
+                    config_path=config_path,
+                    seed=self.config.seed,
+                    backend=self.calculator.name,
+                    output_dir=str(output_dir),
+                    extra=effective_params,
+                )
+                manifest.save(manifest_path)
 
             # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
             # must be reconstructable from artifacts, not just n_candidates counts.
@@ -619,6 +629,13 @@ class PolymerizationWorkflow:
                     self._minimize(state, writer)
                 if self.config.equil_steps > 0:
                     self._run_equilibration_phase(state, rng, writer)
+                # A4: capture the true production onset (post-equilibration,
+                # pre-cycle). Activation/equilibration may run outside run(), so
+                # state.step here is what k_p fitting must anchor t=0 to. Only on
+                # fresh runs — resume keeps the original run's recorded value.
+                if manifest_path is not None:
+                    RunManifest.record_production_start_step(
+                        manifest_path, state.step)
 
             for cycle in range(start_cycle, self.config.n_cycles):
                 log_biased = self._run_biased_phase(state, cycle, rng, writer)
