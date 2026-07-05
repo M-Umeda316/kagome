@@ -1280,6 +1280,7 @@ Use this template for each decision.
   (a) `PairSpec` に `count_as_reaction: bool = True` を追加。nylon の amine_H–carboxyl_OH に `count_as_reaction=False` を設定。
   (b) `PairBias` と `BondEvent` に `counts_as_reaction`(bool, 既定 True)を伝播。`_build_pair_biases` が `ps.count_as_reaction` を PairBias に載せ、BondTracker が BondEvent に載せて `bonds.jsonl` に記録する。欠落時 True 扱いで後方互換。
   (c) `BondTracker.confirmed_formations()` は全イベントのまま。計数側(reproduce_figures.py / run_nylon66.py)がイベント読み込み直後に `counts_as_reaction=True` のみをフィルタしてから conversion / carothers に渡す。analysis 関数の引数仕様は不変(docstring に前提明記)。
+  (d) density プロット(`reproduce_figures.py::plot_density_profile`)も同フィルタを適用する。ρ_rxn は「反応」の密度であり、水形成イベント(count_as_reaction=False)を空間分布に含めない。vinyl は該当ペアを持たず無影響。
 - 既存記録 decisions.md 2026-06-13(水は明示モデル化しない)との整合: 水分子そのものは生成せず、TDBB は距離のみバイアスする点は不変。本決定は「水形成方向のバイアスイベントを反応計数に含めない」だけを追加規定する。
 - Ask-first 該当: 計数定義の変更(縮合 1 反応 = 主形成ペア 1 件)は 2026-07-06 にユーザー承認済み。
 - Alternatives considered: `candidate_id` によるユニーク化(同一候補の複数 formation を 1 と数える)— スキーマ変更不要だが「どちらが主反応か」の情報が残らず、density での位置も曖昧になるため棄却。

@@ -142,3 +142,48 @@ class TestDensityProfilePlotting:
 
         with pytest.raises(ValueError, match='cross-sectional area'):
             plot_density_profile(bonds, traj, tmp_path / 'figs')
+
+    def test_density_excludes_non_counting_formations(self, tmp_path, monkeypatch):
+        """A5: rho_rxn excludes water-forming (counts_as_reaction=False) events.
+
+        A nylon-type run mixes the primary amide bond (counts) with the water
+        O-H formation (does not count). A vinyl-only run has no such events, so
+        adding one must not change which formations reach the density kernel.
+        """
+        pytest.importorskip('matplotlib')
+        import scripts.reproduce_figures as rf
+
+        captured = {}
+
+        def _fake_density(formations, positions, z_bins, area, n_frames,
+                          cells_at_event=None):
+            captured['pairs'] = {(e.atom_a, e.atom_b) for e in formations}
+            return np.zeros(len(z_bins) - 1)
+
+        monkeypatch.setattr(rf, 'reaction_density_profile', _fake_density)
+
+        traj = tmp_path / 'trajectory.jsonl'
+        bonds = tmp_path / 'bonds.jsonl'
+        self._write_jsonl(traj, [
+            {'_header': True, 'schema_version': 1, 'species': ['C'] * 4,
+             'n_atoms': 4, 'save_interval': 1},
+            {'step': 100, 'time_fs': 0.0, 'phase': 'unbiased', 'cycle': 0,
+             'energy_base': 0.0, 'energy_bias': 0.0, 'energy_total': 0.0,
+             'positions': [[0.0, 0.0, 1.0]] * 4,
+             'cell': [[10.0, 0, 0], [0, 10.0, 0], [0, 0, 10.0]]},
+        ])
+        self._write_jsonl(bonds, [
+            # Primary amide bond (counts) — the vinyl-equivalent real reaction.
+            {'step': 100, 'cycle': 0, 'atom_a': 0, 'atom_b': 1,
+             'event_type': 'confirmed_formation', 'distance': 1.5, 'r0': 1.5,
+             'counts_as_reaction': True},
+            # Water O-H formation (nylon-only) — must be excluded.
+            {'step': 100, 'cycle': 0, 'atom_a': 2, 'atom_b': 3,
+             'event_type': 'confirmed_formation', 'distance': 1.5, 'r0': 1.5,
+             'counts_as_reaction': False},
+        ])
+
+        rf.plot_density_profile(bonds, traj, tmp_path / 'figs')
+        # Only the counting formation reaches the density kernel; the water
+        # event (2,3) is filtered out — identical to a vinyl-only result.
+        assert captured['pairs'] == {(0, 1)}

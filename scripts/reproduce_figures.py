@@ -199,7 +199,13 @@ def plot_density_profile(
     Requires --bonds with confirmed_formation events and position data.
     """
     events = read_bond_events(bonds_path)
-    formations = [e for e in events if e.event_type == 'confirmed_formation']
+    # A5: rho_rxn is the density of *reactions*. Exclude water-forming (and other
+    # count_as_reaction=False) formation events so a condensation reaction is
+    # placed once, at its primary bond. Missing field -> True (vinyl unaffected).
+    formations = [
+        e for e in events
+        if e.event_type == 'confirmed_formation' and e.counts_as_reaction
+    ]
     if not formations:
         print(f'No confirmed_formation events in {bonds_path} -- skipping density plot.')
         return
