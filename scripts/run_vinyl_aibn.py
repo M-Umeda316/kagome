@@ -559,8 +559,8 @@ def main() -> None:
             wf._updater.chain_c_map = chain_c_map
         if n_pruned:
             logger.warning(
-                '未解離中心 %d 個を反応グループから除外(化学的には未開裂 AIBN の'
-                'ため不活性)。radical_C: %d → %d',
+                'Pruned %d undissociated centre(s) from the reactive groups '
+                '(un-cleaved AIBN is chemically inert). radical_C: %d -> %d',
                 n_pruned, n_radicals_before,
                 len(groups['radical_C'].atom_indices),
             )
