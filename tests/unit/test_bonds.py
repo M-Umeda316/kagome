@@ -220,6 +220,59 @@ class TestBondTracker:
         )
         assert len(events) == 0
 
+    # ── S2/W3: pair_dists reuse is bit-identical (specs/decisions.md 2026-07-06) ──
+
+    def test_pair_dists_reuse_matches_recompute(self):
+        """Passing total_bias_fast pair_dists yields identical in-bias events.
+
+        The biased-phase hot path reuses the distances total_bias_fast already
+        computed for the same coordinates instead of recomputing the minimum
+        image inside check_reactions_during_bias.  The two paths must produce
+        bit-identical distances and identical events (S2/W3).
+        """
+        from kagome.boost.tdbb import BoostState, TDBBParams, total_bias_fast
+        from kagome.geometry import validated_box
+
+        pairs = [
+            self._make_formation_pair(idx_a=0, idx_b=1, r0=2.0),
+            self._make_formation_pair(idx_a=2, idx_b=3, r0=2.0),
+        ]
+        # idx 2/3 straddle the periodic boundary so the minimum image matters.
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+            [0.3, 0.0, 0.0],
+            [9.7, 0.0, 0.0],
+        ])
+        cell = np.diag([10.0, 10.0, 10.0]).astype(float)
+        box = validated_box(cell)
+
+        boost = BoostState()
+        boost.advance(1.0, 250.0, 250.0)
+        _, _, pair_dists = total_bias_fast(
+            pairs, positions, boost, TDBBParams(), box,
+        )
+
+        tracker_recompute = BondTracker(threshold_fraction=1.0)
+        events_recompute = tracker_recompute.check_reactions_during_bias(
+            pairs, positions, step=10, cycle=0, cell=cell,
+        )
+        tracker_reuse = BondTracker(threshold_fraction=1.0)
+        events_reuse = tracker_reuse.check_reactions_during_bias(
+            pairs, positions, step=10, cycle=0, cell=cell,
+            pair_dists=pair_dists,
+        )
+
+        assert len(events_reuse) == len(events_recompute)
+        for ev_r, ev_c in zip(events_reuse, events_recompute):
+            assert ev_r.atom_a == ev_c.atom_a
+            assert ev_r.atom_b == ev_c.atom_b
+            assert ev_r.event_type == ev_c.event_type
+            # bit-identical distance (same coords, same MIC formula)
+            assert ev_r.distance == ev_c.distance
+        # both pairs are within r0 under the minimum image → 2 tentative events
+        assert len(events_reuse) == 2
+
     def test_multiple_cycles(self):
         tracker = BondTracker(threshold_fraction=1.2)
         pair = self._make_formation_pair(r0=2.0)

@@ -267,6 +267,29 @@ class TestPolymerizationWorkflow:
         for d in rec['rejected']:
             assert d['reason'].startswith('overlap')
 
+    def test_manifest_records_production_start_step(self, tmp_path):
+        """A4: post-equilibration production onset is recorded in manifest.json."""
+        template = ReactionTemplate(
+            name='m', groups=['A', 'B'],
+            pairs=[PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=10.0)],
+        )
+        groups = {'A': ReactiveGroup('A', [0, 1]), 'B': ReactiveGroup('B', [2, 3])}
+        config = PolymerizationConfig(
+            biased_steps=2, unbiased_steps=2, n_cycles=1, seed=1, equil_steps=5,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0, 0, 0], [5, 0, 0], [1, 0, 0], [6, 0, 0]], dtype=float),
+            velocities=np.zeros((4, 3)),
+            species=['C'] * 4,
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path)
+
+        data = json.loads((tmp_path / 'manifest.json').read_text(encoding='utf-8'))
+        # 5 equilibration steps ran before the cycle loop; minimize is off.
+        assert data['extra']['production_start_step'] == 5
+
     def test_deterministic_with_seed(self):
         template, groups = _make_simple_setup()
         config = PolymerizationConfig(
@@ -780,6 +803,79 @@ class TestRunActivation:
             activation_steps=5,
         )
         assert dissociated == []
+
+    def test_activation_selection_audited_with_phase(self, tmp_path):
+        """S1: run_activation(output_dir=...) writes a phase='activation' record."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=42,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        activation_template = ReactionTemplate(
+            name='aibn_activation',
+            groups=['azo_C', 'azo_N'],
+            pairs=[PairSpec('azo_C', 'azo_N', is_formation=False,
+                            r_min=0.0, r_max=3.0)],
+        )
+        activation_groups = {
+            'azo_C': ReactiveGroup('azo_C', [0]),
+            'azo_N': ReactiveGroup('azo_N', [1]),
+        }
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'N'],
+        )
+
+        wf.run_activation(
+            state, activation_template, activation_groups,
+            activation_steps=3, activation_f2=0.3, activation_f1_max=1.0,
+            output_dir=tmp_path,
+        )
+
+        audit = tmp_path / 'selection.jsonl'
+        assert audit.exists()
+        lines = [json.loads(l) for l in audit.read_text(encoding='utf-8').splitlines()
+                 if l.strip()]
+        assert len(lines) == 1
+        rec = lines[0]
+        assert rec['phase'] == 'activation'
+        assert rec['n_selected'] == 1
+
+    def test_activation_no_output_dir_warns_and_skips_audit(self, tmp_path, caplog):
+        """S1: without output_dir (and no prior log) activation is not audited."""
+        import logging
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=5, unbiased_steps=5, n_cycles=0, seed=42,
+        )
+        calc = ToyCalculator()
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+
+        activation_template = ReactionTemplate(
+            name='aibn_activation',
+            groups=['azo_C', 'azo_N'],
+            pairs=[PairSpec('azo_C', 'azo_N', is_formation=False,
+                            r_min=0.0, r_max=3.0)],
+        )
+        activation_groups = {
+            'azo_C': ReactiveGroup('azo_C', [0]),
+            'azo_N': ReactiveGroup('azo_N', [1]),
+        }
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'N'],
+        )
+        with caplog.at_level(logging.WARNING):
+            wf.run_activation(
+                state, activation_template, activation_groups,
+                activation_steps=3, activation_f2=0.3, activation_f1_max=1.0,
+            )
+        assert not (tmp_path / 'selection.jsonl').exists()
+        assert any('not audited' in r.message for r in caplog.records)
 
 
 class TestNylonMixedBias:

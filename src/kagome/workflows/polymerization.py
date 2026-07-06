@@ -536,31 +536,46 @@ class PolymerizationWorkflow:
                 len(self.bond_tracker.confirmed_formations()) if self.bond_tracker else 0,
             )
 
+        manifest_path = output_dir / 'manifest.json' if output_dir else None
         if output_dir:
-            effective_params = _normalize_value(asdict(self.config))
-            effective_params['backend'] = self.calculator.name
-            # Resolved weights identity (RF17): two runs with the same backend
-            # name but different weights are otherwise indistinguishable.
-            effective_params['model_id'] = getattr(
-                self.calculator, 'model_id', self.calculator.name)
-            # alpha(t) denominator (RF17): also lives in the trajectory header, but
-            # record it in the manifest so provenance is complete without the JSONL.
-            effective_params['n_reactive_sites'] = n_reactive_sites
-            effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
-            effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
-            manifest = RunManifest(
-                config_path=config_path,
-                seed=self.config.seed,
-                backend=self.calculator.name,
-                output_dir=str(output_dir),
-                extra=effective_params,
-            )
-            manifest.save(output_dir / 'manifest.json')
+            if resuming and manifest_path.exists():
+                # W1: preserve the original run's provenance. Overwriting would
+                # erase the git_sha/timestamp of the code that produced most of
+                # the trajectory; instead append a resume record.
+                ckpt_step = int(_ckpt['step']) if _ckpt is not None else state.step
+                ckpt_cycle = (
+                    int(_ckpt['next_cycle']) if _ckpt is not None else start_cycle)
+                RunManifest.append_resume(manifest_path, ckpt_step, ckpt_cycle)
+            else:
+                effective_params = _normalize_value(asdict(self.config))
+                effective_params['backend'] = self.calculator.name
+                # Resolved weights identity (RF17): two runs with the same backend
+                # name but different weights are otherwise indistinguishable.
+                effective_params['model_id'] = getattr(
+                    self.calculator, 'model_id', self.calculator.name)
+                # alpha(t) denominator (RF17): also lives in the trajectory header, but
+                # record it in the manifest so provenance is complete without the JSONL.
+                effective_params['n_reactive_sites'] = n_reactive_sites
+                effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
+                effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
+                manifest = RunManifest(
+                    config_path=config_path,
+                    seed=self.config.seed,
+                    backend=self.calculator.name,
+                    output_dir=str(output_dir),
+                    extra=effective_params,
+                )
+                manifest.save(manifest_path)
 
             # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
             # must be reconstructable from artifacts, not just n_candidates counts.
-            self._selection_log = output_dir / 'selection.jsonl'
-            if not resuming:
+            # run_activation (S1) may already have set the log to this path and
+            # freshly truncated it; in that case do NOT re-truncate here or the
+            # activation-phase records would be lost.
+            selection_log_path = output_dir / 'selection.jsonl'
+            already_logging = self._selection_log == selection_log_path
+            self._selection_log = selection_log_path
+            if not resuming and not already_logging:
                 self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
 
             # Explicit bond-topology history (specs/decisions.md 2026-07-02).
@@ -613,11 +628,19 @@ class PolymerizationWorkflow:
                         energy_bias=0.0,
                         energy_total=0.0,
                         positions=state.positions.tolist(),
+                        cell=None if state.cell is None else state.cell.tolist(),
                     ))
                 if self.config.minimize:
                     self._minimize(state, writer)
                 if self.config.equil_steps > 0:
                     self._run_equilibration_phase(state, rng, writer)
+                # A4: capture the true production onset (post-equilibration,
+                # pre-cycle). Activation/equilibration may run outside run(), so
+                # state.step here is what k_p fitting must anchor t=0 to. Only on
+                # fresh runs — resume keeps the original run's recorded value.
+                if manifest_path is not None:
+                    RunManifest.record_production_start_step(
+                        manifest_path, state.step)
 
             for cycle in range(start_cycle, self.config.n_cycles):
                 log_biased = self._run_biased_phase(state, cycle, rng, writer)
@@ -815,6 +838,7 @@ class PolymerizationWorkflow:
                     energy_total=energy,
                     positions=state.positions.tolist(),
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
+                    cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
         logger.info('Equilibration: %d steps complete', self.config.equil_steps)
@@ -971,11 +995,18 @@ class PolymerizationWorkflow:
                     n_candidates=len(candidates),
                     n_selected=len(selected),
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
+                    cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
             if self.bond_tracker is not None:
+                # pair_dists was computed by total_bias_fast inside _md_step for
+                # this exact state.positions (post-drift, and post-barostat if
+                # accepted); no coordinate mutation occurs before this call, so
+                # reusing it is bit-identical to recomputing the minimum image
+                # (S2/W3, specs/decisions.md 2026-07-06).
                 events = self.bond_tracker.check_reactions_during_bias(
                     active_pairs, state.positions, state.step, cycle, state.cell,
+                    pair_dists=pair_dists,
                 )
                 if events:
                     logger.info(
@@ -1077,6 +1108,7 @@ class PolymerizationWorkflow:
                     energy_total=energy,
                     positions=state.positions.tolist(),
                     temperature_K=instant_temperature_K(state.velocities, state.masses),
+                    cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
         if self.bond_tracker:
@@ -1169,9 +1201,16 @@ class PolymerizationWorkflow:
     # many. Selected candidates are always written in full.
     _MAX_REJECTED_LOGGED = 500
 
-    def _write_selection_audit(self, cycle: int, decisions: list) -> None:
+    def _write_selection_audit(
+        self, cycle: int, decisions: list, phase: str = 'production',
+    ) -> None:
         """Append one JSON line recording the cycle's candidate ranking and the
-        non-overlap selection/rejection decisions (RF18)."""
+        non-overlap selection/rejection decisions (RF18).
+
+        ``phase`` distinguishes the activation selection (S1) from the production
+        cycles. It is only emitted when non-default so existing production records
+        stay byte-identical; readers treat a missing ``phase`` as 'production'.
+        """
         if self._selection_log is None:
             return
         selected = [d for d in decisions if d.selected]
@@ -1191,6 +1230,8 @@ class PolymerizationWorkflow:
                 for d in shown
             ],
         }
+        if phase != 'production':
+            record['phase'] = phase
         with open(self._selection_log, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record) + '\n')
         if record['rejected_truncated']:
@@ -1221,6 +1262,7 @@ class PolymerizationWorkflow:
         activation_f2: float = 0.3,
         activation_f1_max: float = 250.0,
         rng: np.random.Generator | None = None,
+        output_dir: Path | None = None,
     ) -> list[tuple[int, int]]:
         """Run AIBN activation phase: V^d on azo C-N bonds until dissociation.
 
@@ -1241,7 +1283,26 @@ class PolymerizationWorkflow:
             activation_template, activation_groups, state.positions, state.cell,
         )
         scored = score_candidates(candidates)
-        selected = select_non_overlapping(scored)
+
+        # S1: audit the activation-phase selection to selection.jsonl. run_activation
+        # runs outside run(), so wire the log target explicitly. If output_dir is
+        # given, freshly initialise the log here (activation is the first phase, so
+        # this is the run's start point); run() detects the pre-set log and will not
+        # re-truncate it, preserving these activation records.
+        if output_dir is not None:
+            self._selection_log = output_dir / 'selection.jsonl'
+            self._selection_log.parent.mkdir(parents=True, exist_ok=True)
+            self._selection_log.write_text('', encoding='utf-8')
+        if self._selection_log is not None:
+            selected, decisions = audited_selection(scored)
+            self._write_selection_audit(-1, decisions, phase='activation')
+        else:
+            logger.warning(
+                'Activation selection not audited: no output_dir given and no '
+                'selection log set. Pass output_dir= to record the activation '
+                'candidate selection to selection.jsonl (S1).'
+            )
+            selected = select_non_overlapping(scored)
 
         import os
         if os.environ.get('KAGOME_DIAG_STARVATION'):
@@ -1395,5 +1456,6 @@ class PolymerizationWorkflow:
                     is_formation=ps.is_formation,
                     r0=r0,
                     candidate_id=cand_idx,
+                    counts_as_reaction=ps.count_as_reaction,
                 ))
         return pairs

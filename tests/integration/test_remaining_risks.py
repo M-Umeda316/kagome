@@ -353,6 +353,37 @@ class TestR3_CheckpointResumeIntegration:
             lines_after = len(traj_file.read_text(encoding='utf-8').strip().splitlines())
             assert lines_after >= lines_before
 
+    def test_resume_preserves_manifest_provenance(self, tmp_path):
+        """W1: resume appends a resume_history entry and keeps the original
+        top-level git_sha/timestamp instead of overwriting them."""
+        ckpt = tmp_path / 'checkpoint.pkl'
+        out = tmp_path / 'output'
+        out.mkdir()
+
+        wf_a, state_a, _ = self._nylon_wf(2)
+        wf_a.run(state_a, output_dir=out, checkpoint_path=ckpt, config_path='test')
+
+        manifest_path = out / 'manifest.json'
+        assert manifest_path.exists()
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+        # Both legs share the real git SHA, so stamp a sentinel to prove the
+        # resume does not overwrite the original provenance.
+        data['git_sha'] = 'ORIGINAL_SENTINEL_SHA'
+        data['timestamp'] = 'ORIGINAL_TIMESTAMP'
+        manifest_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+        wf_b, state_b, _ = self._nylon_wf(4)
+        wf_b.run(state_b, output_dir=out, checkpoint_path=ckpt, resume=True,
+                 config_path='test')
+
+        data2 = json.loads(manifest_path.read_text(encoding='utf-8'))
+        assert data2['git_sha'] == 'ORIGINAL_SENTINEL_SHA'
+        assert data2['timestamp'] == 'ORIGINAL_TIMESTAMP'
+        history = data2['extra']['resume_history']
+        assert len(history) == 1
+        assert 'ckpt_step' in history[0]
+        assert 'ckpt_cycle' in history[0]
+
     def test_bondevent_candidate_id_backfill(self, tmp_path):
         """V2: old BondEvents pickled without candidate_id get backfilled on restore."""
         ckpt = tmp_path / 'checkpoint.pkl'

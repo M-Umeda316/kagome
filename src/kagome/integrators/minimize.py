@@ -31,9 +31,9 @@ class FireParams:
     """FIRE minimizer parameters.
 
     fmax is the convergence threshold on the largest per-atom force magnitude.
-    ASE's default is 0.05 eV/Å ≈ 1.15 kcal/mol/Å; for the purpose of relaxing
-    initial close contacts a looser threshold is sufficient, so the default is
-    1.0 kcal/mol/Å with a max_steps cap.
+    The default 1.0 kcal/mol/Å ≈ 0.043 eV/Å is slightly *stricter* than ASE's
+    default of 0.05 eV/Å (≈ 1.15 kcal/mol/Å); combined with a max_steps cap it
+    is sufficient for relaxing the close contacts of a freshly placed structure.
     """
     fmax_kcal_mol_A: float = 1.0
     max_steps: int = 500
@@ -76,7 +76,9 @@ def fire_minimize(
     """
     p = params or FireParams()
     pos = np.array(positions, dtype=np.float64, copy=True)
-    vel = np.zeros_like(pos)
+    # ASE sentinel: velocity is None until the first kick so the power/mixing
+    # branch is skipped on step 0 (v is zero there).
+    vel: NDArray[np.floating] | None = None
 
     dt = p.dt_start
     alpha = p.alpha_start
@@ -91,25 +93,32 @@ def fire_minimize(
     converged = fmax < p.fmax_kcal_mol_A
     step = 0
     while not converged and step < p.max_steps:
-        power = float(np.sum(forces * vel))
-        if power > 0.0:
-            n_positive += 1
-            if n_positive > p.n_min:
-                dt = min(dt * p.f_inc, p.dt_max)
-                alpha *= p.f_alpha
+        # Canonical FIRE update order (Bitzek et al., PRL 97, 170201 (2006) /
+        # ase.optimize.fire.FIRE.step): power test -> velocity mixing on the
+        # *pre-kick* v and |v| -> dt/alpha update (check N_min, then count) ->
+        # inertial kick.  On the first step v is zero, so — as in ASE — the
+        # whole mixing/power branch is skipped and only the kick is applied.
+        if vel is None:
+            vel = np.zeros_like(pos)
         else:
-            n_positive = 0
-            dt *= p.f_dec
-            alpha = p.alpha_start
-            vel[:] = 0.0
+            power = float(np.sum(forces * vel))
+            if power > 0.0:
+                fnorm = float(np.linalg.norm(forces))
+                if fnorm > 1e-12:
+                    vnorm = float(np.linalg.norm(vel))
+                    vel = (1.0 - alpha) * vel + alpha * (forces / fnorm) * vnorm
+                if n_positive > p.n_min:
+                    dt = min(dt * p.f_inc, p.dt_max)
+                    alpha *= p.f_alpha
+                n_positive += 1
+            else:
+                n_positive = 0
+                dt *= p.f_dec
+                alpha = p.alpha_start
+                vel[:] = 0.0
 
-        # MD step (semi-implicit Euler, unit mass)
+        # Inertial kick (semi-implicit Euler, unit mass) — after the mixing.
         vel += dt * forces
-        # FIRE velocity mixing toward the force direction (global)
-        vnorm = float(np.linalg.norm(vel))
-        fnorm = float(np.linalg.norm(forces))
-        if fnorm > 1e-12:
-            vel = (1.0 - alpha) * vel + alpha * (forces / fnorm) * vnorm
 
         dx = dt * vel
         dxmax = float(np.sqrt((dx ** 2).sum(axis=1).max()))

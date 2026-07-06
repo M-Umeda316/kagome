@@ -27,6 +27,34 @@ class TestDpnCarothers:
         expected = np.array([1.0, 2.0, 10.0])
         np.testing.assert_allclose(result, expected)
 
+    def test_full_conversion_clamped_not_inf(self, caplog):
+        # F9: p = 1.0 must yield a finite DPn (10000), not inf, and warn.
+        with caplog.at_level(logging.WARNING):
+            dpn = dpn_carothers(1.0)
+        assert np.isfinite(dpn)
+        assert dpn == pytest.approx(10000.0)  # 1/(1-0.9999)
+        assert 'clamp' in caplog.text
+
+    def test_overshoot_clamped_not_negative(self, caplog):
+        # p > 1.0 (miscount) must clamp to a finite positive DPn, not go negative.
+        with caplog.at_level(logging.WARNING):
+            dpn = dpn_carothers(1.5)
+        assert np.isfinite(dpn)
+        assert dpn == pytest.approx(10000.0)
+        assert 'clamp' in caplog.text
+
+    def test_array_with_full_conversion(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = dpn_carothers(np.array([0.5, 1.0]))
+        assert np.all(np.isfinite(result))
+        np.testing.assert_allclose(result, np.array([2.0, 10000.0]))
+        assert 'clamp' in caplog.text
+
+    def test_no_warning_below_clamp(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            dpn_carothers(0.99)
+        assert caplog.text == ''
+
 
 class TestDpnFromBonds:
 

@@ -26,6 +26,29 @@ class TestReadBondEvents:
         assert events[0].atom_b == 6
         assert events[0].distance == pytest.approx(1.54)
 
+    def test_old_format_defaults_counts_as_reaction_true(self, tmp_path):
+        """A5: bonds.jsonl written before the counts_as_reaction field must load
+        with counts_as_reaction=True (backward compatible)."""
+        path = tmp_path / 'bonds.jsonl'
+        event = {
+            'step': 100, 'cycle': 0, 'atom_a': 0, 'atom_b': 6,
+            'event_type': 'confirmed_formation', 'distance': 1.54, 'r0': 2.0,
+        }
+        path.write_text(json.dumps(event) + '\n', encoding='utf-8')
+        events = read_bond_events(path)
+        assert events[0].counts_as_reaction is True
+
+    def test_reads_counts_as_reaction_false(self, tmp_path):
+        path = tmp_path / 'bonds.jsonl'
+        event = {
+            'step': 100, 'cycle': 0, 'atom_a': 2, 'atom_b': 3,
+            'event_type': 'confirmed_formation', 'distance': 0.9, 'r0': 1.0,
+            'counts_as_reaction': False,
+        }
+        path.write_text(json.dumps(event) + '\n', encoding='utf-8')
+        events = read_bond_events(path)
+        assert events[0].counts_as_reaction is False
+
     def test_reads_multiple_events(self, tmp_path):
         path = tmp_path / 'bonds.jsonl'
         lines = [

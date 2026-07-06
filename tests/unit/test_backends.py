@@ -109,6 +109,41 @@ class TestMACEBackend:
         assert 'mace' in calc.name
 
 
+class TestLocalModelPaths:
+    """B9: _LOCAL_MODELS must resolve to <repo-root>/models, not <repo-root>/src.
+
+    parents[2] pointed at src/ (old layout), so local checkpoints were never
+    found and the loaders silently fell back to downloaded pretrained weights.
+    We verify path *structure* (not file existence) so the check passes in CI
+    environments without the weight files.
+    """
+
+    def _assert_under_models_root(self, path):
+        from pathlib import Path
+        path = Path(path)
+        # <root>/models/<file>
+        assert path.parent.name == 'models', f'{path} not under a models/ dir'
+        root = path.parent.parent
+        # The repo root must contain src/ (i.e. we did not resolve into src/).
+        assert (root / 'src').is_dir(), (
+            f'model path root {root} has no src/ dir — _PROJECT_ROOT likely '
+            f'points into src/ (the parents[2] B9 bug)'
+        )
+        assert root.name != 'src', f'model path root resolved into src/: {root}'
+
+    def test_orb_local_models_under_repo_models(self):
+        from kagome.backends import orb_backend
+        assert orb_backend._LOCAL_MODELS
+        for path in orb_backend._LOCAL_MODELS.values():
+            self._assert_under_models_root(path)
+
+    def test_mace_local_models_under_repo_models(self):
+        from kagome.backends import mace_backend
+        assert mace_backend._LOCAL_MODELS
+        for path in mace_backend._LOCAL_MODELS.values():
+            self._assert_under_models_root(path)
+
+
 class TestOrbBackend:
 
     @pytest.fixture

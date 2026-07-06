@@ -520,6 +520,9 @@ def main() -> None:
             activation_f2=args.activation_f2,
             activation_f1_max=args.activation_f1_max,
             rng=np.random.default_rng(args.seed + 1),
+            # S1: audit the activation-phase selection to selection.jsonl. run()
+            # detects the pre-set log and preserves these records (no re-truncate).
+            output_dir=args.output_dir,
         )
         n_activation_dissoc = len(dissociated)
         logger.info('Activation result: %d C-N bonds dissociated', n_activation_dissoc)

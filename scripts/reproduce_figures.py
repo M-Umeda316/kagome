@@ -124,15 +124,31 @@ def plot_conversion_vs_step(
     n_total_sites: int,
     output_dir: Path,
     timestep_fs: float = 1.0,
+    production_start_step: int = 0,
+    step_range: np.ndarray | None = None,
 ) -> None:
-    """Plot conversion α(t) with Eq. 11 exponential fit overlay."""
+    """Plot conversion α(t) with Eq. 11 exponential fit overlay.
+
+    production_start_step shifts the fit's t=0 to the start of production so
+    k_p is not under-estimated by the equilibration/activation lead-in (L8/A4).
+    step_range, when given, samples α on that grid (e.g. trajectory frame steps)
+    instead of every MD step, avoiding a several-hundred-thousand-iteration
+    Python loop (A6).
+    """
     events = read_bond_events(bonds_path)
 
     if not events:
         print(f'No bond events in {bonds_path} --skipping conversion plot.')
         return
 
-    step_range, alpha = conversion_timeseries(events, n_total_sites)
+    # A5: exclude bias-only water-forming events (nylon k-l) from the reaction
+    # count so one condensation = one amide bond. Old bonds.jsonl lack the field
+    # and load as counts_as_reaction=True (unchanged behaviour for vinyl).
+    events = [e for e in events if e.counts_as_reaction]
+
+    step_range, alpha = conversion_timeseries(
+        events, n_total_sites, step_range=step_range,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -141,10 +157,16 @@ def plot_conversion_vs_step(
     ax.plot(time_ps, alpha * 100.0, linewidth=1.0, color='tab:brown',
             label='Simulation')
 
-    kp_eff, r_sq = fit_conversion_exponential(step_range, alpha, timestep_fs)
+    kp_eff, r_sq = fit_conversion_exponential(
+        step_range, alpha, timestep_fs,
+        production_start_step=production_start_step,
+    )
     if kp_eff > 0:
-        t_fit = np.linspace(0, float(time_ps[-1]), 500)
-        alpha_fit = (1.0 - np.exp(-kp_eff * t_fit * 1000.0)) * 100.0
+        # The fit is defined in production-relative time, so overlay it starting
+        # at the production onset on the raw-time axis.
+        t_prod_ps = production_start_step * timestep_fs / 1000.0
+        t_fit = np.linspace(t_prod_ps, float(time_ps[-1]), 500)
+        alpha_fit = (1.0 - np.exp(-kp_eff * (t_fit - t_prod_ps) * 1000.0)) * 100.0
         ax.plot(t_fit, alpha_fit, '--', color='tab:red', linewidth=1.2,
                 label=f'Eq. 11 fit: $k_{{p,eff}}$={kp_eff:.2e} fs$^{{-1}}$')
         ax.text(0.98, 0.60, f'$R^2$ = {r_sq:.3f}',
@@ -177,7 +199,13 @@ def plot_density_profile(
     Requires --bonds with confirmed_formation events and position data.
     """
     events = read_bond_events(bonds_path)
-    formations = [e for e in events if e.event_type == 'confirmed_formation']
+    # A5: rho_rxn is the density of *reactions*. Exclude water-forming (and other
+    # count_as_reaction=False) formation events so a condensation reaction is
+    # placed once, at its primary bond. Missing field -> True (vinyl unaffected).
+    formations = [
+        e for e in events
+        if e.event_type == 'confirmed_formation' and e.counts_as_reaction
+    ]
     if not formations:
         print(f'No confirmed_formation events in {bonds_path} -- skipping density plot.')
         return
@@ -193,19 +221,50 @@ def plot_density_profile(
         for f in frames
         if f.step in event_steps and f.positions
     }
+    # Per-event cell for the PBC midpoint correction (NPT: box varies per frame).
+    cells_at_event: dict[int, np.ndarray] = {
+        f.step: np.array(f.cell)
+        for f in frames
+        if f.step in event_steps and f.cell is not None
+    }
 
     if not positions_at_event:
         print('No trajectory frames match bond event steps -- skipping density plot.')
         return
 
-    all_z = np.concatenate([pos[:, 2] for pos in positions_at_event.values()])
-    z_min, z_max = float(all_z.min()), float(all_z.max())
-    z_bins = np.linspace(z_min, z_max, n_z_bins + 1)
+    # Representative cell (mean over all sampled frames that recorded one). Used
+    # for the default cross-sectional area and z-bin range so the profile follows
+    # the paper definition rho_rxn(z) = N_rxn(z)/(A*dz*N_frames) instead of the
+    # data min/max span. See specs/decisions.md 2026-07-06 (A1/A2/A3).
+    frame_cells = [np.array(f.cell) for f in frames if f.cell is not None]
 
-    area_xy = cell_xy_area if cell_xy_area is not None else (z_max - z_min) ** 2
+    if cell_xy_area is not None:
+        area_xy = cell_xy_area
+    elif frame_cells:
+        mean_cell = np.mean(frame_cells, axis=0)
+        area_xy = float(abs(mean_cell[0, 0] * mean_cell[1, 1]))
+    else:
+        raise ValueError(
+            'Density profile needs a cross-sectional area: no cell recorded in '
+            'the trajectory frames and --cell-xy-area not given. Re-run with a '
+            'periodic trajectory (frames carry a cell) or pass --cell-xy-area. '
+            'The old (z_max-z_min)**2 fallback was not a valid xy area.'
+        )
+
+    if frame_cells:
+        # Wrapped positions live in [0, Lz); bin over the full box height.
+        lz = float(np.mean([c[2, 2] for c in frame_cells]))
+        z_bins = np.linspace(0.0, lz, n_z_bins + 1)
+    else:
+        all_z = np.concatenate([pos[:, 2] for pos in positions_at_event.values()])
+        z_bins = np.linspace(float(all_z.min()), float(all_z.max()), n_z_bins + 1)
+
+    # N_frames is every sampled trajectory frame in the analysis window (paper
+    # definition), NOT the number of event steps (A2).
     density = reaction_density_profile(
         formations, positions_at_event, z_bins, area_xy,
-        n_frames=len(positions_at_event),
+        n_frames=len(frames),
+        cells_at_event=cells_at_event or None,
     )
 
     z_centers = 0.5 * (z_bins[:-1] + z_bins[1:])
@@ -293,6 +352,35 @@ def plot_s2_diagnostics(
     print(f'Saved s2_diagnostics.png/.pdf to {output_dir}')
 
 
+def _infer_production_start_step(manifest_path: Path) -> int | None:
+    """Best-effort production-onset step from a run's manifest.json.
+
+    Priority (A4): ``extra['production_start_step']`` — the exact post-equilibration
+    step the workflow recorded — is used first. Otherwise falls back to summing the
+    pre-production step counts recorded in ``extra`` (equilibration and, when
+    present, activation). Returns None if none of these are available so the caller
+    can warn and fall back to 0. The --production-start-step CLI arg is the reliable
+    override when equilibration was run outside the workflow manifest.
+    """
+    import json
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    extra = data.get('extra') or {}
+    # The workflow records the true production onset directly; prefer it.
+    recorded = extra.get('production_start_step')
+    if recorded is not None:
+        return int(recorded)
+    equil = extra.get('equil_steps')
+    activation = extra.get('activation_steps')
+    if equil is None and activation is None:
+        return None
+    return int(equil or 0) + int(activation or 0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Reproduce figures from trajectory')
     parser.add_argument('--trajectory', type=Path, default=None)
@@ -313,9 +401,16 @@ def main() -> None:
                         help='Target temperature in K for reference line in temperature plot')
     parser.add_argument('--timestep-fs', type=float, default=1.0,
                         help='MD timestep in fs (for Eq. 11 exponential fit). Default 1.0.')
+    parser.add_argument('--production-start-step', type=int, default=None,
+                        dest='production_start_step',
+                        help='Global step where production (the cycle loop) begins; '
+                             'the Eq. 11 fit measures k_p from t=0 there (L8/A4). '
+                             'If omitted, inferred from manifest.json '
+                             '(equil_steps + activation_steps), else 0.')
     parser.add_argument('--cell-xy-area', type=float, default=None,
                         help='Cross-sectional area (Å²) for density normalization. '
-                             'Defaults to (z_range)² if omitted.')
+                             'If omitted, computed from the trajectory cell '
+                             '(mean Lx*Ly); errors if no cell was recorded.')
     parser.add_argument('--summary', type=Path, nargs='+', default=None,
                         help='summary.json file(s) for S2 diagnostics plot.')
     parser.add_argument('--output-dir', type=Path, default=Path('runs/smoke/figures'))
@@ -333,7 +428,30 @@ def main() -> None:
         plot_temperature_vs_step(args.trajectory, args.output_dir, args.target_temperature)
 
     if args.trajectory is not None and args.bonds is not None:
-        header, _ = read_trajectory(args.trajectory)
+        header, frames = read_trajectory(args.trajectory)
+
+        # Sample alpha(t) on the recorded frame steps rather than every MD step
+        # (A6): turns a several-hundred-thousand-iteration loop into one pass over
+        # the (few thousand) sampled frames.
+        step_range = None
+        if frames:
+            step_range = np.array(sorted({f.step for f in frames}), dtype=np.int64)
+
+        # Production onset for the Eq. 11 fit (L8/A4): CLI arg wins; else infer
+        # from the run manifest; else 0 with a warning.
+        production_start = args.production_start_step
+        if production_start is None:
+            inferred = _infer_production_start_step(args.bonds.parent / 'manifest.json')
+            if inferred is None:
+                print(
+                    'WARNING: could not infer --production-start-step from '
+                    'manifest.json (no equil_steps/activation_steps); using 0. '
+                    'k_p may be under-estimated if the run had an '
+                    'equilibration/activation lead-in.'
+                )
+                production_start = 0
+            else:
+                production_start = inferred
 
         # Priority: explicit CLI arg > trajectory header > deprecated fallback
         n_sites = args.n_reactive_sites
@@ -353,7 +471,9 @@ def main() -> None:
             n_sites = n_atoms
 
         plot_conversion_vs_step(args.bonds, n_sites, args.output_dir,
-                               timestep_fs=args.timestep_fs)
+                               timestep_fs=args.timestep_fs,
+                               production_start_step=production_start,
+                               step_range=step_range)
         plot_density_profile(
             args.bonds, args.trajectory, args.output_dir,
             cell_xy_area=args.cell_xy_area,

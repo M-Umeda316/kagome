@@ -127,6 +127,10 @@ class PairBias:
     is_formation: bool
     r0: float = 0.0
     candidate_id: int = -1
+    # If False, a confirmed formation of this pair is excluded from reaction
+    # counting (alpha/Carothers p); bias/topology behaviour is unchanged.
+    # Used for nylon water-forming k-l pairs (specs/decisions.md 2026-07-06 A5).
+    counts_as_reaction: bool = True
 
 
 def total_bias(

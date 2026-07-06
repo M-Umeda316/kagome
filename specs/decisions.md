@@ -1257,3 +1257,67 @@ Use this template for each decision.
 - Scientific risk: None. ビニル系では dissociation イベントがないため影響なし。縮合系のサイト保存が正しくなる。
 - Licensing/commercial impact: None.
 - Follow-up: 縮合系のエンドツーエンドテストで検証。
+
+## 2026-07-06: A1/A2/A3 — 密度プロファイルの PBC・N_frames・面積を論文定義に整合(ユーザー承認 2026-07-06)
+- Context: `scripts/reproduce_figures.py::plot_density_profile` が (1) `reaction_density_profile` に `cell` を渡さず PBC 中点補正を無効化、(2) `n_frames` にイベント発生 step 数 `len(positions_at_event)` を渡し論文定義(全サンプリングフレーム数)と乖離、(3) セル未指定時の面積を `(z_max−z_min)**2`(xy 断面積として無意味)でフォールバックしていた。レビュー指摘 A1/A2/A3。
+- Paper anchor: PDF p.12 unnumbered eq. ρ_rxn(z) = N_rxn(z) / (A · Δz · N_frames)。A は xy 断面積、N_frames は解析窓の全サンプリングフレーム数。
+- Decision:
+  (a) `TrajectoryFrame` に `cell`(オプション, 既定 None)を追加し、initial/equilibration/biased/unbiased の各フレーム書き込みで `state.cell` を記録する(NPT で箱が変動するため per-frame)。旧トラジェクトリは cell 欠落 → None で後方互換。
+  (b) `reaction_density_profile` に `cells_at_event`(step→cell)を追加。イベントごとにそのフレームのセルで PBC 中点補正する。
+  (c) `n_frames = len(frames)`(全サンプリングフレーム)。イベント step 数は使わない。
+  (d) 面積 A は `--cell-xy-area` 指定時はそれ、未指定時はフレームセルの平均 Lx·Ly。セルも面積も無ければ明示エラーで中断(旧 `(z_max−z_min)**2` フォールバックは廃止)。
+  (e) z ビン範囲はセルがあれば [0, ⟨Lz⟩) を既定(wrap 済み座標 [0,Lz) に整合)。データ min/max 依存はセル無し・面積指定時のみのフォールバックとして残す。
+- Ask-first 該当: z ビン範囲の [0, Lz) 既定化は「図の平均化・範囲変更」に該当するが、本修正は論文定義への接近であり、2026-07-06 にユーザー承認済み。
+- Alternatives considered: (a) 単一 cell(初期箱)で全イベント処理 — NPT で箱が変わるため中点・面積が不正確。棄却。(b) 面積を per-event の Lx·Ly で可変にする — ρ の定義は固定 A を前提とするため、平均 A を採用。
+- Scientific risk: 中。図の縦軸スケール(絶対密度)と z 範囲が変わる。過去 run の密度図は再生成が必要。定義正確化のため許容。
+- Licensing/commercial impact: None.
+- Follow-up: `tests/unit/test_density.py` に PBC 中点・N_frames 正規化・面積欠落エラーのテストを追加。
+
+## 2026-07-06: A5 — 縮合(nylon)1 反応 = 主形成ペア 1 件で計数、水形成イベントはバイアス・トポロジー用途のみ(ユーザー承認 2026-07-06)
+- Context: nylon テンプレートの amine_H–carboxyl_OH ペアは `is_formation=True, score_pair=False` だが `constraint_only=False` のため `_build_pair_biases` で通常の formation PairBias になり、独立に `confirmed_formation` を発行しうる。結果 1 縮合反応(アミド結合 1 本 + 水 1 分子)が amine_N–carboxyl_C と amine_H–carboxyl_OH の 2 件の confirmed_formation として α(t)・Carothers p に二重計上される。レビュー指摘 A5。
+- Paper anchor: PDF p.22 Table S2(縮合テンプレートの formation/dissociation 対)、Fig.4b-c(Carothers p)。1 縮合反応 = アミド結合 1 本。
+- Decision: 物理的には amine_H–carboxyl_OH の近接バイアス(水の O–H 形成方向)は正しい挙動なのでバイアス自体は維持し、計数だけを主反応(amine_N–carboxyl_C)に限定する。
+  (a) `PairSpec` に `count_as_reaction: bool = True` を追加。nylon の amine_H–carboxyl_OH に `count_as_reaction=False` を設定。
+  (b) `PairBias` と `BondEvent` に `counts_as_reaction`(bool, 既定 True)を伝播。`_build_pair_biases` が `ps.count_as_reaction` を PairBias に載せ、BondTracker が BondEvent に載せて `bonds.jsonl` に記録する。欠落時 True 扱いで後方互換。
+  (c) `BondTracker.confirmed_formations()` は全イベントのまま。計数側(reproduce_figures.py / run_nylon66.py)がイベント読み込み直後に `counts_as_reaction=True` のみをフィルタしてから conversion / carothers に渡す。analysis 関数の引数仕様は不変(docstring に前提明記)。
+  (d) density プロット(`reproduce_figures.py::plot_density_profile`)も同フィルタを適用する。ρ_rxn は「反応」の密度であり、水形成イベント(count_as_reaction=False)を空間分布に含めない。vinyl は該当ペアを持たず無影響。
+- 既存記録 decisions.md 2026-06-13(水は明示モデル化しない)との整合: 水分子そのものは生成せず、TDBB は距離のみバイアスする点は不変。本決定は「水形成方向のバイアスイベントを反応計数に含めない」だけを追加規定する。
+- Ask-first 該当: 計数定義の変更(縮合 1 反応 = 主形成ペア 1 件)は 2026-07-06 にユーザー承認済み。
+- Alternatives considered: `candidate_id` によるユニーク化(同一候補の複数 formation を 1 と数える)— スキーマ変更不要だが「どちらが主反応か」の情報が残らず、density での位置も曖昧になるため棄却。
+- Scientific risk: 中。nylon の α(t)・p が従来比で下がる(二重計上の解消)。vinyl は amine_H 等を持たず、constraint_only の連鎖ペアは _build_pair_biases で除外済みのため計数不変。
+- Licensing/commercial impact: None.
+- Follow-up: 合成イベント列(同一 candidate_id で 2 formation)で α・p が 1 反応分になるユニットテストを追加。bonds.jsonl 旧フォーマット読み込み互換を担保。
+
+## 2026-07-06: I1/I2/I3 — FIRE ミニマイザを正準アルゴリズム(Bitzek 2006 / ASE)に整列
+- Context: `src/kagome/integrators/minimize.py::fire_minimize` の FIRE 更新順序が正準形と非等価だった。レビュー指摘 I1/I2/I3。
+  - I1: 速度混合 `v = (1-α)v + α·F̂·|v|` を慣性キック `v += dt·F` の**後**に適用していた。正準 FIRE(Bitzek et al., PRL 97, 170201 (2006) / `ase.optimize.fire.FIRE.step`)は混合を**キック前**の速度と `|v|` に対して行い、その後にキックする。キック後混合では混合に用いる `v` と `|v|` が既にキック済みの値になり、混合係数 α の意味と速度方向の減衰が正準形と一致しない。
+  - I2: 時間刻み増加の N_min 判定にオフバイワンがあった。旧実装は `n_positive += 1` してから `if n_positive > n_min` を判定するため、連続正パワー 6 回目で dt 増加を開始していた。ASE は `if Nsteps > Nmin: ...` を判定してから `Nsteps += 1`(判定してからカウント)で、7 回目に開始する。
+  - I3: `FireParams` docstring が既定 fmax=1.0 kcal/mol/Å を ASE 既定より「looser(緩い)」と記述していたが誤り。1.0 kcal/mol/Å ≈ 0.043 eV/Å は ASE 既定 0.05 eV/Å(≈ 1.15 kcal/mol/Å)より小さい閾値=より**厳しい**。
+- Paper anchor: PDF p.20 (SI) — reactive production MD の前に equilibration/最小化で初期接触を緩和。FIRE 自体は Bitzek et al., PRL 97, 170201 (2006)。本ミニマイザは論文本文のアルゴリズムではなく、初期構造(grid-packed)の接触緩和という準備工程の標準ツール。
+- Decision:
+  (a) 更新順序を正準形へ変更: power = F·v 判定 → (power>0 なら)キック前の v と |v| で混合 → dt/α 更新 → 慣性キック `v += dt·F` → 変位制限 → 移動。ASE と同様、初回ステップは v=0 のため power/混合ブランチを丸ごとスキップし(`vel is None` センチネル)キックのみ適用する。旧実装は初回に power=0 で else ブランチへ入り dt を fdec 倍していたが、これも ASE 非等価だったため是正。
+  (b) N_min 判定を ASE と同じ「判定してからカウント」順に統一(I2)。
+  (c) docstring を「1.0 kcal/mol/Å ≈ 0.043 eV/Å は ASE 既定 0.05 eV/Å より厳しい」に訂正(値自体は不変)(I3)。
+  (d) 変位制限 `maxstep_A` は kagome 独自の per-atom クランプ(初期クラッシュ耐性のためのロバスト性措置)であり正準 FIRE の一部ではないため、本修正のスコープ(I1/I2/I3)では変更しない。ASE はグローバルノルムクランプを使うが、クランプが発火しない緩やかな系では両者は一致する。
+- Scientific risk: 低〜中(科学的意味の変更なし、準備工程のみ)。本ミニマイザは初期構造の接触緩和専用で TDBB の候補=幾何(Eq.7)・バイアス(Eq.2-3)は不変。ただし収束経路(中間座標列)が変わるため、**準備構造が微変する。2026-07-06 以前のコミットで record 済みの run を bit-exact に再現するには当時の旧コミットが必要**(seed/config/git_sha は manifest に記録済み)。最終緩和構造の物理的品質(最終 fmax が閾値以下)は不変。
+- Alternatives considered: (a) I2 を現行維持 — 1 ステップ差で収束品質への影響は軽微だが、I1 と同時に「ASE 準拠」で統一する方が参照実装との突き合わせ検証が容易なため棄却。(b) maxstep をグローバルノルム化して完全 ASE 等価にする — I1/I2/I3 のスコープ外かつ per-atom クランプはロバスト性上の意図的選択のため見送り。
+- Licensing/commercial impact: None(ASE は test 依存に追加しない。参照実装はテスト内に手書きし、ASE がインストール済みの場合のみ本物の `ase.optimize.FIRE` との突き合わせを skipif ガード付きで実施)。
+- Follow-up: `tests/unit/test_minimize.py` に (a) 正準 FIRE 更新式を手書きした参照実装との位置列一致テスト、(b) skipif ガード付きの本物 ASE FIRE 突き合わせテストを追加。既存の収束テストは green のまま。
+
+## 2026-07-06: D1 — MC バロスタットは原子単位アフィンスケーリング(LAMMPS `dilate all` 相当)を採用
+- Context: `src/kagome/integrators/mc_barostat.py:115` は体積提案受理時に全原子座標を一律の線形係数 `scale = exp(ΔlnV/3)` で拡縮する(`new_positions = positions * scale`)。これは分子重心を保存する「分子単位スケーリング」ではなく、各原子を個別に原点基準でスケールする「原子単位(dilate all)」方式。この設計選択が decisions.md 未記録だった。レビュー指摘 D1。
+- Paper anchor: PDF Section 2 — NPT ensemble。バロスタットの具体方式(原子/分子単位のスケール対象)は論文未指定。原子単位スケーリング自体は LAMMPS `fix npt` の既定 `dilate all` と同型。
+- Decision: 原子単位アフィンスケーリング(`dilate all` 相当)を採用する。理由: 本プロジェクトの主対象は架橋ネットワーク系(nylon 縮合・epoxy 硬化)であり、反応進行に伴い分子境界が動的に変化(モノマー→鎖→網目)する。分子単位スケーリングは「分子=剛体クラスタ」の定義を前提とするが、結合トポロジーが毎サイクル変わる本系ではクラスタ定義が不安定で、重心の定義自体が曖昧になる。原子単位スケーリングはトポロジー非依存で常に well-defined。受理判定の Jacobian 項 `-(N_atoms+1)·kT·ΔlnV` も原子数 N ベースであり、原子単位スケールと整合する(decisions.md 2026-06-20 RF19b)。
+- Alternatives considered: (a) 分子単位スケーリング(重心を保存し分子内相対座標は不変)— 剛体分子系では標準だが、架橋で分子境界が動く本系ではクラスタ定義が不安定なため棄却。(b) group ごとの選択的スケール — 実装複雑化かつ論文根拠なし。棄却。
+- Scientific risk: 低〜中。強共有結合内距離も僅かにスケールされるが、`max_volume_change_frac=0.01`(1 提案あたり線形 ~0.33%)と小さく、MLIP の復元力で緩和される。分子単位系との定量差は圧縮率評価で O(結合長変動) 程度。qualitative なワークフロー挙動(密度収束・反応進行)には影響しない。
+- Licensing/commercial impact: None(内部実装)。
+- Follow-up: 剛体分子近似が有効な非架橋系(例: 溶媒充填)を扱う場合は分子単位スケーリングをオプション追加検討。現状の架橋系では不要。
+
+## 2026-07-06: W2 — フェーズ境界の MLIP forward 重複は既知事項として修正しない
+- Context: ワークフローのフェーズ境界(biased→unbiased、unbiased→次サイクル biased、equilibration→cycle0)で、同一座標に対する MLIP forward 計算が重複する(`polymerization.py:797-799, 926-928, 1056-1058` 近傍)。各フェーズ入口で `base_energy, base_forces = calculator.compute(...)` を初期化のため呼ぶが、直前フェーズ最終ステップの `_md_step` が既に同座標で forward を済ませているケースがある。1 サイクル(約 4000 ステップ)あたり約 2 回、割合にして ~0.05%。レビュー指摘 W2。
+- Paper anchor: N/A(実装効率の問題。科学的計算内容は不変)。
+- Decision: **修正しない。既知事項として記録するのみ。** `_md_step` が末尾の base energy/forces を呼び出し元へ返し、次フェーズ入口がそれを受け取れば重複を除去できるが、`_md_step`/フェーズ関数群のシグネチャ変更(base_forces を戻り値/引数に追加)が必要で、API 変更のコストが ~0.05% の削減効果に見合わない。支配コストは MLIP forward 自体であり、2 回/サイクルの追加は無視できる。
+- Alternatives considered: (a) `_md_step` が base_forces を返し次フェーズが再利用 — 効果 ~0.05% に対し API 変更が波及(全フェーズ関数・checkpoint/resume の状態互換)。棄却。(b) フェーズ境界で forward をスキップし前回値を状態に保持 — 隠れ状態が増え resume の bit-exact 性検証が複雑化。棄却。
+- Scientific risk: なし(数値結果は現状で正しい。重複は冗長計算のみで誤りではない)。
+- Licensing/commercial impact: None.
+- Follow-up: フェーズ関数群を将来リファクタする機会があれば、その際に base energy/forces のフェーズ間受け渡しを併せて導入する(単独では着手しない)。

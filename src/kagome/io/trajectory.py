@@ -26,6 +26,12 @@ class TrajectoryFrame:
     n_candidates: int = 0
     n_selected: int = 0
     temperature_K: float = 0.0
+    # (3,3) simulation cell at this frame (Å), or None for non-periodic runs.
+    # Recorded per frame because NPT lets the box vary between frames, so
+    # depth-resolved density (analysis/density.py) needs the cell of the exact
+    # event frame. Optional with a None default for backward compatibility:
+    # frames written before this field existed load as cell=None.
+    cell: list[list[float]] | None = None
 
 
 class TrajectoryWriter:

@@ -19,9 +19,25 @@ logger = logging.getLogger(__name__)
 
 
 def dpn_carothers(p: NDArray[np.floating] | float) -> NDArray[np.floating]:
-    """Carothers equation: DPn = 1 / (1 - p)."""
+    """Carothers equation: DPn = 1 / (1 - p).
+
+    ``p`` (extent of reaction) is clamped to 0.9999 so that p >= 1.0 yields a
+    finite DPn (10000) instead of ``inf``/negative, matching ``dpn_from_bonds``.
+    A clamp fires a warning because p >= 1.0 signals full conversion or a
+    bond-count/denominator miscount (F9, specs/fix-plan-2026-07-06).
+    """
     p_arr = np.asarray(p, dtype=np.float64)
-    return 1.0 / (1.0 - p_arr)
+    if np.any(p_arr > 0.9999):
+        n_clamped = int(np.count_nonzero(p_arr > 0.9999))
+        p_max = float(np.max(p_arr))
+        logger.warning(
+            'dpn_carothers: %d extent-of-reaction value(s) exceed the 0.9999 '
+            'clamp (max p=%.6f); DPn capped at 10000. p>=1 would indicate full '
+            'conversion or a bond-count/denominator error.',
+            n_clamped, p_max,
+        )
+    p_clamped = np.minimum(p_arr, 0.9999)
+    return 1.0 / (1.0 - p_clamped)
 
 
 def dpn_from_bonds(
@@ -38,6 +54,11 @@ def dpn_from_bonds(
     modeled here. ``n_functional_groups`` is the total number of reactive end
     groups (A + B); for equimolar systems each type contributes
     ``n_functional_groups / 2``.
+
+    Counting convention (A5): ``n_bonds`` is the number of amide bonds, i.e.
+    ``confirmed_formation`` events with ``counts_as_reaction=True``. Bias-only
+    water-forming k-l events must be excluded by the caller so one condensation
+    counts once (specs/decisions.md 2026-07-06).
     """
     if n_functional_groups <= 0:
         return 1.0

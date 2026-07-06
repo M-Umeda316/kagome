@@ -10,7 +10,10 @@ from pathlib import Path
 
 from kagome.backends.ase_adapter import ASECalculatorAdapter
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# src/kagome/backends/mace_backend.py -> repo root is 3 levels up (parents[3]).
+# parents[2] pointed at src/ (old src/backends/ layout), so <root>/models/*.model
+# local weights were never found and mace_mp downloaded the foundation model (B9).
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _LOCAL_MODELS = {
     'small': _PROJECT_ROOT / 'models' / 'mace-mp-0-small.model',
 }

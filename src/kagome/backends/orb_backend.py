@@ -23,7 +23,11 @@ from kagome.units import EV_TO_KCAL_MOL
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# src/kagome/backends/orb_backend.py -> repo root is 3 levels up (parents[3]).
+# parents[2] pointed at src/ (a leftover from the old src/backends/ layout),
+# so local weights under <root>/models/*.ckpt were never found and the loader
+# silently fell back to downloaded pretrained weights (B9).
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _LOCAL_MODELS = {
     'orbmol_v2': _PROJECT_ROOT / 'models' / 'orbmol-v2-teqabfhg-20260523.ckpt',
 }
@@ -109,6 +113,7 @@ class OrbCalculatorAdapter(Calculator):
         self._spin = spin
         self._model_id = model_id or name
         self._pbc_checked = False
+        self._device_logged = False
 
         try:
             from ase import Atoms
@@ -154,8 +159,11 @@ class OrbCalculatorAdapter(Calculator):
         cell: NDArray[np.floating] | None = None,
     ) -> tuple[float, NDArray[np.floating]]:
         if cell is not None and not self._pbc_checked:
-            self._pbc_checked = True
+            # Set the guard only AFTER the check succeeds; otherwise a failed
+            # check would flip the flag and let a later call slip through
+            # unvalidated (B4, specs/fix-plan-2026-07-06).
             self._check_periodic_support()
+            self._pbc_checked = True
         atoms = self._Atoms(
             symbols=species,
             positions=positions,
@@ -166,6 +174,23 @@ class OrbCalculatorAdapter(Calculator):
         atoms.info['spin'] = self._spin
 
         batch = self._adapter.from_ase_atoms(atoms, device=self._device)
+
+        if not self._device_logged:
+            import torch
+            model_device = next(self._model.parameters()).device
+            # Also report where the input batch tensors actually live: a mismatch
+            # between model params (cuda) and batch (cpu) is the signature of the
+            # GPU-not-used report (memory: gpu-activation-cpu-issue.md). Probe a
+            # representative coordinate tensor without assuming the exact schema.
+            batch_pos = getattr(batch, 'positions', None)
+            batch_device = getattr(batch_pos, 'device', None)
+            logger.info(
+                'OrbCalculator device check: self._device=%s, '
+                'model params on %s, batch tensors on %s, CUDA available=%s',
+                self._device, model_device, batch_device, torch.cuda.is_available(),
+            )
+            self._device_logged = True
+
         result = self._model(batch)
 
         energy_ev = float(result['energy'].detach().item())

@@ -39,6 +39,51 @@ class RunManifest:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2), encoding='utf-8')
 
+    @classmethod
+    def append_resume(
+        cls, path: Path, ckpt_step: int, ckpt_cycle: int,
+    ) -> bool:
+        """Append a resume record to an existing manifest without clobbering it (W1).
+
+        The original ``git_sha``/``timestamp``/``seed`` identify the run that
+        produced the bulk of the trajectory; a resume only continues it and must
+        not overwrite that provenance. The resuming code's git state is recorded
+        under ``extra['resume_history']`` so both segments stay auditable.
+
+        Returns True if the record was appended, False if *path* does not exist
+        (the caller then falls back to a fresh :meth:`save`).
+        """
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding='utf-8'))
+        extra = data.setdefault('extra', {})
+        history = extra.setdefault('resume_history', [])
+        history.append({
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'git_sha': _get_git_sha(),
+            'git_dirty': _get_git_dirty(),
+            'ckpt_step': int(ckpt_step),
+            'ckpt_cycle': int(ckpt_cycle),
+        })
+        path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        return True
+
+    @staticmethod
+    def record_production_start_step(path: Path, step: int) -> None:
+        """Record the post-equilibration step where the production (cycle) loop
+        begins, into ``extra['production_start_step']`` (A4).
+
+        Activation and equilibration run outside :meth:`PolymerizationWorkflow.run`,
+        so ``state.step`` at the start of the cycle loop is the true production
+        onset that k_p fitting must anchor t=0 to. Called only on fresh runs; a
+        resume preserves the original run's recorded value (do not overwrite).
+        """
+        if not path.exists():
+            return
+        data = json.loads(path.read_text(encoding='utf-8'))
+        data.setdefault('extra', {})['production_start_step'] = int(step)
+        path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
 
 def _normalize_value(v: Any) -> Any:
     """Convert numpy scalars to Python built-ins for JSON serialisation."""
