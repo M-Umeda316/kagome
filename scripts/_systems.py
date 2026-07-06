@@ -1,6 +1,8 @@
 """Shared system builders for polymerization scripts."""
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 
 from kagome.reactive.groups import PairSpec, ReactiveGroup, ReactionTemplate
@@ -857,6 +859,91 @@ def build_full_aibn_system(
 
     return (positions, species, aibn_azo_bonds_global,
             template, groups, propagation_map, chain_c_map)
+
+
+def prune_undissociated_centers(
+    groups: dict[str, ReactiveGroup],
+    chain_c_map: dict[int, int],
+    dissociated_c_indices: Iterable[int],
+) -> tuple[dict[str, ReactiveGroup], dict[int, int], int]:
+    """Drop radical centres that did not actually dissociate during activation.
+
+    ``build_full_aibn_system`` registers *every* AIBN radical centre in
+    ``radical_C``/``chain_C``/``chain_c_map`` unconditionally (by design — the
+    dissociation result is unknown at build time).  When the V^d activation phase
+    fails to cleave all azo C-N bonds, the still-intact centres are 4-coordinate
+    (3 C + 1 azo-N, no H): they cannot add a monomer without over-coordinating,
+    so the Layer-2 valence guard drops them *every cycle* (wasting candidate
+    slots) and ``production_spin = n_radicals + 1`` over-counts the multiplicity.
+    Un-cleaved AIBN has not formed a radical and is chemically inert, so those
+    centres are removed here to reconcile the reactive groups with the actual
+    activation outcome (specs/decisions.md 2026-07-06).
+
+    Pure function: the input ``groups``/``chain_c_map`` are not mutated; new
+    objects are returned.  ``radical_C``/``chain_C`` retain only centres whose
+    global index is in ``dissociated_c_indices``.
+
+    Parameters
+    ----------
+    groups
+        Reactive groups; must contain ``'radical_C'`` (and usually ``'chain_C'``).
+    chain_c_map
+        ``{radical_C_global_idx: chain_C_global_idx}`` for each radical centre.
+    dissociated_c_indices
+        Global indices of the azo carbons whose C-N bond actually dissociated.
+
+    Returns
+    -------
+    (new_groups, new_chain_c_map, n_pruned)
+        Reconciled group dict, reconciled chain_c_map, and the number of radical
+        centres removed.
+    """
+    dissociated = {int(c) for c in dissociated_c_indices}
+
+    new_groups = {
+        label: ReactiveGroup(g.label, list(g.atom_indices))
+        for label, g in groups.items()
+    }
+    new_chain_c_map = {
+        rc: cc for rc, cc in chain_c_map.items() if rc in dissociated
+    }
+
+    radical_group = new_groups.get('radical_C')
+    if radical_group is None:
+        return new_groups, new_chain_c_map, 0
+
+    pruned_radicals = [
+        rc for rc in radical_group.atom_indices if rc not in dissociated
+    ]
+    radical_group.atom_indices = [
+        rc for rc in radical_group.atom_indices if rc in dissociated
+    ]
+
+    chain_group = new_groups.get('chain_C')
+    if chain_group is not None:
+        pruned_chain_cs = {
+            chain_c_map[rc] for rc in pruned_radicals if rc in chain_c_map
+        }
+        chain_group.atom_indices = [
+            cc for cc in chain_group.atom_indices if cc not in pruned_chain_cs
+        ]
+
+    return new_groups, new_chain_c_map, len(pruned_radicals)
+
+
+def production_spin(n_radicals: int, cap: int | None = None) -> int:
+    """High-spin total multiplicity (2S+1) for ``n_radicals`` unpaired electrons.
+
+    Each surviving radical centre contributes one unpaired electron, so the
+    high-spin coupling gives multiplicity ``n_radicals + 1`` (paper anchor:
+    Table S1 activation → open-shell radicals; specs/decisions.md 2026-07-02
+    Layer 3).  ``cap`` (from ``--production-spin-cap``) optionally clamps the
+    value for diagnostics.
+    """
+    spin = n_radicals + 1
+    if cap is not None:
+        spin = min(spin, cap)
+    return spin
 
 
 def build_activation_template(

@@ -1321,3 +1321,21 @@ Use this template for each decision.
 - Scientific risk: なし(数値結果は現状で正しい。重複は冗長計算のみで誤りではない)。
 - Licensing/commercial impact: None.
 - Follow-up: フェーズ関数群を将来リファクタする機会があれば、その際に base energy/forces のフェーズ間受け渡しを併せて導入する(単独では着手しない)。
+
+## 2026-07-06: 不完全 AIBN 活性化時に反応グループを実解離集合へ縮約(ユーザー承認 2026-07-06)
+- Context: `--activation` 経路で AIBN の azo C-N が全本数解離しなかった場合、`build_full_aibn_system` は全ラジカル中心を無条件に `radical_C`/`chain_C`/`chain_c_map` に登録するため、未解離中心(3C+1N の 4配位、H無し)が反応グループに残る。`run_vinyl_aibn.py` の activation ブロックは解離した azo 結合を topology から除去する(`wf._topology.remove_bond`)のみで、未解離中心をグループから除去していなかった。結果:
+  - 未解離中心は 4配位・H無しのため `topology._spare_hydrogen` が None → `vinyl_addition_over_coordinates` が毎サイクル `[radical]` を返し、valence guard が正しく drop する。しかし radical_C に残り続けるため毎サイクル候補選択枠を浪費する。
+  - `production_spin = len(radical_C) + 1` が未解離中心も数えるため、系の総スピン多重度が過大になる。
+  - 証拠: runs/diag_nvt(解離6/10 → 毎サイクル drop 4)、runs/diag_npt(8/10 → drop 2)、runs/s6_half_100x5(10/10 → drop 0、正常成長)。
+- Paper anchor: Table S1(Activation 行、azo C-N への V^d)。開始剤ラジカルは開殻(2026-07-02 Layer 3 調査)。化学的には未開裂 AIBN は不活性(ラジカルを生成していない)。
+- 既存記録との整合: 2026-07-02 の valence guard(Layer1/2)は正しい(未解離中心の付加を正しく拒否する)。変更しない。活性化経路の「開始剤ラジカルは開殻」前提(2026-07-02 Layer 3)は**完全活性化を暗黙に仮定していた**。不完全活性化時はグループを実解離集合へ縮約するのが正しい。未解離 AIBN は化学的に不活性なので反応グループから除外する。
+- Decision:
+  (a) `scripts/_systems.py` に純関数 `prune_undissociated_centers(groups, chain_c_map, dissociated_c_indices) -> (new_groups, new_chain_c_map, n_pruned)` を追加。実解離した azo_C 集合に含まれないラジカル中心を `radical_C`/`chain_C`/`chain_c_map` から除去する(新オブジェクトを返す純関数、入力は非破壊)。
+  (b) `run_vinyl_aibn.py` の activation ブロックで activation 後・topology 結合除去後に (a) を呼び、`wf.groups` と `wf._updater.chain_c_map`(および局所 `groups`/`chain_c_map`)へ再代入して間引き後グループで production を実行。wf は構築時に groups dict と chain_c_map への参照を保持するため、再代入で確実に反映される(wf 構築を activation 後へ移せない — activation は `wf.run_activation`/`wf._minimize`/`wf._topology` を使うため)。
+  (c) `production_spin(n_radicals, cap=None) -> int` を `_systems.py` の純関数に切り出し、間引き後の radical 数で算出。間引き発生時は WARNING で除外中心数を明示。
+  (d) 案B(fail-loud): activation 後 `len(dissociated) < 2 × n_initiators` で顕著な WARNING(解離数/期待数、`--activation-steps`/`--activation-f1-max` 増加提案)。CLI フラグ `--strict-activation`(既定 off)を追加し、on なら RuntimeError で中断。
+- Ask-first 該当: 反応グループの縮約は選択挙動・スピン多重度を変えるが、化学的整合(未開裂 AIBN=不活性)への接近であり 2026-07-06 にユーザー承認済み。
+- Alternatives considered: (a) valence guard 自体を変更して未解離中心を無視 — ガードは正しく動いており、根本原因は登録集合の過大。棄却。(b) `build_full_aibn_system` で登録を条件付きにする — 活性化はビルド後に走るため解離結果はビルド時に未知。棄却。(c) in-place 変異で間引き — wf 反映は自動だが純関数のテスト容易性を優先し新オブジェクト返し+再代入を採用。
+- Scientific risk: 低。完全活性化(10/10)時は挙動不変(n_pruned=0)。不完全活性化時のみグループ・スピンが実解離集合に整合(=より正しい)。
+- Licensing/commercial impact: None。
+- Follow-up: `tests/unit/test_systems.py` に間引き関数・スピン純関数のユニットテスト、`tests/unit/test_topology.py` に未解離中心(3C+1N)への付加ガード回帰テストを追加。

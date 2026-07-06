@@ -188,6 +188,32 @@ class TestValenceGuard:
         assert vinyl_addition_over_coordinates(
             topo, 0, 10, {10: 11}, species) == []
 
+    def test_undissociated_aibn_center_flagged_then_cleared_by_azo_removal(self):
+        """Minimal reproduction of the incomplete-activation bug
+        (specs/decisions.md 2026-07-06).
+
+        An AIBN radical centre whose azo C-N bond did NOT dissociate is
+        4-coordinate (3 C + 1 azo-N, no H).  A vinyl addition would push it to
+        5-coordinate with no spare H to shed, so the valence guard must flag it.
+        After the azo C-N bond is removed (genuine dissociation), the same centre
+        is 3-coordinate and the addition is valence-safe.
+        """
+        species = ['C', 'C', 'C', 'C', 'N'] + ['C'] * 15  # atom 0 = radical C, 4 = azo N
+        # radical C (0): 3 C (1,2,3) + 1 azo N (4) -> 4-coordinate, no H.
+        intact = BondTopology.from_bonds([
+            (0, 1), (0, 2), (0, 3), (0, 4),      # intact AIBN centre (with azo N)
+            (10, 11, 2.0), (10, 12), (10, 13),   # monomer alpha =CH2
+        ])
+        # Un-dissociated: adding a monomer over-coordinates the carbon (-> [0]).
+        assert vinyl_addition_over_coordinates(
+            intact, 0, 10, {10: 11}, species) == [0]
+
+        # After genuine azo C-N dissociation the centre is a real 3-coord radical.
+        dissociated = intact.copy()
+        dissociated.remove_bond(0, 4)
+        assert vinyl_addition_over_coordinates(
+            dissociated, 0, 10, {10: 11}, species) == []
+
     def test_over_coordinated_atoms_scan(self):
         topo = BondTopology.from_bonds([
             (0, 1), (0, 2), (0, 3), (0, 4), (0, 5),  # atom 0 = 5-coord C

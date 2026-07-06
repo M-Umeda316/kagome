@@ -563,3 +563,101 @@ class TestBuildNylon66System:
             n_diamines=2, n_diacids=2, box_size=20.0, rng=rng,
         )
         assert not np.any(np.isnan(pos))
+
+
+class TestPruneUndissociatedCenters:
+    """prune_undissociated_centers reconciles the reactive groups with the
+    actual AIBN activation result (specs/decisions.md 2026-07-06)."""
+
+    @staticmethod
+    def _make_groups(n_centers):
+        from kagome.reactive.groups import ReactiveGroup
+        # radical centres at 0,10,20,...; each chain_C at radical+1 (distinct).
+        radicals = [10 * i for i in range(n_centers)]
+        chain_cs = [10 * i + 1 for i in range(n_centers)]
+        groups = {
+            'radical_C': ReactiveGroup('radical_C', list(radicals)),
+            'chain_C': ReactiveGroup('chain_C', list(chain_cs)),
+            'vinyl_alpha_C': ReactiveGroup('vinyl_alpha_C', [500, 501, 502]),
+        }
+        chain_c_map = {radicals[i]: chain_cs[i] for i in range(n_centers)}
+        return groups, chain_c_map, radicals, chain_cs
+
+    def test_partial_dissociation_reduces_groups(self):
+        from scripts._systems import prune_undissociated_centers
+        groups, chain_c_map, radicals, chain_cs = self._make_groups(10)
+        dissociated_c = radicals[:6]  # first 6 centres actually dissociated
+        new_groups, new_ccmap, n_pruned = prune_undissociated_centers(
+            groups, chain_c_map, dissociated_c,
+        )
+        assert n_pruned == 4
+        assert new_groups['radical_C'].atom_indices == radicals[:6]
+        assert new_groups['chain_C'].atom_indices == chain_cs[:6]
+        assert new_ccmap == {radicals[i]: chain_cs[i] for i in range(6)}
+        # vinyl_alpha_C is untouched.
+        assert new_groups['vinyl_alpha_C'].atom_indices == [500, 501, 502]
+
+    def test_full_dissociation_is_no_op(self):
+        from scripts._systems import prune_undissociated_centers
+        groups, chain_c_map, radicals, chain_cs = self._make_groups(10)
+        new_groups, new_ccmap, n_pruned = prune_undissociated_centers(
+            groups, chain_c_map, radicals,  # all 10 dissociated
+        )
+        assert n_pruned == 0
+        assert new_groups['radical_C'].atom_indices == radicals
+        assert new_groups['chain_C'].atom_indices == chain_cs
+        assert new_ccmap == chain_c_map
+
+    def test_zero_dissociation_removes_all(self):
+        from scripts._systems import prune_undissociated_centers
+        groups, chain_c_map, radicals, chain_cs = self._make_groups(10)
+        new_groups, new_ccmap, n_pruned = prune_undissociated_centers(
+            groups, chain_c_map, [],  # nothing dissociated
+        )
+        assert n_pruned == 10
+        assert new_groups['radical_C'].atom_indices == []
+        assert new_groups['chain_C'].atom_indices == []
+        assert new_ccmap == {}
+
+    def test_inputs_are_not_mutated(self):
+        from scripts._systems import prune_undissociated_centers
+        groups, chain_c_map, radicals, chain_cs = self._make_groups(10)
+        prune_undissociated_centers(groups, chain_c_map, radicals[:6])
+        # Originals unchanged (pure function).
+        assert groups['radical_C'].atom_indices == radicals
+        assert groups['chain_C'].atom_indices == chain_cs
+        assert chain_c_map == {radicals[i]: chain_cs[i] for i in range(10)}
+
+
+class TestProductionSpin:
+    """production_spin computes the high-spin multiplicity from the surviving
+    radical count (specs/decisions.md 2026-07-02 Layer 3, 2026-07-06)."""
+
+    def test_high_spin_sum(self):
+        from scripts._systems import production_spin
+        assert production_spin(0) == 1
+        assert production_spin(1) == 2
+        assert production_spin(6) == 7
+
+    def test_cap_clamps(self):
+        from scripts._systems import production_spin
+        assert production_spin(10, cap=3) == 3
+        assert production_spin(2, cap=5) == 3  # below cap -> unclamped
+
+    def test_uses_pruned_radical_count(self):
+        """Spin follows the reconciled (pruned) radical count, not the raw
+        registration count."""
+        from scripts._systems import prune_undissociated_centers, production_spin
+        from kagome.reactive.groups import ReactiveGroup
+        radicals = [10 * i for i in range(10)]
+        chain_cs = [10 * i + 1 for i in range(10)]
+        groups = {
+            'radical_C': ReactiveGroup('radical_C', list(radicals)),
+            'chain_C': ReactiveGroup('chain_C', list(chain_cs)),
+        }
+        chain_c_map = {radicals[i]: chain_cs[i] for i in range(10)}
+        new_groups, _, _ = prune_undissociated_centers(
+            groups, chain_c_map, radicals[:6],
+        )
+        n_radicals = len(new_groups['radical_C'].atom_indices)
+        assert production_spin(n_radicals) == 7  # 6 radicals + 1, not 10 + 1
