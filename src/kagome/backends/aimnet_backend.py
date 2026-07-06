@@ -103,5 +103,9 @@ class AimnetCalculatorAdapter(Calculator):
         system (NSE spin-charge equilibration)."""
         try:
             return np.asarray(self._ase.get_magnetic_moments(), dtype=np.float64)
-        except Exception:
+        except (NotImplementedError, AttributeError):
+            # ASE raises PropertyNotImplementedError (a NotImplementedError
+            # subclass) when the calculator has no magnetic moments; a missing
+            # method raises AttributeError. Narrow the catch so genuine bugs
+            # (e.g. shape/dtype errors) are not silently swallowed (B7).
             return None

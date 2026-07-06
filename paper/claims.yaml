@@ -35,7 +35,7 @@ equations:
   - id: eq8
     desc: Total bias potential over selected groups
     formula: ΔV = Σ_groups Σ_pairs [fp·V^f + (1-fp)·V^d]
-    implemented_in: src/boost/tdbb.py::total_bias
+    implemented_in: src/boost/tdbb.py::total_bias, src/boost/tdbb.py::total_bias_fast
 
   # Eq. 9-11 confirmed from PDF (2026-06-18). Eq.11 is the last numbered equation.
   - id: eq9

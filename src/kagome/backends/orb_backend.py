@@ -159,8 +159,11 @@ class OrbCalculatorAdapter(Calculator):
         cell: NDArray[np.floating] | None = None,
     ) -> tuple[float, NDArray[np.floating]]:
         if cell is not None and not self._pbc_checked:
-            self._pbc_checked = True
+            # Set the guard only AFTER the check succeeds; otherwise a failed
+            # check would flip the flag and let a later call slip through
+            # unvalidated (B4, specs/fix-plan-2026-07-06).
             self._check_periodic_support()
+            self._pbc_checked = True
         atoms = self._Atoms(
             symbols=species,
             positions=positions,
