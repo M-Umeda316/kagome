@@ -1287,3 +1287,19 @@ Use this template for each decision.
 - Scientific risk: 中。nylon の α(t)・p が従来比で下がる(二重計上の解消)。vinyl は amine_H 等を持たず、constraint_only の連鎖ペアは _build_pair_biases で除外済みのため計数不変。
 - Licensing/commercial impact: None.
 - Follow-up: 合成イベント列(同一 candidate_id で 2 formation)で α・p が 1 反応分になるユニットテストを追加。bonds.jsonl 旧フォーマット読み込み互換を担保。
+
+## 2026-07-06: I1/I2/I3 — FIRE ミニマイザを正準アルゴリズム(Bitzek 2006 / ASE)に整列
+- Context: `src/kagome/integrators/minimize.py::fire_minimize` の FIRE 更新順序が正準形と非等価だった。レビュー指摘 I1/I2/I3。
+  - I1: 速度混合 `v = (1-α)v + α·F̂·|v|` を慣性キック `v += dt·F` の**後**に適用していた。正準 FIRE(Bitzek et al., PRL 97, 170201 (2006) / `ase.optimize.fire.FIRE.step`)は混合を**キック前**の速度と `|v|` に対して行い、その後にキックする。キック後混合では混合に用いる `v` と `|v|` が既にキック済みの値になり、混合係数 α の意味と速度方向の減衰が正準形と一致しない。
+  - I2: 時間刻み増加の N_min 判定にオフバイワンがあった。旧実装は `n_positive += 1` してから `if n_positive > n_min` を判定するため、連続正パワー 6 回目で dt 増加を開始していた。ASE は `if Nsteps > Nmin: ...` を判定してから `Nsteps += 1`(判定してからカウント)で、7 回目に開始する。
+  - I3: `FireParams` docstring が既定 fmax=1.0 kcal/mol/Å を ASE 既定より「looser(緩い)」と記述していたが誤り。1.0 kcal/mol/Å ≈ 0.043 eV/Å は ASE 既定 0.05 eV/Å(≈ 1.15 kcal/mol/Å)より小さい閾値=より**厳しい**。
+- Paper anchor: PDF p.20 (SI) — reactive production MD の前に equilibration/最小化で初期接触を緩和。FIRE 自体は Bitzek et al., PRL 97, 170201 (2006)。本ミニマイザは論文本文のアルゴリズムではなく、初期構造(grid-packed)の接触緩和という準備工程の標準ツール。
+- Decision:
+  (a) 更新順序を正準形へ変更: power = F·v 判定 → (power>0 なら)キック前の v と |v| で混合 → dt/α 更新 → 慣性キック `v += dt·F` → 変位制限 → 移動。ASE と同様、初回ステップは v=0 のため power/混合ブランチを丸ごとスキップし(`vel is None` センチネル)キックのみ適用する。旧実装は初回に power=0 で else ブランチへ入り dt を fdec 倍していたが、これも ASE 非等価だったため是正。
+  (b) N_min 判定を ASE と同じ「判定してからカウント」順に統一(I2)。
+  (c) docstring を「1.0 kcal/mol/Å ≈ 0.043 eV/Å は ASE 既定 0.05 eV/Å より厳しい」に訂正(値自体は不変)(I3)。
+  (d) 変位制限 `maxstep_A` は kagome 独自の per-atom クランプ(初期クラッシュ耐性のためのロバスト性措置)であり正準 FIRE の一部ではないため、本修正のスコープ(I1/I2/I3)では変更しない。ASE はグローバルノルムクランプを使うが、クランプが発火しない緩やかな系では両者は一致する。
+- Scientific risk: 低〜中(科学的意味の変更なし、準備工程のみ)。本ミニマイザは初期構造の接触緩和専用で TDBB の候補=幾何(Eq.7)・バイアス(Eq.2-3)は不変。ただし収束経路(中間座標列)が変わるため、**準備構造が微変する。2026-07-06 以前のコミットで record 済みの run を bit-exact に再現するには当時の旧コミットが必要**(seed/config/git_sha は manifest に記録済み)。最終緩和構造の物理的品質(最終 fmax が閾値以下)は不変。
+- Alternatives considered: (a) I2 を現行維持 — 1 ステップ差で収束品質への影響は軽微だが、I1 と同時に「ASE 準拠」で統一する方が参照実装との突き合わせ検証が容易なため棄却。(b) maxstep をグローバルノルム化して完全 ASE 等価にする — I1/I2/I3 のスコープ外かつ per-atom クランプはロバスト性上の意図的選択のため見送り。
+- Licensing/commercial impact: None(ASE は test 依存に追加しない。参照実装はテスト内に手書きし、ASE がインストール済みの場合のみ本物の `ase.optimize.FIRE` との突き合わせを skipif ガード付きで実施)。
+- Follow-up: `tests/unit/test_minimize.py` に (a) 正準 FIRE 更新式を手書きした参照実装との位置列一致テスト、(b) skipif ガード付きの本物 ASE FIRE 突き合わせテストを追加。既存の収束テストは green のまま。
