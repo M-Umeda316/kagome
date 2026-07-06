@@ -59,6 +59,17 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
 
+# Source calibrated parameters if available (from calibrate_tdbb.py).
+# These set ACTIVATION_F2, ACTIVATION_F1_MAX, ACTIVATION_STEPS, F2,
+# F1_MAX_FORMATION, F1_MAX_DISSOCIATION. Manual overrides below take
+# precedence (env vars are set only if not already defined).
+CALIB_ENV="${REPO_ROOT}/runs/calibration/tdbb_params.env"
+if [ -f "${CALIB_ENV}" ]; then
+    echo "Loading calibrated parameters from ${CALIB_ENV}"
+    # shellcheck source=/dev/null
+    source "${CALIB_ENV}"
+fi
+
 SEED="${SEED:-7}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/s6_paper_scale_seed${SEED}}"
 DEVICE="${DEVICE:-cuda}"
@@ -67,7 +78,12 @@ BIASED_STEPS="${BIASED_STEPS:-2000}"
 UNBIASED_STEPS="${UNBIASED_STEPS:-1500}"
 EQUIL_STEPS="${EQUIL_STEPS:-2000}"
 F2="${F2:-2}"
+F1_MAX_FORMATION="${F1_MAX_FORMATION:-250.0}"
+F1_MAX_DISSOCIATION="${F1_MAX_DISSOCIATION:-125.0}"
 FRICTION_PER_FS="${FRICTION_PER_FS:-0.01}"
+ACTIVATION_F2="${ACTIVATION_F2:-0.3}"
+ACTIVATION_F1_MAX="${ACTIVATION_F1_MAX:-250.0}"
+ACTIVATION_STEPS="${ACTIVATION_STEPS:-5000}"
 # RESUME=1 continues from ${OUTPUT_DIR}/checkpoint.pkl after a killed run
 # (skips build-time activation, restarts at the saved cycle). Checkpoints are
 # written every cycle by default.
@@ -82,6 +98,8 @@ echo "  Device:         ${DEVICE}"
 echo "  N cycles:       ${N_CYCLES}"
 echo "  Biased steps:   ${BIASED_STEPS}"
 echo "  Unbiased steps: ${UNBIASED_STEPS}"
+echo "  Activation:     f2=${ACTIVATION_F2}, f1_max=${ACTIVATION_F1_MAX}, steps=${ACTIVATION_STEPS}"
+echo "  Production:     f2=${F2}, f1_max_form=${F1_MAX_FORMATION}, f1_max_dissoc=${F1_MAX_DISSOCIATION}"
 echo ""
 
 # Warn if VRAM might be insufficient
@@ -103,10 +121,12 @@ python scripts/run_vinyl_aibn.py \
     --n-monomers 200 \
     --n-initiators 10 \
     --activation \
-    --activation-f2 0.3 \
-    --activation-f1-max 250 \
-    --activation-steps 5000 \
+    --activation-f2 "${ACTIVATION_F2}" \
+    --activation-f1-max "${ACTIVATION_F1_MAX}" \
+    --activation-steps "${ACTIVATION_STEPS}" \
     --f2 "${F2}" \
+    --f1-max-formation "${F1_MAX_FORMATION}" \
+    --f1-max-dissociation "${F1_MAX_DISSOCIATION}" \
     --friction-per-fs "${FRICTION_PER_FS}" \
     --density 0.5 \
     --temperature 333.0 \

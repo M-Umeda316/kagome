@@ -1339,3 +1339,18 @@ Use this template for each decision.
 - Scientific risk: 低。完全活性化(10/10)時は挙動不変(n_pruned=0)。不完全活性化時のみグループ・スピンが実解離集合に整合(=より正しい)。
 - Licensing/commercial impact: None。
 - Follow-up: `tests/unit/test_systems.py` に間引き関数・スピン純関数のユニットテスト、`tests/unit/test_topology.py` に未解離中心(3C+1N)への付加ガード回帰テストを追加。
+
+## 2026-07-07: TDBB パラメータ較正スクリプト(calibrate_tdbb.py)の導入
+- Context: OrbMol-v2 checkpoint を差し替えた際、TDBB パラメータ(activation f1_max / steps、production f1_max)が新しい PES のバリアと整合するかを手動 PES スキャンで確認していた。これを `scripts/calibrate_tdbb.py` として自動化し、`run_s6_paper_scale.sh` が結果を自動で読み込む配線を追加する。
+- Paper anchor: Table S1(Activation 行の V^d、production f1_max=250/125 kcal/mol)、Eq.2-3(バイアス振幅はバリアを超える必要がある)。バリア実測に基づく較正手順自体は論文外の追加(論文は PFP 前提の固定パラメータを直接与える)。
+- Decision:
+  (a) `calibrate_tdbb.py` は2つの PES スキャンを実行: AIBN azo C-N homolysis(spin=1、r=1.4→3.4 Å)とラジカル付加 ·CH3 + C2H4(spin=2、r=3.5→1.54 Å)。各点は `constrained_relax` で拘束緩和。バリアは各スキャンの反応物基準 dE の最大値。
+  (b) activation_f1_max = max(250, ceil(barrier×2.5/25)×25)。安全係数 2.5 は「バリアを確実に超えつつ dwell 時間マージンを持つ」ための本リポジトリ独自の設定(論文外、既定バリア 39.3 では 250 のまま)。
+  (c) activation_steps = max(5000, int(5000×barrier/39))。検証済みバリア 39 kcal/mol で検証済み値 5000(decisions.md 2026-06-26)を再現する線形スケール。1000 単位に丸め。
+  (d) production 側 f1_max_formation=250 / f1_max_dissociation=125 / f2=2.0 は固定(Table S1 / decisions.md 2026-06-26)。ラジカル付加バリアの実測値は f1_max=250 に対しマージンが十分(~6 kcal/mol)なため導出には使わず、15 kcal/mol 超で WARNING を出す検知のみに使用。
+  (e) 出力は `runs/calibration/calibration.json`(スキャン生データ+推奨値)と `tdbb_params.env`。env は `VAR="${VAR:-value}"` 形式で、手動の環境変数指定が較正値より常に優先される。`run_s6_paper_scale.sh` は起動時に存在すれば source する。`run_vinyl_aibn.py` に `--f1-max-formation` / `--f1-max-dissociation` を追加し TDBBParams へ配線(既定値は従来ハードコードと同一の 250/125)。
+- 2026-07-07 実測(orbmol-v2-teqabfhg-20260523): C-N barrier 39.3 kcal/mol @ r=3.00 Å(既存推定 39.4 と一致)、ラジカル付加 barrier 6.1 @ 2.20 Å、well −27.8 @ 1.54 Å。推奨値は全て検証済み既定値と一致(activation 0.3/250/5000、production 2.0/250/125)。
+- Alternatives considered: (a) production f1_max もバリアから導出 — 論文値 250/125 に対し実測バリアのマージンが大きく、導出式の論文根拠もないため固定+警告方式を採用。(b) activation_steps に安全係数 1.5 を乗算(初稿)— 基準バリアで検証済み 5000 が未検証の 8000 に置き換わるためレビューで棄却(hyperparameter 無断変更の防止)。
+- Scientific risk: 低。既定 checkpoint では全推奨値が検証済み値と一致し挙動不変。checkpoint 差し替え時に PES バリアの乖離を検知できるようになる分、安全側。
+- Licensing/commercial impact: None(既存 OrbMol-v2 backend のみ使用、Apache-2.0 記録済み)。
+- Follow-up: RESUME 時の TDBB パラメータ来歴ギャップ(checkpoint は TDBB params を保存せず、resume 時は現在の env/CLI 値が無記録で適用される。`RunManifest.append_resume` は timestamp/git_sha/ckpt 位置のみ記録)。resume_history へ有効な TDBB 設定を記録する対応を別タスクで実施。
