@@ -999,8 +999,14 @@ class PolymerizationWorkflow:
                 ))
 
             if self.bond_tracker is not None:
+                # pair_dists was computed by total_bias_fast inside _md_step for
+                # this exact state.positions (post-drift, and post-barostat if
+                # accepted); no coordinate mutation occurs before this call, so
+                # reusing it is bit-identical to recomputing the minimum image
+                # (S2/W3, specs/decisions.md 2026-07-06).
                 events = self.bond_tracker.check_reactions_during_bias(
                     active_pairs, state.positions, state.step, cycle, state.cell,
+                    pair_dists=pair_dists,
                 )
                 if events:
                     logger.info(

@@ -71,6 +71,7 @@ class BondTracker:
         step: int,
         cycle: int,
         cell: NDArray[np.floating] | None = None,
+        pair_dists: list[float] | None = None,
     ) -> list[BondEvent]:
         """Detect tentative reaction events DURING the biased phase.
 
@@ -80,20 +81,31 @@ class BondTracker:
         count as confirmed — confirmation happens only in ``check_outcomes``
         after unbiased relaxation (specs/decisions.md 2026-07-03 D1).
 
+        ``pair_dists`` (optional) is the per-pair distance list already
+        computed by ``total_bias_fast`` for the SAME ``positions`` this method
+        receives — see specs/decisions.md 2026-07-06 S2/W3.  When supplied,
+        ``pair_dists[i]`` is reused for ``pairs[i]`` instead of recomputing the
+        minimum image, which is bit-identical because both use the same
+        coordinates and the same orthorhombic minimum-image convention.  When
+        ``None`` (direct callers/tests), the distance is recomputed.
+
         Returns tentative events so the caller can end the biased segment.
         """
         newly: list[BondEvent] = []
-        for pair in pairs:
+        for i, pair in enumerate(pairs):
             pair_key = self._key(pair.idx_a, pair.idx_b)
             reacted_key = (*pair_key, pair.is_formation)
             if reacted_key in self._reacted:
                 continue
             if pair_key in self._tentative:
                 continue
-            r_vec = minimum_image(
-                positions[pair.idx_b] - positions[pair.idx_a], cell,
-            )
-            r = float(np.linalg.norm(r_vec))
+            if pair_dists is not None:
+                r = pair_dists[i]
+            else:
+                r_vec = minimum_image(
+                    positions[pair.idx_b] - positions[pair.idx_a], cell,
+                )
+                r = float(np.linalg.norm(r_vec))
             if pair.is_formation:
                 reacted = is_formed(r, pair.r0, self._threshold_fraction)
             else:
