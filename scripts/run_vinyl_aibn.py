@@ -34,6 +34,7 @@ import numpy as np
 from scripts._systems import (
     build_vinyl_aibn_system, build_full_aibn_system, build_activation_template,
     vinyl_initial_bonds, full_aibn_initial_bonds,
+    prune_undissociated_centers, production_spin,
 )
 from kagome.backends.base import Calculator
 from kagome.boost.tdbb import TDBBParams
@@ -167,6 +168,11 @@ def main() -> None:
                         help='Peak V^d amplitude for activation (kcal/mol). Must exceed '
                              '~200 with f2=0.3 for OrbMol-v2 C-N barrier (~39 kcal/mol). '
                              'Default 250.')
+    parser.add_argument('--strict-activation', action='store_true', default=False,
+                        help='Abort with RuntimeError if activation dissociates fewer '
+                             'than 2×n_initiators azo C-N bonds (incomplete AIBN '
+                             'decomposition). Default off (warn and continue with the '
+                             'radicals that did form).')
     parser.add_argument('--resume', action='store_true', default=False,
                         help='Resume from <output-dir>/checkpoint.pkl if present: skip '
                              'build-time activation and start at the saved cycle. Bit-exact '
@@ -535,21 +541,62 @@ def main() -> None:
             for c_idx, n_idx in dissociated:
                 wf._topology.remove_bond(c_idx, n_idx)
 
+        # Reconcile the reactive groups with the ACTUAL activation result
+        # (specs/decisions.md 2026-07-06). build_full_aibn_system registers every
+        # AIBN radical centre unconditionally; centres whose azo C-N bond did NOT
+        # dissociate are still intact 4-coordinate AIBN carbons (3 C + 1 azo-N):
+        # chemically inert and, if left in radical_C, dropped every cycle by the
+        # valence guard while inflating the high-spin multiplicity. Prune them and
+        # reassign the wf's references (wf holds the groups dict + the updater's
+        # chain_c_map by reference from construction, before activation ran).
+        n_radicals_before = len(groups['radical_C'].atom_indices)
+        dissociated_c = [c for c, _ in dissociated]
+        groups, chain_c_map, n_pruned = prune_undissociated_centers(
+            groups, chain_c_map, dissociated_c,
+        )
+        wf.groups = groups
+        if hasattr(wf._updater, 'chain_c_map'):
+            wf._updater.chain_c_map = chain_c_map
+        if n_pruned:
+            logger.warning(
+                '未解離中心 %d 個を反応グループから除外(化学的には未開裂 AIBN の'
+                'ため不活性)。radical_C: %d → %d',
+                n_pruned, n_radicals_before,
+                len(groups['radical_C'].atom_indices),
+            )
+
+        # Case B: fail-loud on incomplete activation. Each AIBN cleaves both C-N
+        # bonds (2 radicals per initiator), so the expected count is 2×n_initiators.
+        expected_dissoc = 2 * args.n_initiators
+        if len(dissociated) < expected_dissoc:
+            logger.warning(
+                'Incomplete activation: %d/%d azo C-N bonds dissociated. '
+                'Increase --activation-steps (currently %d) and/or '
+                '--activation-f1-max (currently %.0f) for full decomposition.',
+                len(dissociated), expected_dissoc,
+                args.activation_steps, args.activation_f1_max,
+            )
+            if args.strict_activation:
+                raise RuntimeError(
+                    f'Incomplete AIBN activation: {len(dissociated)}/{expected_dissoc} '
+                    f'azo C-N bonds dissociated and --strict-activation is set. '
+                    f'Increase --activation-steps/--activation-f1-max and rerun.'
+                )
+
         if dissociated:
             n_radicals = len(groups['radical_C'].atom_indices)
-            production_spin = n_radicals + 1
+            prod_spin = production_spin(n_radicals, args.production_spin_cap)
             if args.production_spin_cap is not None:
-                production_spin = min(production_spin, args.production_spin_cap)
                 logger.info('Production spin capped at %d (from n_radicals+1=%d)',
-                            production_spin, n_radicals + 1)
-            calc.set_spin(production_spin)
+                            prod_spin, n_radicals + 1)
+            calc.set_spin(prod_spin)
             if getattr(calc, 'supports_spin', False):
-                logger.info('Spin switched: 1 → %d (N_radicals=%d)', production_spin, n_radicals)
+                logger.info('Spin switched: 1 → %d (N_radicals=%d)', prod_spin, n_radicals)
             else:
                 logger.warning(
                     'Backend %s ignores spin; production spin %d NOT applied '
                     '(N_radicals=%d) — results assume the backend is spin-agnostic.',
-                    calc.name, production_spin, n_radicals,
+                    calc.name, prod_spin, n_radicals,
                 )
 
         # Thermalize AFTER activation: radicals are already formed, so there is
