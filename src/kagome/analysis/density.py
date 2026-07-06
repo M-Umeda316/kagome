@@ -36,6 +36,11 @@ def reaction_density_profile(
         own cell; falls back to ``cell`` when a step is absent.
 
     Returns density array of shape (len(z_bins)-1,).
+
+    Note (F7): unlike ``np.histogram``, a midpoint landing exactly on the final
+    bin's right edge is excluded (the ``bin_idx < len(counts)`` guard). This is
+    unreachable in practice because midpoints are wrapped into [0, Lz) and never
+    equal Lz exactly, so it needs no special-casing.
     """
     dz = np.diff(z_bins)
     counts = np.zeros(len(z_bins) - 1, dtype=np.float64)

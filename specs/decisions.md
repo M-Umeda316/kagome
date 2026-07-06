@@ -1303,3 +1303,21 @@ Use this template for each decision.
 - Alternatives considered: (a) I2 を現行維持 — 1 ステップ差で収束品質への影響は軽微だが、I1 と同時に「ASE 準拠」で統一する方が参照実装との突き合わせ検証が容易なため棄却。(b) maxstep をグローバルノルム化して完全 ASE 等価にする — I1/I2/I3 のスコープ外かつ per-atom クランプはロバスト性上の意図的選択のため見送り。
 - Licensing/commercial impact: None(ASE は test 依存に追加しない。参照実装はテスト内に手書きし、ASE がインストール済みの場合のみ本物の `ase.optimize.FIRE` との突き合わせを skipif ガード付きで実施)。
 - Follow-up: `tests/unit/test_minimize.py` に (a) 正準 FIRE 更新式を手書きした参照実装との位置列一致テスト、(b) skipif ガード付きの本物 ASE FIRE 突き合わせテストを追加。既存の収束テストは green のまま。
+
+## 2026-07-06: D1 — MC バロスタットは原子単位アフィンスケーリング(LAMMPS `dilate all` 相当)を採用
+- Context: `src/kagome/integrators/mc_barostat.py:115` は体積提案受理時に全原子座標を一律の線形係数 `scale = exp(ΔlnV/3)` で拡縮する(`new_positions = positions * scale`)。これは分子重心を保存する「分子単位スケーリング」ではなく、各原子を個別に原点基準でスケールする「原子単位(dilate all)」方式。この設計選択が decisions.md 未記録だった。レビュー指摘 D1。
+- Paper anchor: PDF Section 2 — NPT ensemble。バロスタットの具体方式(原子/分子単位のスケール対象)は論文未指定。原子単位スケーリング自体は LAMMPS `fix npt` の既定 `dilate all` と同型。
+- Decision: 原子単位アフィンスケーリング(`dilate all` 相当)を採用する。理由: 本プロジェクトの主対象は架橋ネットワーク系(nylon 縮合・epoxy 硬化)であり、反応進行に伴い分子境界が動的に変化(モノマー→鎖→網目)する。分子単位スケーリングは「分子=剛体クラスタ」の定義を前提とするが、結合トポロジーが毎サイクル変わる本系ではクラスタ定義が不安定で、重心の定義自体が曖昧になる。原子単位スケーリングはトポロジー非依存で常に well-defined。受理判定の Jacobian 項 `-(N_atoms+1)·kT·ΔlnV` も原子数 N ベースであり、原子単位スケールと整合する(decisions.md 2026-06-20 RF19b)。
+- Alternatives considered: (a) 分子単位スケーリング(重心を保存し分子内相対座標は不変)— 剛体分子系では標準だが、架橋で分子境界が動く本系ではクラスタ定義が不安定なため棄却。(b) group ごとの選択的スケール — 実装複雑化かつ論文根拠なし。棄却。
+- Scientific risk: 低〜中。強共有結合内距離も僅かにスケールされるが、`max_volume_change_frac=0.01`(1 提案あたり線形 ~0.33%)と小さく、MLIP の復元力で緩和される。分子単位系との定量差は圧縮率評価で O(結合長変動) 程度。qualitative なワークフロー挙動(密度収束・反応進行)には影響しない。
+- Licensing/commercial impact: None(内部実装)。
+- Follow-up: 剛体分子近似が有効な非架橋系(例: 溶媒充填)を扱う場合は分子単位スケーリングをオプション追加検討。現状の架橋系では不要。
+
+## 2026-07-06: W2 — フェーズ境界の MLIP forward 重複は既知事項として修正しない
+- Context: ワークフローのフェーズ境界(biased→unbiased、unbiased→次サイクル biased、equilibration→cycle0)で、同一座標に対する MLIP forward 計算が重複する(`polymerization.py:797-799, 926-928, 1056-1058` 近傍)。各フェーズ入口で `base_energy, base_forces = calculator.compute(...)` を初期化のため呼ぶが、直前フェーズ最終ステップの `_md_step` が既に同座標で forward を済ませているケースがある。1 サイクル(約 4000 ステップ)あたり約 2 回、割合にして ~0.05%。レビュー指摘 W2。
+- Paper anchor: N/A(実装効率の問題。科学的計算内容は不変)。
+- Decision: **修正しない。既知事項として記録するのみ。** `_md_step` が末尾の base energy/forces を呼び出し元へ返し、次フェーズ入口がそれを受け取れば重複を除去できるが、`_md_step`/フェーズ関数群のシグネチャ変更(base_forces を戻り値/引数に追加)が必要で、API 変更のコストが ~0.05% の削減効果に見合わない。支配コストは MLIP forward 自体であり、2 回/サイクルの追加は無視できる。
+- Alternatives considered: (a) `_md_step` が base_forces を返し次フェーズが再利用 — 効果 ~0.05% に対し API 変更が波及(全フェーズ関数・checkpoint/resume の状態互換)。棄却。(b) フェーズ境界で forward をスキップし前回値を状態に保持 — 隠れ状態が増え resume の bit-exact 性検証が複雑化。棄却。
+- Scientific risk: なし(数値結果は現状で正しい。重複は冗長計算のみで誤りではない)。
+- Licensing/commercial impact: None.
+- Follow-up: フェーズ関数群を将来リファクタする機会があれば、その際に base energy/forces のフェーズ間受け渡しを併せて導入する(単独では着手しない)。
