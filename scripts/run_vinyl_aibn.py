@@ -145,8 +145,15 @@ def main() -> None:
     parser.add_argument('--f2', type=float, default=10.0,
                         help='TDBB Gaussian width parameter f2 (Å⁻²). Paper default 10.0, '
                              'stated robust range 5-20. Lower values widen the bias well '
-                             '(capture radius ~1/√f2). Use 5.0 for OrbMol-v2 PES '
-                             '(see decisions.md 2026-06-17).')
+                             '(capture radius ~1/√f2). Use 2.0 for OrbMol-v2 PES '
+                             '(see decisions.md 2026-06-26, supersedes 2026-06-17 f2=5).')
+    parser.add_argument('--f1-max-formation', type=float, default=250.0,
+                        help='Peak V^f amplitude for production bond formation (kcal/mol). '
+                             'Must exceed the radical-addition barrier on the active PES. '
+                             'Default 250 (calibrated for pretrained OrbMol-v2, barrier ~6).')
+    parser.add_argument('--f1-max-dissociation', type=float, default=125.0,
+                        help='Peak V^d amplitude for production bond dissociation (kcal/mol). '
+                             'Paper default 125. Default 125.')
     parser.add_argument('--select-rmin', type=float, default=None,
                         help='Override candidate selection r_min (Å). Paper Table S1: 3.0. '
                              'For OrbMol-v2 PES-tuned window use 1.5 (see decisions.md 2026-06-17).')
@@ -397,8 +404,8 @@ def main() -> None:
         tdbb=TDBBParams(
             f2=args.f2,
             gamma=1.0,
-            f1_max_formation=250.0,
-            f1_max_dissociation=125.0,
+            f1_max_formation=args.f1_max_formation,
+            f1_max_dissociation=args.f1_max_dissociation,
             lambda_vdw=0.60,
         ),
         seed=args.seed,
