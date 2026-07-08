@@ -43,7 +43,10 @@ boost:
                                 # the exothermic addition heat (~-28 kcal/mol), accumulates
                                 # over cycles (f2=2 @ friction 0.001 / unbiased 500: 389 ->
                                 # 565 K and rising). friction 0.01 + unbiased 1500 dissipates
-                                # it each cycle and pins T near 333 K.
+                                # it each cycle and pins T near 333 K. Deliberate 10x deviation
+                                # from the paper-faithful 0.001 (P-0c); reconciliation and the
+                                # 30-cycle T-stability validation: decisions.md 2026-07-07
+                                # "Langevin friction -- 論文値 0.001 と production レシピ 0.01 の整合".
 
 # Run-level schedule for the validated half-scale run (16 GB GPU safe).
 # Entry point: scripts/run_vinyl_aibn.py (see scripts/run_s6_paper_scale.sh).

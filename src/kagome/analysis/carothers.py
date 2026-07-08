@@ -11,6 +11,7 @@ compared to TDBB-simulated DPn vs conversion.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -74,3 +75,130 @@ def dpn_from_bonds(
         )
     p = min(raw_p, 0.9999)
     return 1.0 / (1.0 - p)
+
+
+# ── Measured DPn from the reacted bond graph (Fig. 4c) ───────────────────────
+# The functions above are THEORY (DPn = 1/(1-p)).  The two below compute the
+# MEASURED number-average DPn directly from the simulated connectivity, so the
+# Fig. 4c overlay is a genuine measured-vs-theory comparison rather than
+# theory-vs-theory.  Kept pure (bonds + membership in, float out) so they are
+# unit-testable without running MD.  Paper anchor: arXiv:2511.22874, Fig. 4c.
+
+
+def _union_find_components(
+    n_nodes: int,
+    edges: Iterable[tuple[int, int]],
+) -> int:
+    """Number of connected components of a graph on ``n_nodes`` nodes.
+
+    Weighted-quotient-free union-find with path halving; edges reference node
+    ids in ``range(n_nodes)``.  Isolated nodes each count as one component.
+    """
+    parent = list(range(n_nodes))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    return len({find(i) for i in range(n_nodes)})
+
+
+def monomer_sets_from_bonds(
+    bonds: Iterable[Sequence[float]],
+) -> list[list[int]]:
+    """Atom-level connected components of a bond graph, as sorted index lists.
+
+    Applied to the initial (cycle -1) snapshot of ``topology.jsonl`` this
+    recovers the atom membership of each initial monomer molecule (every atom of
+    a nylon-6,6 monomer is intramolecularly bonded), i.e. the ``monomer_atom_sets``
+    argument for :func:`dpn_measured_from_topology`.  Deriving membership from the
+    initial topology keeps the Fig. 4c pipeline self-contained (no SMILES/count
+    replay needed).
+
+    ``bonds`` items are ``(i, j)`` or ``(i, j, order)`` (order ignored).
+    """
+    adjacency: dict[int, list[int]] = {}
+    for bond in bonds:
+        i, j = int(bond[0]), int(bond[1])
+        adjacency.setdefault(i, []).append(j)
+        adjacency.setdefault(j, []).append(i)
+
+    seen: set[int] = set()
+    components: list[list[int]] = []
+    for start in adjacency:
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        comp: list[int] = []
+        while stack:
+            node = stack.pop()
+            comp.append(node)
+            for nbr in adjacency[node]:
+                if nbr not in seen:
+                    seen.add(nbr)
+                    stack.append(nbr)
+        components.append(sorted(comp))
+
+    components.sort(key=lambda c: c[0])
+    return components
+
+
+def dpn_measured_from_topology(
+    bonds: Iterable[Sequence[float]],
+    monomer_atom_sets: Sequence[Iterable[int]],
+) -> float:
+    """Measured number-average degree of polymerization from the bond graph.
+
+    ``DPn = (number of monomer units) / (number of molecules)``, where molecules
+    are the connected components of the *monomer* graph: each initial monomer is
+    one node, and any bond joining an atom of one monomer to an atom of a
+    different monomer is an edge.  Intramonomer bonds are ignored (they never
+    merge distinct monomers), so passing the full ``topology.jsonl`` bond list is
+    correct.  For nylon-6,6 the amide (amine_N-carboxyl_C) and its paired
+    water-forming (amine_H-carboxyl_OH) bond join the SAME diamine/diacid pair,
+    so the component count is unaffected by whether one or both are present.
+
+    This is the MEASURED counterpart to the theoretical :func:`dpn_carothers`;
+    the two agree for an ideal linear step-growth ensemble (Fig. 4c).
+
+    Parameters
+    ----------
+    bonds:
+        Final bond list; each item is ``(i, j)`` or ``(i, j, order)``.  Typically
+        the latest snapshot from ``topology.jsonl``.
+    monomer_atom_sets:
+        ``monomer_atom_sets[m]`` is the atom indices of initial monomer ``m``
+        (e.g. from :func:`monomer_sets_from_bonds` on the initial topology).
+
+    Returns
+    -------
+    float
+        DPn >= 1.0.  Returns 1.0 when there are no monomers.
+    """
+    n_monomers = len(monomer_atom_sets)
+    if n_monomers == 0:
+        return 1.0
+
+    atom2mono: dict[int, int] = {}
+    for m, atoms in enumerate(monomer_atom_sets):
+        for a in atoms:
+            atom2mono[int(a)] = m
+
+    edges: list[tuple[int, int]] = []
+    for bond in bonds:
+        mi = atom2mono.get(int(bond[0]))
+        mj = atom2mono.get(int(bond[1]))
+        if mi is None or mj is None or mi == mj:
+            continue
+        edges.append((mi, mj))
+
+    n_components = _union_find_components(n_monomers, edges)
+    return n_monomers / n_components

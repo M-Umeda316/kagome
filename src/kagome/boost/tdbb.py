@@ -131,6 +131,13 @@ class PairBias:
     # counting (alpha/Carothers p); bias/topology behaviour is unchanged.
     # Used for nylon water-forming k-l pairs (specs/decisions.md 2026-07-06 A5).
     counts_as_reaction: bool = True
+    # Whether this pair belongs to the paper's identification set P (§2.2 step
+    # 3-4): the reaction event fires / is confirmed only when ALL trigger pairs
+    # of a candidate simultaneously satisfy their bonding condition. Set from
+    # PairSpec.score_pair — the bias-only nylon k-l water pair (score_pair=False)
+    # is is_trigger=False and never participates in the trigger conjunction.
+    # Default True keeps existing callers/tests unchanged.
+    is_trigger: bool = True
 
 
 def total_bias(

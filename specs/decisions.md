@@ -226,6 +226,7 @@ Use this template for each decision.
 - Scientific risk: Low. Weaker coupling produces more physical dynamics; temperature equilibration is slightly slower but Langevin thermostat still functions correctly.
 - Licensing/commercial impact: None.
 - Follow-up: None.
+- NOTE (2026-07-07): この論文忠実値 0.001 は **OrbMol-v2 の production レシピでは意図的に 0.01 へ上書きされる**(f2=10→2 に伴う累積加熱の冷却レバー)。整合と根拠は「2026-07-07: Langevin friction — 論文値 0.001 と production レシピ 0.01 の整合」を参照。paper_faithful run は 0.001 のまま。
 
 ## 2026-06-13: Temperature defaults corrected from 500 K to 333 K (P-0d)
 - Context: All run scripts defaulted to --temperature 500 K, which was an arbitrary test value. The paper specifies system-specific temperatures.
@@ -1354,3 +1355,121 @@ Use this template for each decision.
 - Scientific risk: 低。既定 checkpoint では全推奨値が検証済み値と一致し挙動不変。checkpoint 差し替え時に PES バリアの乖離を検知できるようになる分、安全側。
 - Licensing/commercial impact: None(既存 OrbMol-v2 backend のみ使用、Apache-2.0 記録済み)。
 - Follow-up: RESUME 時の TDBB パラメータ来歴ギャップ(checkpoint は TDBB params を保存せず、resume 時は現在の env/CLI 値が無記録で適用される。`RunManifest.append_resume` は timestamp/git_sha/ckpt 位置のみ記録)。resume_history へ有効な TDBB 設定を記録する対応を別タスクで実施。
+
+## 2026-07-07: Langevin friction — 論文値 0.001 と production レシピ 0.01 の整合(P-0c と 2026-06-26 の緊張を解消)
+- Context: P-0c(2026-06-13「Langevin friction を 0.01→0.001 に修正、全スクリプトから明示 0.01 を除去」)と 2026-06-26 production レシピ(「f2=2 + **friction 0.01** + unbiased 1500」を採用)が正面衝突しており、どちらが「正」か記録上あいまい。本エントリで整合を明文化する(調査の発端: baseline `runs/s6_half_100x5` が git_dirty=true でこのレシピ=friction 0.01 で回っていたと判明。手前の分析で誤って friction 0.001 と推定していた点の訂正も兼ねる)。
+- Paper anchor: PDF p.20 SI「Langevin thermostat coupling constant 1.0 ps⁻¹」= 0.001 fs⁻¹。**論文忠実値は 0.001**。
+- Decision: 論文忠実値は 0.001 のまま不変(paper_faithful 系の run・PFP 等の論文再現 backend はこれを使う)。**OrbMol-v2 backend の production レシピに限り、friction 0.01 を「意図的な非論文値の逸脱」として採用する**。理由の連鎖:
+  (1) 論文の PFP はラジカル付加 PES に引力チャネルを持ち、候補窓 [3,6] Å からデッドゾーンを越えて形成できる。OrbMol-v2 の PES にはこの引力が無く、f2 を論文値 10→2 に下げないと melt formation が起きない(decisions 2026-06-26, S2 sweeps)。
+  (2) f2 を下げると反応熱(~−28 kcal/mol)+バイアス仕事を短い unbiased 相の Langevin で捌けず、**累積加熱で温度が暴走**する(f2=2 + friction 0.001 + unb500: 389→565K)。
+  (3) friction 0.01(=論文の 10×)はこの加熱を抑える冷却レバー。**f2 変更とセットの逸脱**であり、単独の熱浴パラメータ選択ではない。
+- 位置づけ: orbmol_v2_production レシピ(f2=2 + friction 0.01 + unbiased 1500)は OrbMol 固有の工学的調整。**絶対転化率・絶対速度定数(kp_eff)は論文と直接比較不可**。論文比較は Eq.11 α(t)=1−exp(−kp·t) の**形状(トレンド)**と鎖成長の定性挙動で行う。
+- 実証(2026-07-07, `runs/s6_half_100x5_main0707`, 30cyc): friction 0.01 は温度を **mean 338.7K(target 333)・std 11.1・linear drift −0.066 K/1000steps(実質フラット・暴走なし)**に維持。2026-06-26 は 6cyc のみの検証だったが、全 30cyc で冷却レバーが有効と確認。α(t) は Eq.11 に適合(R²=0.85; baseline 0.98)。コード変更(H1: in-bias 検出を tentative 化し unbiased 緩和後に確定)で絶対転化率は 26%→16% に下がるが、これは非物理的な一過性結合を除外する**正当な厳格化**であり速度式の形状は保存(退行ではない)。
+- Alternatives considered: (a) 論文値 0.001 に統一 — f2=2 では加熱暴走で長尺不可(2026-06-26 実証)。棄却。(b) friction を上げず unbiased をさらに延長して放熱 — コスト増で非効率、friction の方が有効(unbiased 1500 と併用済)。(c) f2 を論文値 10 に戻す — デッドゾーンで formation≈0。棄却。
+- Scientific risk: 中。論文からの二重逸脱(f2 10→2、friction 0.001→0.01)は絶対速度論の論文比較を無効化する。緩和策: 上記のとおりトレンドで比較し絶対値比較はしない旨を明記。将来 paper-faithful backend(PFP 等)が使用可能になれば f2=10 + friction 0.001 に戻す。
+- Licensing/commercial impact: None。
+- Follow-up: (a) `configs/boost/orbmol_v2_production.yaml` に friction 0.01 の逸脱理由と本エントリ参照を明記。(b) P-0c エントリに本エントリへの相互参照を追記(下記で実施済)。
+
+## 2026-07-08: 実測 Carothers DPn(Fig.4c)を simulation-vs-theory 化
+- Context: nylon の Carothers 検証(論文 Fig.4c)が「理論 1/(1−p) を最終 p で評価するだけ」= theory-vs-theory だった。実測 DPn(シミュレーション網目の数平均重合度)を出せるようにする。
+- Paper anchor: arXiv:2511.22874 Fig.4c、Table S2、decisions 2026-06-13(T-G2)。
+- Decision: (a) `src/kagome/analysis/carothers.py` に `dpn_measured_from_topology` / `monomer_sets_from_bonds`(純関数、MD/IO 非依存)を追加。DPn = (単量体ユニット数)/(単量体グラフの連結成分数)を topology.jsonl から計算。(b) `run_nylon66.py` が `layout_bonds`(diamine=seed / diacid=seed+1、ビルダー配置順と整合)で `initial_bonds` を渡し **topology.jsonl を出力**。(c) `reproduce_figures.py` に `plot_dpn_vs_conversion`(実測 DPn vs p × 理論 dpn_carothers(p))、`summary.json` の `carothers_p` で step-growth 判定(vinyl は no-op)。
+- 前提: 単量体所属は初期(cycle −1)snapshot の連結成分から復元。アミド結合と水生成結合は同一 diamine/diacid ペアを繋ぐため、成分数はどちらの有無でも不変(水は擬似分子として現れない)。
+- Scientific risk: 低。純関数はユニットテスト済(tests/unit/test_carothers.py: 28 passed、独立再検証済)。実 MD 出力での検証は初回実 run 時に「実測点が 1/(1−p) 曲線を超えない(理想線形なら一致、分岐/環化で下振れ)」を確認。
+- Licensing/commercial impact: なし。
+- Follow-up: topology.jsonl は結合変化サイクルのみ書くため実測 DPn 系列は疎(Fig.4c overlay には十分)。密な曲線が要れば snapshot 方針変更(別タスク)。
+
+## 2026-07-08: nylon amide 形成も MA と同型の capture-shell デッドゾーン(paper f2=10 で [3,6] 窓の bias 力 ≈0)。PES scan スクリプト追加
+- Trigger: 長尺 nylon run 前に、OrbMol-v2 + TDBB が候補窓 [3,6] Å から amide 結合(amine N–carboxyl C)を閉じられるかを、MA デッドゾーン診断(2026-06-26)の nylon 版として事前検証。
+- Tool: `scripts/scan_amide_formation.py`(scan_radical_addition.py 踏襲: constrained-FIRE 緩和 PES + 解析的 TDBB reach 表)。閉殻フラグメント methylamine+酢酸(spin=1、多ラジカル問題なし)。
+- r0 = λ·(r_vdw^N+r_vdw^C) = 0.60·(1.55+1.70) = **1.95 Å**(Eq.4, VDW_RADII)。
+- 解析的 reach(f1 飽和=250、GPU 不要、独立再検証済): **f2=10(run_nylon66.py の paper default)では [3,6] 窓内の最大 bias 力 0.086 kcal/mol/Å ≈ 0** → 選択 pair(3.0–3.6Å)は捕捉シェル(~2.5Å)外のデッドゾーンで力が届かない。MA(2026-06-26)と完全同型。f2=5 → 10.6、f2=2 → 116 kcal/mol/Å で橋渡し。r=3.5Å で |力|≥10 を満たす最小 f2 は 2。
+- Decision: PENDING(Ask-first: f2 は論文 default のハイパラ。MA と同じく production f2=2 が有力だが、**GPU PES scan で「1.95Å 付近に到達可能な bonded チャネルが存在」を確認してから確定**)。
+- Follow-up: (a) `--device cuda` で OrbMol PES scan を実行し barrier/well を実測。(b) 引力チャネルがあれば f2 引下げ(2)で長尺可、なければ MLIP 側の問題として別途(backend 交換は CLAUDE.md 商用審査)。(c) 縮合は反応熱が小さく f2 低下による加熱は MA より軽い見込み(要実測)。
+- Licensing/commercial impact: なし。
+
+## 2026-07-08: run_nylon66 に pre-TDBB minimize+equilibration を追加(segfault 修正、MA の T-G1a パリティ)
+- Symptom: `runs/nylon66_f2test`(10+10, f2=2)が **TDBB ループ突入の最初の OrbMol forward パスでネイティブ segfault**(dmesg カーネルダンプ PID 3370、OOM ではない=空き 28Gi、Python トレースバック無し)。ログは "Starting TDBB" → "OrbCalculator device check" で途切れ 0 サイクル。
+- Root cause(確認): nylon が build → classical 圧縮 → TDBB を **無 minimize/無 equilibration** で通していた(vinyl は持つ)。圧縮後 0.5 g/mL(fmax ~60、未収束)の近接接触が初回 MLIP 評価で過大な力/退化幾何を生み backend を落とす。MA が 2026-06-13(T-G1a)で解決したのと同一ギャップ。
+- Fix: `run_nylon66.py` に `--minimize`/`--no-minimize`(既定 ON)、`--minimize-fmax`(1.0)、`--equil-steps`(2000)を追加し `PolymerizationConfig` に配線。手動 `wf._minimize`/`_run_equilibration_phase` ではなく **config 駆動**(`PolymerizationWorkflow.run()` が cycle ループ前に config から minimize+equil を実行、非 resume 時。vinyl の非活性化パスと同一)。nylon は活性化なしなので順序は build → compress → minimize → equilibrate → TDBB。二重 minimize なし。
+- Paper anchor: PDF p.20(production 前に equilibration)。既定値は vinyl の承認済み値を踏襲(新規ハイパラ無し)。
+- Tests: `tests/unit/test_workflow.py::TestPreTDBBMinimize`(config.minimize で minimize フェーズが出る/抑止される)。targeted suite 125 passed(独立再検証: workflow+carothers 73 passed、`--help` に新規4フラグ表示)。
+- **未解決リスク(要実走確認)**: minimize 自体の初回 orb 評価も同じ悪い幾何で走るため、圧縮構造が退化しすぎていれば minimize の初手で同様に segfault しうる(minimize は forward パスを遮蔽せず、それ自体が forward パス)。その場合のフォールバック: (a) 圧縮の収束を締める(fmax≪60)、(b) より希薄配置+緩やかな圧縮、(c) ML minimize 前に classical(OpenMM/Sage)pre-minimize を挟む。再実行で判明次第対応。
+- Licensing/commercial impact: なし。
+- **2026-07-08 実走結果**: 再実行 `runs/nylon66_f2test`(10+10, f2=2, 10cyc, NVT, minimize+equil ON)は **exit 0 で完走。segfault は再発せず、修正は有効と確定**。温度は 300K target 近傍で安定(暴走なし)。ただし **真のアミド C-N 形成は 0 件**(summary: `carothers_p=0.0`, `dpn=1.0`, `confirmed_formations=0` counted)。f2=2 でも bias 中は C-N を ~1.6 Å まで押せるが unbiased 1500 で解離して戻る。→ NEXT GATE(scan_amide_formation.py の GPU PES で OrbMol に ~1.95 Å 近傍の bonded C-N チャネルがあるか)の実行が依然必要。
+
+## 2026-07-08: nylon 実走で判明した3つのテンプレ/簿記バグ(段階成長の反応判定・topology 編集の不整合)
+- Context: 上記 nylon f2=2 完走ランのイベントログ(bonds.jsonl / topology.jsonl / selection.jsonl)を精査したところ、segfault とは別に、段階成長テンプレートの反応判定と topology 編集に3つの不整合が判明。summary の数値(confirmed_formations 1 total / confirmed_dissociations 5)と topology 実差分(bond 追加1・削除1)のズレがこれらで完全に説明できる。r0 は `r0 = λ_vdw·mean(vdW半径)` で C-N=1.95、**N-H≈1.65、H-O≈1.63 Å**。
+- Paper anchor: arXiv:2511.22874 Table S2(4-group amide template)、Eq.4(r0 定義)、Fig.4c。
+- 症状と根本原因:
+  (B1) **補助 H-O「水生成」ペアが biased フェーズを誤って早期打ち切りしている**。テンプレの (amine_H, carboxyl_OH) ペアは `count_as_reaction=False`・`r_max=100`(常時アクティブ)だが、`check_reactions_during_bias` はこのペアの r≤r0(1.63)= N-H…O 水素結合の H…O 距離をそのまま「暫定反応」と判定し biased phase を打ち切る(cycle 0/1/2/4/8 の 52〜112 step 打ち切り、min_pair_dist≈1.63 が一致)。結果、**本命のアミド C-N ペアが bias 時間をほぼ得られない**。→ `tentative` 判定は `counts_as_reaction=True` のペアに限定すべき。
+  (B2) **解離候補が別分子間の非結合 N-H ペアに対して生成される**(cycle 5:144-32/120-22、cycle 7:144-8、cycle 9:72-8 — いずれも別モノマーの N と H)。非結合なので r>1.65 が自明成立し「confirmed_dissociation」が乱発。反応簿記側は H2 ガード(対応形成が未確定ならスキップ)で実害を止めているが、候補生成が「実際に結合している N-H」に制約されていない。
+  (B3) **topology 編集パス(`_apply_topology_edits`, polymerization.py:1146-1177)が反応簿記側のガードを尊重していない**(実装不整合=バグ):
+    - 形成側: `confirmed_formations()` を `counts_as_reaction` で絞らず全件に `add_bond` → **spurious な H-O 共有結合 [238,309](count_as_reaction=False)を topology に書き込んだ**(cycle 6)。
+    - 解離側: group-update パス(:303-319)にある H2 ガード(対応形成が未確定なら skip)が topology パスには無い。`has_bond` チェックのみのため、実結合だった **N-H [103,118] を cycle 3 で topology から削除**(ログは「Skipping dissociation (103,118)…H2」と言っているのに実結合は消えた)。他の非結合ペアは has_bond=False で偶然 no-op。
+- Decision: PENDING(実装は未着手)。3件とも TDBB の反応選択・確定の意味論に関わる(CLAUDE.md ask-first: 「簡略化が TDBB の科学的意味を変える」)ため、修正方針を提示しユーザー確認後に実装する。提案する最小修正:
+  (F1) `check_reactions_during_bias` の暫定判定を `pair.counts_as_reaction` が真のペアに限定(補助 H-O ペアで打ち切らない)。
+  (F2) 解離候補生成を「現 topology 上で実際に結合している原子ペア」に制約(選択段でトポロジ参照)。
+  (F3) `_apply_topology_edits` の形成側に `counts_as_reaction` フィルタ、解離側に group-update と同じ H2 ガード(対応形成が確定した candidate_id のみ)を適用し、両簿記の整合を取る。
+- Scientific risk: 中。現状の「confirmed_formations 1 / dissociations 5」は **中身が全てスプリアス**(H-O 水素結合の誤認と非結合 N-H の誤解離)であり、このカウントを反応実績として解釈してはならない。真のアミド形成 0 という結論自体は B1〜B3 と独立(C-N は unbiased で戻るため元々未確定)だが、**B1 により C-N が bias 時間を奪われている可能性があり、「OrbMol の PES にアミドチャネル無し」と結論するのは時期尚早**。まず F1 を入れて C-N に十分な bias を与えた再走、そして NEXT GATE の PES scan が必要。
+- Licensing/commercial impact: なし(OrbMol-v2 のみ使用)。
+- Follow-up: (a) F1〜F3 の実装可否をユーザーに確認。(b) `scripts/scan_amide_formation.py --device cuda` で C-N の bonded チャネル de-risk。(c) F1 実装後に f2=2 で再走し、C-N が確定するか(Carothers 実測点が出るか)確認。(d) 各修正に unit/回帰テスト(repo DoD)。
+
+## 2026-07-08: F1 実装 — biased フェーズ終了トリガを「アンカー形成」に限定(B1 の一般化修正、安全側の切り分け)
+- Context: 上記 B1 の当初案(count_as_reaction ペアに限定)では不十分と判明。段階成長の従属開裂(N-H, C-OH)は `count_as_reaction=True`(デフォルト)なので、それだけでは依然として本命の C-N 形成(r0=1.95、遠方から寄せるため最も遅く跨ぐ)を出し抜いて biased フェーズを打ち切る。ユーザーと「複数結合の協奏組み替えは原理的に不能か」を議論し、4-group テンプレ+H2 ガードで協奏縮合は表現可能=不能ではなく、真因は「終了トリガがアンカー(反応座標)を取り違えている」ことと確認。安全側の切り分けとして F1 のみ最小実装→再走で C-N 確定を見る、B2/F3 は保留と合意。
+- Paper anchor: arXiv:2511.22874 Table S2(amide anchor = amine_N–carboxyl_C 形成)、decisions 2026-07-03 D1(検出→終了→unbiased 確認)。
+- Decision: biased フェーズの**終了トリガを「アンカー tentative イベント」に限定**(`_run_biased_phase`, polymerization.py)。実装:
+  - ループ前に `has_counted_formation = any(p.is_formation and p.counts_as_reaction for p in active_pairs)` を1回計算。
+  - 純粋ヘルパー `_is_terminating_bias_event(ev, has_counted_formation)`(module-level, polymerization.py:173):終了イベント条件は (i) counted formation の跨ぎ(`event_type=='tentative_formation' and counts_as_reaction`)、または (ii) counted formation が active_pairs に無い純解離テンプレート時のみ counted dissociation の跨ぎ(フォールバック=AIBN 等)。
+  - `check_reactions_during_bias` は**無改変**(全跨ぎを従来どおり記録=監査証跡維持)。毎ステップ検出は続け、`terminating` に該当するイベントがある時のみ `break`。従属開裂と water pair は C-N が結合距離に達するまで bias され続け、確認段で既存 H2 ガードにより C-N と一緒に確定。
+- 影響範囲: vinyl(アンカー=radical_C+alpha_C, counted formation)は挙動不変。`_run_activation_phase`(AIBN 活性化)は別メソッドで無改変。
+- Tests: `tests/unit/test_workflow.py::TestBiasedPhaseTerminationGating`(ヘルパー直接5件+実 MD ループ1件)。独立再検証: `test_workflow.py + test_carothers.py` = **79 passed**(orchestrator が自走確認)。
+- Scientific risk: 低〜中。協奏縮合の意図どおり「C-N 到達まで bias→開裂/水を束ねて確定」になる。**ただし B2(非結合 N-H への解離候補生成)と F3(topology 編集の counts/H2 ガード不整合)は未修正**なので、再走で spurious な confirmed_dissociation や topology への spurious 書き込みは残りうる。今回の切り分け目的(F1 で C-N が確定するか)には影響しないが、Carothers/topology の解釈時は B2/F3 未修正を念頭に。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) f2=2 で再走(`runs/nylon66_f2test`)し confirmed_formations(counted C-N)>0 になるか確認。(b) C-N が出れば B2/F3 に進み topology/Carothers を正す。(c) 依然 0 なら NEXT GATE の GPU PES scan で OrbMol の bonded C-N チャネル有無を判定。
+- **2026-07-08 F1 再走結果(exit 0 完走)**: F1 は設計どおり機能。biased ステップ数が 129〜1005(旧 52〜112 の早期打ち切りから大幅増)へ延び、各サイクルで **anchor=C-N 形成の跨ぎで終了**、min_pair_dist は後半 1.92〜1.94 Å まで到達(C-N を真に結合距離へ寄せた)。**しかし counted confirmed_formations は 10/10 サイクルで 0**(carothers_p=0.0, dpn=1.0)。→ f2 でも F1 でも縮合は確定せず。**真因は下記アーキテクチャ限界**(次エントリ)。副次観測: 唯一の confirmed_formation は (70,309) counts=False r=1.02 Å=**水の O-H**(アミン H70 がカルボキシル O309 へプロトン移動して O-H が成立)。水生成の半分は起きるが、原子除去が無いためアミド C-N 側は復元する——機構仮説の直接証拠。confirmed_dissociations=7 は全て B2 の spurious(非結合/脱離基ペアが bias で離散)で H2 スキップ済み。
+
+## 2026-07-08: 【重要・アーキテクチャ限界】MLIP 原子集合が反応で不変 → 段階成長縮合は現構造では確定不能
+- Context: F1 修正後も nylon の counted amide 形成が 10/10 サイクルで 0。f2/トリガの問題を全て潰した上でコードを精査し、根本原因を特定。
+- 根本原因(コードで確定): 反応実行(`apply_vinyl_addition` topology.py:119、`_apply_topology_edits` polymerization.py:1131-1179)は**サイドカーの結合グラフ `BondTopology`(add_bond/remove_bond/set_order)のみを編集し、OrbMol に渡す原子集合(state.positions / state.species)は一切変更しない**。全ラン通じ `n_atoms=440` 不変。確定は unbiased 緩和の終端 `check_outcomes` で距離判定(D1, 2026-07-03)。
+- なぜ vinyl は成立し縮合は不成立か:
+  - vinyl 付加生成物の C-C(~1.5 Å)は**原子を1つも抜かなくても OrbMol の PES 上でそのまま安定極小**。よって結合グラフ編集(価数簿記/Carothers/XYZ 出力用)だけで足り、MLIP 入力を変えなくても物理的に本物。unbiased で保持され confirmed。
+  - アミド縮合は**脱離基(アミン H・カルボキシル OH)が実際に系から抜けて水になって初めて**安定なアミドになる。現構造は脱離基原子を MLIP 系から除去しないため、OrbMol は常に「N プロトン化・C が OH 保持のまま C-N が 1.9 Å に密集した高エネルギー前反応錯体」を評価し、unbiased で押し戻す。→ **f2/F1 に依らず confirmed=0**。
+  - D1 の前提「真に結合するペアは緩和後も r≤r0」は vinyl では成立、**縮合では原理的に不成立**(未コミットの反応物盆地を緩和しているため)。
+- Paper anchor: §2.2 step 3(検知→biased 終了→unbiased 緩和)、Table S2(縮合 formation/dissociation 対)。論文の TDBB は結合ブースティングであり、遷移状態突破後は**生成物盆地**へ入る=脱離基が抜けた状態を緩和しているはず(要・論文プロトコル精読)。
+- Decision: PENDING(ask-first。TDBB の科学的意味に関わる大規模変更のためユーザー判断待ち)。候補方針:
+  (A) **原子レベルの反応実行**を縮合に導入: 検出時にアミン H とカルボキシル OH を MLIP 原子集合から除去して水分子として再配置し、本物のアミド生成物を OrbMol に提示してから緩和(commit-then-relax、縮合では D1 の confirm-before-commit を反転)。これが nylon を実際に前進させる本命。
+  (B) 先に**生成物側 de-risk**: 既製アミド(例 N-メチルアセトアミド+H2O)を OrbMol で緩和し極小保持を確認/`scripts/scan_amide_formation.py --device cuda` で生成物側 PES を確認。(A) の前提(OrbMol がアミドを安定化する)を安価に検証。
+  (C) B2/F3 の簿記クリーンアップのみ: spurious dissociation/topology を正すが、アミドは生成しないので単独では価値低。
+- 推奨順: (B) で前提検証 → (A) 実装 → その後 B2/F3。
+- Scientific risk: 高(段階成長縮合の再現可否そのもの)。vinyl 系には影響しない(原子除去は縮合テンプレート限定)。
+- Licensing/commercial impact: なし(OrbMol-v2 のみ)。
+- Follow-up: ユーザーに (A)/(B)/(C) の方針確認。(A) 実装時は論文 §2/SI の反応実行手順を精読し decisions に反応実行の原子操作仕様を明記。
+- **2026-07-08 (B) de-risk 実施済み・前提確定**: ユーザーが方針 B(生成物側 de-risk 先行)を選択。`scripts/derisk_amide_product.py`(新規、生成物側専用。既存 scan_amide_formation.py は反応物側で別物)を OrbMol/GPU で実行(`runs/calibration/amide_product_derisk.json`):
+  - **Check 1 PASS**: 本物のアミド生成物(N-メチルアセトアミド+水)を自由 FIRE 緩和 → **C-N が 1.377→1.359 Å の実アミド長で安定極小に収束**(converged, max force 0.47)。→ **方針 A の前提「OrbMol は脱離基を除いた本物のアミドを安定化する」は成立**。
+  - **Check 2 reverts=True**: 脱離基を残したままの反応錯体(酢酸+メチルアミン, N···C=1.55 Å)を自由緩和 → **1.55→3.03 Å に復元**。0K 最小化ですら戻る=ワークフロー失敗を最小系で再現し、「密集した前反応錯体こそが原因で OrbMol 自体は問題ない」という診断を確証。
+  - **Check 3**: dE_reaction = −4.27 kcal/mol(気相アミド生成として妥当・軽度発熱)。
+  - **結論**: **nylon が確定しない原因は反応の駆動が完結しないまま停止していること。OrbMol backend は本物のアミドを完全に支持する。** 次は論文精読で反応実行手順を確認(下記で方針 A は棄却され連言判定へ訂正)。
+
+## 2026-07-08: 【方針訂正】論文の反応実行は「原子手術」ではなく「連言反応イベント判定(ij∧ik∧jl 同時)」— 方針 A を棄却、F1 を連言判定へ置換
+- Context: 方針 A(原子レベル反応実行=脱離基を MLIP 原子集合から除去し水を明示配置)の実装前に、ユーザー承認どおり論文(paper/2511.22874v1.pdf, Section 2.2 step 3-4, p.5)の反応実行手順を精読。結果、**A は論文の方法ではないと判明**。
+- Paper anchor(短い要約のみ; 原文転載しない): §2.2 step 3「Reaction Induction」— バイアス下加速 MD を、ペア (ij, ik, jl) の距離が**同時に**結合条件を満たすまで(または最大時間まで)継続。結合条件=「2原子間距離が vdW 半径和の 60% 未満なら結合」(=r0=λΣr_vdw, λ=0.6 と同一閾値)。fp=1(形成)は新たに条件を満たした時、fp=0(解離)は満たさなくなった時にイベント。イベント後に無バイアス MD で構造緩和。§2.2 step 4「Reaction Evaluation」— 緩和後に前後の結合状態を比較し、変化した原子を reacted としてグループから除去。SI p.21 + Table S2: nylon は Vf を i-j(アミド)と k-l(水)に、Vd を i-k(N-H)と j-l(C-OH)に適用。k-l 水はバイアスのみでトリガー(ij,ik,jl)に含まれない。**原子除去・水の明示構築の手順は論文に存在しない**(脱離基はバイアスで解離し水になって系内に残る; MLIP 原子集合は論文でも不変)。
+- Root cause 再確定: 現コード(F1)は「counted formation(C-N)の跨ぎ**のみ**」で biased を終了/確定していた。論文は「ij 形成 AND ik 解離 AND jl 解離が**同時**」まで継続。F1 は N-H/C-OH が解離しきる前に停止するため、脱離基が付いたまま unbiased に入り復元 → confirmed=0。de-risk Check 1(脱離基を除いた本物のアミドは OrbMol 上で安定)は、連言が満たされた時点の生成物が unbiased で保持されることを保証する。
+- Decision: **方針 A(原子手術)を棄却。代わりに反応イベント判定を論文忠実な候補単位の連言に修正する(F1' と呼ぶ; F1 を置換)。**
+  (1) トリガー(biased 終了)= 候補の**トリガーペア全て**が同時に結合条件を満たした時。トリガーペア = テンプレの score_pair=True のペア(=論文の識別ペア集合 P: ij, ik, jl)。formation ペアは r≤r0、dissociation ペアは r>r0。k-l 水(score_pair=False, bias-only)はトリガーに含めない。
+  (2) 確定(check_outcomes, unbiased 緩和後)も同じ連言を候補単位で評価。全トリガーペアが緩和後も条件を満たす候補のみ confirmed。→ H2 ガード(formation なしに dissociation 単独確定)は連言評価に自然に内包。
+  (3) vinyl は score_pair=True の実効トリガーが i-j のみ(i-k/j-l は constraint_only=無バイアスで常時充足)なので挙動不変。
+- Alternatives considered: (a) 方針 A 原子手術 — 論文非該当・大規模・checkpoint 複雑化。棄却。(b) F1 の formation-only 維持 — 論文の同時条件を満たさず縮合が復元。棄却。(c) 現状の per-pair 独立確定 — spurious dissociation を生む(B2 の温床)。棄却。
+- Scientific risk: 中。連言により縮合が論文どおり駆動されるはず。ただし f1/f2/biased_steps が i-k/j-l の実結合(N-H ~90 kcal/mol)を biased 期間内に解離させ切れるかは経験的検証が要る(次の再走で確認)。切れない場合は f1_max_dissociation/biased_steps の再検討(論文値 125/2000 を基準に)。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) F1' を実装(トリガー+確定を候補単位連言に)、F1 のヘルパーを置換。(b) B2(解離候補を実結合ペアに制約)は連言確定と併せて意味が出るので同時に検討。(c) 実装後 f2=2 で再走し confirmed amide>0 と Carothers 実測点を確認。(d) unit/回帰テスト。
+- **2026-07-08 F1'+B2 実装済み(サブエージェント、orchestrator が全面レビュー+独立テスト)**:
+  - PairBias に `is_trigger`(=PairSpec.score_pair)追加(tdbb.py)。`_build_pair_biases` が伝播。水 k-l(score_pair=False)は is_trigger=False。
+  - `BondTracker.check_reactions_during_bias` は fired candidate_id リストを返す(候補の全トリガーペア同時充足で発火)。per-pair の tentative 記録(audit)は保持。candidate_id<0(活性化/legacy)は従来の単発発火にフォールバック。
+  - `check_outcomes` は候補単位連言で確定(緩和後に全トリガー充足の候補のみ、その全ペアを確定=amide formation[counts=True]+leaving 解離+水[counts=False, is_formed 時のみ])。部分充足は何も確定せず(spurious 単発解離を排除)。→ `_apply_topology_edits` が C-N 追加・N-H/C-OH 除去・水 O-H 追加を整合実行(**F3 の症状も副次的に解消**)。
+  - `_run_biased_phase` は fired で break、`_is_terminating_bias_event`/has_counted_formation を削除。vinyl は実効トリガー i-j のみで挙動不変。
+  - B2: selection.py `_enumerate_recursive` に `dissociation_group_pairs`(score_pair・非 constraint・is_formation=False)への「実結合必須」制約(L6 の双対、topology 有時のみ)。非結合の分子間 N-H/C-OH 解離候補を排除。
+  - Tests: test_bonds.py `TestConjunctiveReactionEvent`、test_workflow.py `TestConjunctiveBiasedPhaseTermination`、test_selection.py `TestDissociationTopologyGuard` 追加/置換。**`pytest tests/unit` = 444 passed, 1 skipped(openmm 無し、無関係)**、orchestrator が独立再実行で確認。
+  - NEXT: f2=2 で再走し confirmed amide(counted)>0 と Carothers 実測点を確認。経験的リスク: f1_max_dissociation=125 が実 N-H/C-OH を biased 窓内で解離させ切れるか。
+- **2026-07-08 F1'+B2 再走結果(exit 0、成功)**: `runs/nylon66_f2test`(10+10, f2=2, 10cyc, NVT)。**confirmed_formations(counted アミド)= 4 本**(cycle 0/2/3/4 で "candidate reaction fired" → unbiased 保持 → 確定)。confirmed_dissociations=8(4 アミド×2 脱離基、全て対応形成とペア)、水形成 4(counts=False)。**spurious 単発解離ゼロ**(B2+連言確定が奏功)。**carothers_p=0.2, dpn=1.25=1/(1−0.2) 理論と整合**。topology 差分は全て完全な縮合4点セット(例 cyc0: C-N 0-327 追加, N-H 0-8 除去, C-OH 327-329 除去, 水 8-329 追加)。f1_max_dissociation=125 は実 N-H/C-OH を biased 窓内で解離させ切れることを実証(fired step 409〜933)。反応進行で候補が 18→0 へ単調減少=モノマー端消費を正しく反映。**段階成長縮合(生成 dissociation・4-group multi-pair・Carothers)の TDBB 機構が E2E で実証された(Track 1 の当初ゲート達成)**。cycle 1/5/6/7/8/9 は連言未成立で未反応(近接不足)=正常。
+- Scientific status: nylon Track 1 の反応機構検証は完了。残タスク: (a) 論文 Fig.4c 相当の Carothers 曲線には大規模・長時間ラン(100+100, NPT, 多サイクル)で複数 (p,DPn) 点が必要。(b) F3 の簿記クリーンアップは連言確定で症状解消済みだが `_apply_topology_edits` のガード明示化は任意。(c) 温度安定性/密度など従来チェックの図生成。

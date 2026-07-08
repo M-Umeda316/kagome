@@ -54,20 +54,26 @@ def find_candidates(
 
     pair_specs: dict[tuple[int, int], PairSpec] = {}
     formation_group_pairs: set[tuple[int, int]] = set()
+    dissociation_group_pairs: set[tuple[int, int]] = set()
     for ps in template.pairs:
         if not ps.score_pair:
             continue
         idx_a = label_list.index(ps.group_a)
         idx_b = label_list.index(ps.group_b)
-        pair_specs[(min(idx_a, idx_b), max(idx_a, idx_b))] = ps
-        if ps.is_formation and not ps.constraint_only:
-            formation_group_pairs.add((min(idx_a, idx_b), max(idx_a, idx_b)))
+        key = (min(idx_a, idx_b), max(idx_a, idx_b))
+        pair_specs[key] = ps
+        if not ps.constraint_only:
+            if ps.is_formation:
+                formation_group_pairs.add(key)
+            else:
+                dissociation_group_pairs.add(key)
 
     candidates: list[Candidate] = []
     _enumerate_recursive(
         group_atoms, label_list, pair_specs, positions, candidates,
         depth=0, chosen=[], running_score=0.0, cell=cell,
         topology=topology, formation_group_pairs=formation_group_pairs,
+        dissociation_group_pairs=dissociation_group_pairs,
     )
     return candidates
 
@@ -84,6 +90,7 @@ def _enumerate_recursive(
     cell: NDArray[np.floating] | None = None,
     topology: BondTopology | None = None,
     formation_group_pairs: set[tuple[int, int]] | None = None,
+    dissociation_group_pairs: set[tuple[int, int]] | None = None,
 ) -> None:
     if depth == len(group_atoms):
         out.append(Candidate(
@@ -107,9 +114,21 @@ def _enumerate_recursive(
             if d < ps.r_min or d > ps.r_max:
                 ok = False
                 break
+            group_key = (min(prev_depth, depth), max(prev_depth, depth))
+            # L6: a formation pair whose atoms are already bonded cannot form.
             if (topology is not None and formation_group_pairs
-                    and (min(prev_depth, depth), max(prev_depth, depth)) in formation_group_pairs
+                    and group_key in formation_group_pairs
                     and topology.has_bond(chosen[prev_depth], atom_idx)):
+                ok = False
+                break
+            # B2 (dual of L6): a dissociation pair can only break a bond that
+            # actually exists. Reject candidates that pair a dissociation atom
+            # (e.g. nylon amine_N) with a partner it is NOT bonded to (a
+            # different molecule's H), which would otherwise spawn spurious
+            # inter-molecular N-H / C-OH dissociation candidates.
+            if (topology is not None and dissociation_group_pairs
+                    and group_key in dissociation_group_pairs
+                    and not topology.has_bond(chosen[prev_depth], atom_idx)):
                 ok = False
                 break
             added_score += d
@@ -122,6 +141,7 @@ def _enumerate_recursive(
             group_atoms, label_list, pair_specs, positions, out,
             depth + 1, chosen, running_score + added_score, cell=cell,
             topology=topology, formation_group_pairs=formation_group_pairs,
+            dissociation_group_pairs=dissociation_group_pairs,
         )
         chosen.pop()
 

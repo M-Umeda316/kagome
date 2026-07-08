@@ -9,6 +9,7 @@ Paper: arXiv:2511.22874, Figs. 2-6 require time-series of energy and conversion.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -23,9 +24,18 @@ except ImportError:
         'Install with: pip install kagome[plot]'
     )
 
+from kagome.analysis.carothers import (
+    dpn_carothers,
+    dpn_measured_from_topology,
+    monomer_sets_from_bonds,
+)
 from kagome.analysis.conversion import conversion_timeseries, fit_conversion_exponential
 from kagome.analysis.density import reaction_density_profile
-from kagome.io.readers import read_bond_events, read_trajectory
+from kagome.io.readers import (
+    read_bond_events,
+    read_topology_snapshots,
+    read_trajectory,
+)
 
 
 def plot_energy_vs_step(
@@ -184,6 +194,82 @@ def plot_conversion_vs_step(
         fig.savefig(output_dir / f'conversion_vs_step.{fmt}', dpi=150)
     plt.close(fig)
     print(f'Saved conversion_vs_step.png/.pdf to {output_dir}')
+
+
+def plot_dpn_vs_conversion(
+    bonds_path: Path,
+    topology_path: Path,
+    n_reactive_sites: int,
+    output_dir: Path,
+) -> None:
+    """Fig. 4c: MEASURED number-average DPn vs conversion p, over Carothers theory.
+
+    Measured DPn at each recorded topology snapshot (cycle) is the monomer count
+    divided by the number of connected molecules in the monomer graph
+    (:func:`dpn_measured_from_topology`); the x-coordinate p is the counted
+    amide-bond fraction from bonds.jsonl at that snapshot's step. The theoretical
+    Carothers curve DPn = 1/(1-p) is overlaid. Step-growth only — the caller must
+    gate this to nylon-style runs (chain-growth does not obey 1/(1-p)).
+
+    Paper anchor: arXiv:2511.22874, Fig. 4c.
+    """
+    snapshots = read_topology_snapshots(topology_path)
+    if not snapshots:
+        print(f'No topology snapshots in {topology_path} -- skipping DPn plot.')
+        return
+    if n_reactive_sites <= 0:
+        print('n_reactive_sites <= 0 -- skipping DPn plot.')
+        return
+
+    # Monomer atom membership = connected components of the INITIAL topology
+    # (first snapshot, cycle -1): every monomer atom is intramolecularly bonded.
+    monomer_atom_sets = monomer_sets_from_bonds(snapshots[0][1])
+    if not monomer_atom_sets:
+        print('No monomers recovered from initial topology -- skipping DPn plot.')
+        return
+
+    # Counted amide formations (A5: exclude bias-only water-forming k-l events so
+    # one condensation = one amide bond), for the extent of reaction p.
+    events = read_bond_events(bonds_path)
+    counted_steps = sorted(
+        e.step for e in events
+        if e.event_type == 'confirmed_formation' and e.counts_as_reaction
+    )
+    counted_arr = np.array(counted_steps, dtype=np.int64)
+    n_groups_each = n_reactive_sites / 2  # equimolar A-A + B-B: amine == carboxyl
+
+    p_series: list[float] = []
+    dpn_series: list[float] = []
+    for step, bonds in snapshots:
+        n_counted = int(np.searchsorted(counted_arr, step, side='right'))
+        p = n_counted / n_groups_each if n_groups_each > 0 else 0.0
+        p_series.append(min(p, 1.0))
+        dpn_series.append(dpn_measured_from_topology(bonds, monomer_atom_sets))
+
+    p_arr = np.array(p_series)
+    dpn_arr = np.array(dpn_series)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    p_max = float(p_arr.max()) if p_arr.size else 0.0
+    p_curve = np.linspace(0.0, min(max(p_max, 0.05), 0.99), 200)
+    ax.plot(p_curve, dpn_carothers(p_curve), '-', color='tab:gray',
+            linewidth=1.2, label=r'Carothers $1/(1-p)$')
+    ax.plot(p_arr, dpn_arr, 'o-', color='tab:blue', markersize=6,
+            linewidth=1.0, label='Simulation (measured)')
+
+    ax.set_xlabel('Conversion p (extent of reaction)')
+    ax.set_ylabel(r'Number-average DPn')
+    ax.set_title('Carothers: measured DPn vs conversion (Fig. 4c)')
+    ax.legend(loc='upper left')
+    ax.set_xlim(0, max(p_max * 1.1, 0.05))
+    ax.set_ylim(1.0, None)
+    fig.tight_layout()
+    for fmt in ('png', 'pdf'):
+        fig.savefig(output_dir / f'dpn_vs_conversion.{fmt}', dpi=150)
+    plt.close(fig)
+    print(f'Saved dpn_vs_conversion.png/.pdf to {output_dir}')
 
 
 def plot_density_profile(
@@ -411,6 +497,10 @@ def main() -> None:
                         help='Cross-sectional area (Å²) for density normalization. '
                              'If omitted, computed from the trajectory cell '
                              '(mean Lx*Ly); errors if no cell was recorded.')
+    parser.add_argument('--topology', type=Path, default=None,
+                        help='topology.jsonl for the Carothers Fig. 4c measured-DPn '
+                             'plot (step-growth/nylon only). If omitted, looked up '
+                             'next to --bonds.')
     parser.add_argument('--summary', type=Path, nargs='+', default=None,
                         help='summary.json file(s) for S2 diagnostics plot.')
     parser.add_argument('--output-dir', type=Path, default=Path('runs/smoke/figures'))
@@ -478,6 +568,24 @@ def main() -> None:
             args.bonds, args.trajectory, args.output_dir,
             cell_xy_area=args.cell_xy_area,
         )
+
+        # Fig. 4c (Carothers measured DPn vs conversion): step-growth only. Gate
+        # on the run summary's carothers_p marker so chain-growth (vinyl) runs —
+        # which also emit topology.jsonl but do not obey DPn = 1/(1-p) — no-op.
+        topo_path = args.topology or (args.bonds.parent / 'topology.jsonl')
+        summary_path = args.bonds.parent / 'summary.json'
+        is_step_growth = False
+        if summary_path.exists():
+            try:
+                is_step_growth = 'carothers_p' in json.loads(
+                    summary_path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                is_step_growth = False
+        if is_step_growth and topo_path.exists():
+            plot_dpn_vs_conversion(args.bonds, topo_path, n_sites, args.output_dir)
+        elif args.topology is not None and topo_path.exists():
+            # Explicit --topology overrides the auto-detection guard.
+            plot_dpn_vs_conversion(args.bonds, topo_path, n_sites, args.output_dir)
 
     if args.summary:
         plot_s2_diagnostics(args.summary, args.output_dir)
