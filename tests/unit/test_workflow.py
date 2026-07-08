@@ -17,6 +17,7 @@ from kagome.reactive.selection import (
 )
 from kagome.workflows.polymerization import (
     DefaultPostCycleUpdater,
+    EpoxyAmineAdditionUpdater,
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
@@ -153,6 +154,126 @@ class TestDefaultPostCycleUpdater:
         upd.update(groups, _FakeTracker([], diss), self._state())
         assert 0 not in groups['amine_N'].atom_indices
         assert 1 not in groups['amine_H'].atom_indices
+
+
+class TestEpoxyAmineAdditionUpdater:
+    """1° -> 2° -> 3° amine multi-addition (Track 2 E1, decisions.md
+    2026-07-09): a confirmed ring-opening consumes the epoxy C, the ring O and
+    one amine H, but the amine N stays selectable until its LAST registered H
+    is consumed (tertiary amine)."""
+
+    # atoms: 0 = amine N (primary, 2 H: 1 and 2); 10/20 = epoxy C; 11/21 = ring O
+    @staticmethod
+    def _groups():
+        return {
+            'amine_N': ReactiveGroup('amine_N', [0]),
+            'epoxy_C': ReactiveGroup('epoxy_C', [10, 20]),
+            'amine_H': ReactiveGroup('amine_H', [1, 2]),
+            'ring_O':  ReactiveGroup('ring_O',  [11, 21]),
+        }
+
+    @staticmethod
+    def _updater():
+        return EpoxyAmineAdditionUpdater({0: [1, 2]})
+
+    @staticmethod
+    def _state():
+        return SimulationState(
+            positions=np.zeros((22, 3)), velocities=np.zeros((22, 3)),
+            species=['C'] * 22,
+        )
+
+    @staticmethod
+    def _addition_events(cycle, n, c, h, o, cid=0):
+        """One complete conjunctive ring-opening: N-C + hydroxyl O-H formations,
+        N-H + ring C-O dissociations (all same candidate)."""
+        formations = [
+            BondEvent(step=1, cycle=cycle, atom_a=n, atom_b=c,
+                      event_type='confirmed_formation', distance=1.5,
+                      candidate_id=cid),
+            BondEvent(step=1, cycle=cycle, atom_a=h, atom_b=o,
+                      event_type='confirmed_formation', distance=1.0,
+                      candidate_id=cid, counts_as_reaction=False),
+        ]
+        dissociations = [
+            BondEvent(step=1, cycle=cycle, atom_a=n, atom_b=h,
+                      event_type='confirmed_dissociation', distance=3.0,
+                      candidate_id=cid),
+            BondEvent(step=1, cycle=cycle, atom_a=c, atom_b=o,
+                      event_type='confirmed_dissociation', distance=3.0,
+                      candidate_id=cid),
+        ]
+        return formations, dissociations
+
+    def test_first_addition_keeps_secondary_amine_selectable(self):
+        groups = self._groups()
+        upd = self._updater()
+        formations, dissociations = self._addition_events(0, n=0, c=10, h=1, o=11)
+        upd.update(groups, _FakeTracker(formations, dissociations), self._state())
+
+        # consumed: attacked epoxy C, its ring O, the transferred H
+        assert 10 not in groups['epoxy_C'].atom_indices
+        assert 11 not in groups['ring_O'].atom_indices
+        assert 1 not in groups['amine_H'].atom_indices
+        # the now-secondary amine N keeps its remaining H and stays selectable
+        assert 0 in groups['amine_N'].atom_indices
+        assert 2 in groups['amine_H'].atom_indices
+        # untouched epoxide remains
+        assert 20 in groups['epoxy_C'].atom_indices
+        assert 21 in groups['ring_O'].atom_indices
+
+    def test_second_addition_retires_tertiary_amine(self):
+        groups = self._groups()
+        upd = self._updater()
+        f1, d1 = self._addition_events(0, n=0, c=10, h=1, o=11)
+        upd.update(groups, _FakeTracker(f1, d1), self._state())
+        f2, d2 = self._addition_events(1, n=0, c=20, h=2, o=21)
+        upd.update(groups, _FakeTracker(f1 + f2, d1 + d2), self._state())
+
+        assert 2 not in groups['amine_H'].atom_indices
+        assert 20 not in groups['epoxy_C'].atom_indices
+        assert 21 not in groups['ring_O'].atom_indices
+        # last H consumed -> tertiary amine retired
+        assert 0 not in groups['amine_N'].atom_indices
+
+    def test_h2_guard_skips_unmatched_dissociation(self):
+        """A dissociation whose candidate has no confirmed formation must not
+        consume any site (same H2 semantics as DefaultPostCycleUpdater)."""
+        groups = self._groups()
+        upd = self._updater()
+        diss = [BondEvent(step=1, cycle=0, atom_a=0, atom_b=1,
+                          event_type='confirmed_dissociation', distance=3.0,
+                          candidate_id=0)]
+        upd.update(groups, _FakeTracker([], diss), self._state())
+
+        assert 0 in groups['amine_N'].atom_indices
+        assert 1 in groups['amine_H'].atom_indices
+
+    def test_processed_counters_prevent_double_processing(self):
+        groups = self._groups()
+        upd = self._updater()
+        formations, dissociations = self._addition_events(0, n=0, c=10, h=1, o=11)
+        tracker = _FakeTracker(formations, dissociations)
+        upd.update(groups, tracker, self._state())
+        upd.update(groups, tracker, self._state())  # same events again
+        assert upd.processed_formations == 2
+        assert upd.processed_dissociations == 2
+
+    def test_checkpoint_state_is_counters_only(self):
+        """Resume relies on run()'s existing save/restore of the processed
+        counters; the H bookkeeping must be derivable from live groups."""
+        groups = self._groups()
+        upd = self._updater()
+        f1, d1 = self._addition_events(0, n=0, c=10, h=1, o=11)
+        upd.update(groups, _FakeTracker(f1, d1), self._state())
+
+        # a fresh updater with restored counters continues correctly
+        resumed = self._updater()
+        resumed._processed_formations = upd.processed_formations
+        resumed._processed_dissociations = upd.processed_dissociations
+        f2, d2 = self._addition_events(1, n=0, c=20, h=2, o=21)
+        resumed.update(groups, _FakeTracker(f1 + f2, d1 + d2), self._state())
+        assert 0 not in groups['amine_N'].atom_indices
 
 
 class TestTruncateJsonl:

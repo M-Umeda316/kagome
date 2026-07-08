@@ -323,6 +323,110 @@ class DefaultPostCycleUpdater:
         self._processed_dissociations = len(dissociations)
 
 
+class EpoxyAmineAdditionUpdater:
+    """Epoxy-amine ring-opening addition with 1° -> 2° -> 3° amine reassignment.
+
+    Same candidate-atomic (H2) semantics as DefaultPostCycleUpdater, with one
+    chemistry-specific difference: a confirmed addition must NOT retire the
+    amine N. A primary amine (2 N-H) reacts twice — after the first addition it
+    is a secondary amine with one H left and stays selectable; only when its
+    last registered H is consumed (tertiary amine) is the N removed from
+    ``amine_N``. Consumed atoms per confirmed candidate: the attacked epoxy C,
+    the ring O (freed as the beta-hydroxyl), and the transferred amine H.
+
+    ``amine_h_map`` (global N index -> tuple of its N-H global indices) is
+    immutable; the remaining-H count is derived from live ``amine_H`` group
+    membership, so checkpoint resume needs no extra state beyond the processed
+    counters (which run() already saves/restores).
+
+    Paper anchor: SI epoxy template (4-group, adapted to bulk per decisions.md
+    2026-07-08 E0 design); multi-addition 1°/2° amine per SI Table S3 chemistry.
+    """
+
+    def __init__(
+        self,
+        amine_h_map: dict[int, list[int] | tuple[int, ...]],
+        amine_n_group: str = 'amine_N',
+        amine_h_group: str = 'amine_H',
+    ) -> None:
+        self.amine_h_map = {int(n): tuple(hs) for n, hs in amine_h_map.items()}
+        self._h_to_n = {h: n for n, hs in self.amine_h_map.items() for h in hs}
+        self.amine_n_group = amine_n_group
+        self.amine_h_group = amine_h_group
+        self._processed_formations: int = 0
+        self._processed_dissociations: int = 0
+
+    @property
+    def processed_formations(self) -> int:
+        return self._processed_formations
+
+    @property
+    def processed_dissociations(self) -> int:
+        return self._processed_dissociations
+
+    def _consume_atom(
+        self,
+        groups: dict[str, ReactiveGroup],
+        idx: int,
+        touched_n: set[int],
+    ) -> None:
+        """Remove idx from all groups, except amine N (deferred retirement)."""
+        if idx in self.amine_h_map:
+            touched_n.add(idx)
+            return
+        if idx in self._h_to_n:
+            touched_n.add(self._h_to_n[idx])
+        for group in groups.values():
+            if idx in group.atom_indices:
+                group.remove_atom(idx)
+
+    def update(
+        self,
+        groups: dict[str, ReactiveGroup],
+        tracker: BondTracker | None,
+        state: SimulationState,
+    ) -> None:
+        if not tracker:
+            return
+        touched_n: set[int] = set()
+
+        formations = tracker.confirmed_formations()
+        confirmed_cids: set[tuple[int, int]] = set()
+        for ev in formations[self._processed_formations:]:
+            self._consume_atom(groups, ev.atom_a, touched_n)
+            self._consume_atom(groups, ev.atom_b, touched_n)
+            if ev.candidate_id >= 0:
+                confirmed_cids.add((ev.cycle, ev.candidate_id))
+        self._processed_formations = len(formations)
+
+        dissociations = tracker.confirmed_dissociations()
+        for ev in dissociations[self._processed_dissociations:]:
+            if (ev.candidate_id >= 0
+                    and (ev.cycle, ev.candidate_id) not in confirmed_cids):
+                logger.info(
+                    'Skipping dissociation (%d,%d) cycle=%d candidate_id=%d: '
+                    'no matching formation confirmed (H2)',
+                    ev.atom_a, ev.atom_b, ev.cycle, ev.candidate_id)
+                continue
+            self._consume_atom(groups, ev.atom_a, touched_n)
+            self._consume_atom(groups, ev.atom_b, touched_n)
+        self._processed_dissociations = len(dissociations)
+
+        # 1° -> 2° -> 3°: retire an amine N only once its last H is consumed.
+        n_group = groups.get(self.amine_n_group)
+        h_group = groups.get(self.amine_h_group)
+        if n_group is None or h_group is None:
+            return
+        for n_idx in touched_n:
+            remaining = [h for h in self.amine_h_map.get(n_idx, ())
+                         if h in h_group.atom_indices]
+            if not remaining and n_idx in n_group.atom_indices:
+                logger.info(
+                    'Amine N %d fully substituted (tertiary) — removed from %s',
+                    n_idx, self.amine_n_group)
+                n_group.remove_atom(n_idx)
+
+
 class VinylChainPropagationUpdater:
     """Vinyl radical chain propagation: beta-C becomes new radical after formation.
 

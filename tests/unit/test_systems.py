@@ -661,3 +661,122 @@ class TestProductionSpin:
         )
         n_radicals = len(new_groups['radical_C'].atom_indices)
         assert production_spin(n_radicals) == 7  # 6 radicals + 1, not 10 + 1
+
+
+class TestEpoxyAmineHelpers:
+    """RDKit helpers for the bulk epoxy-amine system (Track 2 E1,
+    decisions.md 2026-07-09)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    def test_find_epoxide_propylene_oxide(self):
+        """CC1CO1: one ring; terminal C is the CH2 (2 H), paired with ring O."""
+        from rdkit import Chem
+        from scripts._systems import _find_epoxide_c_o
+        smiles = 'CC1CO1'
+        pairs = _find_epoxide_c_o(smiles)
+        assert len(pairs) == 1
+        mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        c_idx, o_idx = pairs[0]
+        assert mol.GetAtomWithIdx(c_idx).GetSymbol() == 'C'
+        assert mol.GetAtomWithIdx(o_idx).GetSymbol() == 'O'
+        h_count = sum(1 for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
+                      if n.GetSymbol() == 'H')
+        assert h_count == 2  # terminal CH2, not the methyl-bearing CH
+
+    def test_find_epoxide_dgeba_has_two_rings(self):
+        from scripts._systems import _DGEBA_SMILES, _find_epoxide_c_o
+        pairs = _find_epoxide_c_o(_DGEBA_SMILES)
+        assert len(pairs) == 2
+        assert len({c for c, _ in pairs}) == 2
+        assert len({o for _, o in pairs}) == 2
+
+    def test_find_amine_n_h_deta(self):
+        """DETA NCCNCCN: 2 primary (2 H) + 1 secondary (1 H) = 3 N, 5 H."""
+        from scripts._systems import _DETA_SMILES, _find_amine_n_h
+        result = _find_amine_n_h(_DETA_SMILES)
+        assert len(result) == 3
+        h_counts = sorted(len(hs) for _, hs in result)
+        assert h_counts == [1, 2, 2]
+
+    def test_find_amine_n_h_methylamine(self):
+        from scripts._systems import _find_amine_n_h
+        result = _find_amine_n_h('CN')
+        assert len(result) == 1
+        assert len(result[0][1]) == 2
+
+
+class TestBuildEpoxyAmineSystem:
+    """Bulk epoxy-amine curing builder (4-group ring-opening template)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_no_rdkit(self):
+        pytest.importorskip('rdkit')
+
+    @staticmethod
+    def _build(n_epoxies=2, n_amines=1, box=32.0, seed=0):
+        from scripts._systems import build_epoxy_amine_system
+        rng = np.random.default_rng(seed)
+        return build_epoxy_amine_system(
+            n_epoxies=n_epoxies, n_amines=n_amines, box_size=box, rng=rng,
+        )
+
+    def test_atom_count(self):
+        from scripts._systems import _DETA_SMILES, _DGEBA_SMILES, _rdkit_3d
+        pos, species, _, _, _ = self._build()
+        n_per_epoxy = len(_rdkit_3d(_DGEBA_SMILES)[1])
+        n_per_amine = len(_rdkit_3d(_DETA_SMILES)[1])
+        expected = 2 * n_per_epoxy + 1 * n_per_amine
+        assert pos.shape == (expected, 3)
+        assert len(species) == expected
+
+    def test_group_sizes(self):
+        _, _, _, groups, _ = self._build()
+        # 2 DGEBA x 2 epoxides; 1 DETA x (3 N, 5 N-H)
+        assert len(groups['epoxy_C'].atom_indices) == 4
+        assert len(groups['ring_O'].atom_indices) == 4
+        assert len(groups['amine_N'].atom_indices) == 3
+        assert len(groups['amine_H'].atom_indices) == 5
+
+    def test_template_structure(self):
+        _, _, template, _, _ = self._build()
+        assert template.groups == ['amine_N', 'epoxy_C', 'amine_H', 'ring_O']
+        assert len(template.pairs) == 4
+        formation_pairs = [p for p in template.pairs if p.is_formation]
+        dissociation_pairs = [p for p in template.pairs if not p.is_formation]
+        assert len(formation_pairs) == 2
+        assert len(dissociation_pairs) == 2
+
+    def test_kl_pair_is_bias_only(self):
+        """The hydroxyl-forming k-l (amine_H - ring_O) pair must be bias-only:
+        score_pair=False (not a trigger) and count_as_reaction=False."""
+        _, _, template, _, _ = self._build()
+        kl = [p for p in template.pairs
+              if p.group_a == 'amine_H' and p.group_b == 'ring_O']
+        assert len(kl) == 1
+        assert kl[0].score_pair is False
+        assert kl[0].count_as_reaction is False
+        assert kl[0].is_formation is True
+
+    def test_amine_h_map_consistent_with_groups(self):
+        _, species, _, groups, amine_h_map = self._build()
+        assert set(amine_h_map.keys()) == set(groups['amine_N'].atom_indices)
+        all_hs = [h for hs in amine_h_map.values() for h in hs]
+        assert sorted(all_hs) == sorted(groups['amine_H'].atom_indices)
+        for n_idx, hs in amine_h_map.items():
+            assert species[n_idx] == 'N'
+            for h in hs:
+                assert species[h] == 'H'
+
+    def test_group_species(self):
+        _, species, _, groups, _ = self._build()
+        for c_idx in groups['epoxy_C'].atom_indices:
+            assert species[c_idx] == 'C'
+        for o_idx in groups['ring_O'].atom_indices:
+            assert species[o_idx] == 'O'
+
+    def test_no_nan_positions(self):
+        pos, _, _, _, _ = self._build(seed=5)
+        assert not np.any(np.isnan(pos))

@@ -1473,3 +1473,55 @@ Use this template for each decision.
   - NEXT: f2=2 で再走し confirmed amide(counted)>0 と Carothers 実測点を確認。経験的リスク: f1_max_dissociation=125 が実 N-H/C-OH を biased 窓内で解離させ切れるか。
 - **2026-07-08 F1'+B2 再走結果(exit 0、成功)**: `runs/nylon66_f2test`(10+10, f2=2, 10cyc, NVT)。**confirmed_formations(counted アミド)= 4 本**(cycle 0/2/3/4 で "candidate reaction fired" → unbiased 保持 → 確定)。confirmed_dissociations=8(4 アミド×2 脱離基、全て対応形成とペア)、水形成 4(counts=False)。**spurious 単発解離ゼロ**(B2+連言確定が奏功)。**carothers_p=0.2, dpn=1.25=1/(1−0.2) 理論と整合**。topology 差分は全て完全な縮合4点セット(例 cyc0: C-N 0-327 追加, N-H 0-8 除去, C-OH 327-329 除去, 水 8-329 追加)。f1_max_dissociation=125 は実 N-H/C-OH を biased 窓内で解離させ切れることを実証(fired step 409〜933)。反応進行で候補が 18→0 へ単調減少=モノマー端消費を正しく反映。**段階成長縮合(生成 dissociation・4-group multi-pair・Carothers)の TDBB 機構が E2E で実証された(Track 1 の当初ゲート達成)**。cycle 1/5/6/7/8/9 は連言未成立で未反応(近接不足)=正常。
 - Scientific status: nylon Track 1 の反応機構検証は完了。残タスク: (a) 論文 Fig.4c 相当の Carothers 曲線には大規模・長時間ラン(100+100, NPT, 多サイクル)で複数 (p,DPn) 点が必要。(b) F3 の簿記クリーンアップは連言確定で症状解消済みだが `_apply_topology_edits` のガード明示化は任意。(c) 温度安定性/密度など従来チェックの図生成。
+
+## 2026-07-08: 【Track 2 / E0 設計】bulk epoxy-amine 開環付加の PES + 生成物 de-risk(proceed-or-fallback ゲート)
+- Context: Track 1(nylon)の反応機構検証が完了(連言反応イベント F1'+B2)。次は Track 2 = **bulk epoxy-amine 硬化**。これは 2026-06-20 で除外した epoxy/CuO **表面**系とは別物で、CuO 金属酸化物(OrbMol 未学習ドメイン)を避け、**有機のみ(C/H/N/O)で OrbMol のドメイン内に留まる**方向。外部クロスメソッド比較先は ref#2(Provenzano 2025, ACS Appl. Polym. Mater. 7(8):4876, オープンソース古典 bulk 架橋プロトコル)。E0 は「OrbMol+TDBB でエポキシ開環+アミン付加が駆動でき、開環生成物を安定に保持できるか」を回すゲート。MA(2026-06-26)・nylon(2026-07-08 de-risk)と同じ流儀。
+- 反応化学(bulk epoxy-amine 開環付加): アミン N がエポキシ環の末端 C を求核攻撃 → **N-C 結合形成 + 環の C-O 結合開裂 + アミン N-H 開裂 → その H が環 O へ移り β-ヒドロキシ基(O-H)形成**。nylon 縮合と**構造同型の 4-group テンプレート**だが、脱離基は分子外へ出ない(水は生じない):O は隣接環 C に結合したままヒドロキシルとして分子内に残る(分子内開環)。1級アミンは2回反応(1°→2°→3° 架橋)するが E0 は単回付加の PES de-risk に限定(2回目=2級付加は E1 で扱う/E0 で任意の第2スキャン)。
+  - Gi=amine N, Gj=epoxy 末端 C, Gk=amine H, Gl=epoxy 環 O。ペア: (i,j) N-C 形成 / (i,k) N-H 解離 / (j,l) C-O 環解離 / (k,l) H-O ヒドロキシル形成(bias-only, count_as_reaction=False)。これは連言反応イベント(F1', 2026-07-08)がそのまま適用できる(ij∧ik∧jl 同時)。B2(解離ペア=実結合)も (i,k) N-H と (j,l) 環 C-O が実結合なので機能。
+  - r0(Eq.4, λ=0.6): N-C=0.6·(1.55+1.70)=1.95 Å(nylon と同一)、環 C-O 解離=0.6·(1.70+1.52)=1.93、H-O 形成=0.6·(1.10+1.52)=1.57。→ dead-zone 構造は nylon/MA と同型、f2≈2 が既定見込み。
+- Paper anchor: 論文 §2 epoxy テンプレート(SI, ただし CuO 表面版)。decisions 2026-06-18(表面 4-group: Gi=epoxy O, Gj=1°N, Gk=2°N, Gl=surface OH — **bulk では surface OH が無く O 自身がヒドロキシルになる別テンプレート**)、2026-06-20(CuO 除外=有機ドメイン限定)、2026-06-26(MA dead-zone/f2)、2026-07-08(nylon 連言+生成物 de-risk の教訓: 生成物側の安定性検証が決定的)。
+- Decision(E0 設計): 新規 `scripts/scan_epoxy_amine.py`(or 2本)で、nylon de-risk の**両面**を回す:
+  (1) **反応物側 PES + TDBB reach**(scan_amide_formation.py 相当): 固定 N···C 距離で残りを constrained-relax、[3,6] Å 候補窓〜結合距離の PES とバイアス reach を f2 sweep(10/5/2)で測定 → dead-zone/f2 判定。
+  (2) **生成物側安定性 de-risk**(derisk_amide_product.py 相当・**決定的**): 開環済み β-ヒドロキシアミン生成物を自由 FIRE 緩和し、N-C(~1.47 Å)が安定極小として保持されるか + 環が再閉環しないかを確認。反応物錯体(未開環・環 O 保持)の自由緩和が(開環しないなら)復元することも対照確認。
+  (3) **反応エネルギー**: dE = E(開環生成物) − E(エポキシ+アミン)。エポキシ環歪み解放(~-20〜-25 kcal/mol 見込み)で発熱のはず → OrbMol がこれを再現するか。
+  - フラグメント(閉殻シングレット): エポキシ = プロピレンオキシド `CC1CO1` もしくはグリシジルメチルエーテル `COCC1CO1`(DGEBA のグリシジルエーテル末端に近い)。アミン = メチルアミン `CN`(1°、nylon と同モデル)。
+- Gate(proceed-or-fallback):
+  - **PROCEED to E1**(bulk テンプレート+ビルダー+run): N-C の到達可能な bonded チャネルあり **かつ** 開環生成物を OrbMol が安定保持 **かつ** 発熱が妥当。
+  - dead-zone(f2=10 で reach≈0)→ f2=2 採用(MA/nylon と同じ、想定内)。
+  - 生成物を保持しない/再閉環する → **MLIP 懸念**。別バックエンドは CLAUDE.md commercial-license review 必須・既定にしない。
+- Alternatives considered: (a) CuO 表面版をそのまま → OrbMol ドメイン外(2026-06-20 除外)。(b) E0 を飛ばして直接 bulk run → nylon で「機構/PES を先に de-risk しないと dead-zone/生成物問題で 0 反応」を実証済み。却下。(c) DGEBA/DETA フルフラグメント → PES de-risk には過大、小分子代表で十分(必要なら --monomer-fragments 相当で後追い)。
+- Scientific risk: 中。開環は歪み解放で熱力学的に有利=生成物保持は nylon アミドより容易な見込みだが、OrbMol の環歪み PES 精度は未確認ゆえ de-risk が必要。1°→2°→3° の多段/2級アミンの立体障害は E1 以降。
+- Licensing/commercial impact: なし(OrbMol-v2 有機ドメインのみ)。E0 が fallback(別 MLIP)を示唆した場合のみ license review。
+- Follow-up: (a) ユーザー承認後 `scripts/scan_epoxy_amine.py` を実装(反応物側+生成物側+energetics、--device cuda)。(b) GPU 実行してゲート判定。(c) PROCEED なら E1(bulk epoxy-amine テンプレートを scripts/_systems.py に追加、1°→2°→3° の群再割当を含む builder + run script)。(d) 関連: [[multi-system-verification-plan]]。
+- **2026-07-09 実行結果 → 次エントリ(PROCEED 判定、f2=2 採用)**。
+
+## 2026-07-09: 【Track 2 / E0 実行結果】PROCEED — OrbMol は開環チャネル・生成物保持・発熱を全て支持。epoxy でも f2=2 を採用
+- Context: 2026-07-08 E0 設計に基づき `scripts/scan_epoxy_amine.py` を GPU 実行(WSL pfpoly-gpu、backend=orb(OrbMol-v2)、device=cuda、seed=20260708)。フラグメント: エポキシ=プロピレンオキシド `CC1CO1`、アミン=メチルアミン `CN`、開環生成物=`CNCC(O)C`。原子収支 C4H11NO で平衡確認済み。成果物: `runs/calibration/epoxy_amine_scan.json`、ログ `runs/calibration/epoxy_e0_direct.log`。
+- 結果(ゲート3条件+reach):
+  (1) **TDBB reach**: 論文 f2=10 では候補窓 [3,6] Å の最大バイアス力 0.086 kcal/mol/Å ≈ 0 = **デッドゾーン**(MA 2026-06-26 / nylon 2026-07-08 と完全同型)。f2=2 で r=3.5 Å の力 12.7、窓内最大 115.8 kcal/mol/Å と橋渡し可能。r=3.5 Å で |力|≥10 を満たす最小 f2 は **2**。
+  (2) **反応物側 PES**(拘束緩和 N…C スキャン 6.0→1.4 Å): r=3.4 Å に浅い井戸(−1.24 kcal/mol)、障壁 36.6 kcal/mol @ r=1.80 Å、結合側極小に到達可能(bonded min accessible=True)。
+  (3) **生成物側 de-risk(決定的)**: 開環 β-ヒドロキシアミンの自由 FIRE 緩和で N-C 1.470→1.451 Å を保持(85 steps, converged)、攻撃 C…環 O は 2.42 Å で**再閉環なし** → PASS。対照(環無傷の反応物錯体 N…C=1.55 Å)は自由緩和で 3.35 Å へ復元し環は開かない=偽陽性でないことを確認。
+  (4) **反応エネルギー**: ΔE = −29.5 kcal/mol(発熱)。環歪み解放の見込み(−20〜−25)と整合。
+- Decision:
+  (a) **ゲート判定 = PROCEED to E1**(E0 設計の3条件を全て充足)。
+  (b) **epoxy-amine 系の production f2=2.0 を採用**。論文値 10 からの意図的逸脱で、根拠は MA/nylon と同じ(OrbMol PES に候補窓からの引力チャネルが無く、f2=10 ではバイアス力が捕捉殻に届かない)。Ask-first 該当(論文 default ハイパラの変更)だが、本スキャンの解析的 reach 実測+ユーザー承認(2026-07-09「記録して E1 準備へ」)により確定。
+- Scientific risk: 低〜中。障壁 36.6 kcal/mol は f1_max_formation=250 に対しマージン十分。f2=2 逸脱により絶対速度論は論文比較不可(2026-07-07 friction エントリと同じ位置づけ=トレンド比較のみ)。発熱 −29.5 kcal/mol は nylon 縮合(−4.3)より大きく MA(−27.8)並みのため、加熱対策として OrbMol production レシピ(friction 0.01 + unbiased 1500)を E1 でも踏襲する。
+- Licensing/commercial impact: なし(OrbMol-v2 のみ使用)。
+- Follow-up(E1 準備): (a) `scripts/_systems.py` に bulk epoxy-amine 4-group テンプレート+ビルダー(Gi=amine N / Gj=epoxy 末端 C / Gk=amine H / Gl=環 O、1°→2°→3° の群再割当を含む)。(b) `scripts/run_epoxy_amine.py`(run_nylon66.py 踏襲: minimize+equil、checkpoint/resume、f2=2 既定、333 K)。(c) unit テスト。(d) 小規模スモーク → paper-scale。(e) 外部比較は ref#2(Provenzano 2025)プロトコル([[multi-system-verification-plan]])。
+- **2026-07-09 実装済み → 次エントリ(E1 実装)**。
+
+## 2026-07-09: 【Track 2 / E1 実装】bulk epoxy-amine ビルダー+1°→2°→3° updater+run script
+- Context: E0 PROCEED(前エントリ)を受け、bulk epoxy-amine 硬化の実行系一式を実装。
+- Paper anchor: arXiv:2511.22874 SI epoxy テンプレート(4-group、CuO 表面版を bulk へ適応 = 2026-07-08 E0 設計)、Table S3(DGEBA+DETA 樹脂、100:50)、p.24(epoxy production 333 K)、Eq.4(r0, λ=0.6)。連言反応イベント F1'(2026-07-08)がそのまま適用される。
+- 実装:
+  (a) `scripts/_systems.py`: `_DGEBA_SMILES`/`_DETA_SMILES` 定数、`_find_epoxide_c_o`(SMARTS C1CO1、攻撃対象=H の多い末端環 C)、`_find_amine_n_h`(sp3 N の全 N-H を登録; 1° も 2° も対象)、`build_epoxy_amine_system`(nylon ビルダー踏襲: エポキシ先・アミン後、rdkit_seed/seed+1)。テンプレート: (amine_N, epoxy_C) 形成 [3,6] / (amine_N, amine_H) 解離 [0,3] / (epoxy_C, ring_O) 解離 [0,3] / (amine_H, ring_O) ヒドロキシル形成 bias-only(score_pair=False, count_as_reaction=False)= nylon Table S2 と構造同型。戻り値に `amine_h_map`(N→全 N-H の global index)を追加。
+  (b) `src/kagome/workflows/polymerization.py`: `EpoxyAmineAdditionUpdater`(DefaultPostCycleUpdater の H2 候補単位セマンティクスを維持しつつ、**確定形成でアミン N を群から除去しない**。消費するのは攻撃された epoxy C・環 O・移動した H のみ。N は amine_h_map の登録 H が amine_H 群から尽きた時=3級化した時のみ退役)。残 H 数は live 群メンバーシップから導出するため checkpoint 追加状態なし(processed カウンタは既存の save/restore がそのまま効く)。
+  (c) `scripts/run_epoxy_amine.py`: run_nylon66.py 踏襲(minimize+equil 既定 ON、checkpoint/resume、classical 圧縮パス)。既定: DGEBA+DETA 10:5(Table S3 の 2:1 比)、T=333 K(paper p.24)、f2=2.0(前エントリ)、biased 2000 / unbiased 1500(OrbMol production レシピ)、密度 0.5(SI S-3 慣行)。主要メトリクス=エポキシド転化率(counted N-C 形成 / エポキシド総数)+アミン H 転化率。
+- 論文にない仮定(明示):
+  (i) **1° と 2° のアミン N を単一 amine_N 群に統合**(論文の表面テンプレートは Gj=1°N / Gk=2°N を別群にする)。bulk では両者の TDBB パラメータを同一にし、多段付加は updater の退役ロジックで表現。選択・バイアスの意味論は不変で、群分割は候補生成の等価な再パラメータ化。
+  (ii) N-H は**全 H を登録**(nylon は N あたり 1 H)。同一 N の複数 H が別候補になり得るが、確定した H から順に消費されるだけで二重反応は H2/連言確定が防ぐ。
+  (iii) アンサンブル既定 NPT 1 atm(論文の epoxy production は NVT だが CuO スラブ系での指定。bulk は密度到達のため repo の NPT 慣行に従い、--no-barostat で NVT 可)。
+- Tests: `tests/unit/test_systems.py` に TestEpoxyAmineHelpers/TestBuildEpoxyAmineSystem(エポキシド検出は propylene oxide/DGEBA、DETA の N/H 数、群サイズ、bias-only kl、amine_h_map 整合)、`tests/unit/test_workflow.py` に TestEpoxyAmineAdditionUpdater(1回目付加で N 残留・2回目で退役、H2 ガード、二重処理防止、resume 相当のカウンタ復元)。**pytest tests/unit = 462 passed**(既存 444 から退行なし)。
+- Scientific risk: 低〜中。機構は nylon で E2E 実証済みの連言イベントの同型適用。未検証は (a) DGEBA の嵩高さ・芳香環存在下での OrbMol 安定性(スモークで確認)、(b) 2級アミン付加の立体障害が biased 窓内で越えられるか(paper-scale で計測)。
+- Licensing/commercial impact: なし(OrbMol-v2 のみ、RDKit/既存依存のみ使用)。
+- Follow-up: (a) GPU スモーク(2 DGEBA + 1 DETA)で配線確認。(b) 小規模実走(10+5)で最初の開環確定を確認。(c) paper-scale(100+50)+ Fig.5 相当の種濃度追跡。(d) E2: ref#2(Provenzano 2025)配合との外部比較。(e) ブランチ+PR でコミット(E0 スクリプト群と併せて)。
