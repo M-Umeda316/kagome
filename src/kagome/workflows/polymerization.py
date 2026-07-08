@@ -23,7 +23,7 @@ from kagome.integrators.mc_barostat import MCBarostat
 from kagome.integrators.minimize import FireParams, fire_minimize
 from kagome.integrators.verlet import Integrator, VelocityVerletIntegrator
 from kagome.io.trajectory import TrajectoryFrame, TrajectoryWriter
-from kagome.reactive.bonds import BondTracker, is_dissociated
+from kagome.reactive.bonds import BondEvent, BondTracker, is_dissociated
 from kagome.reactive.groups import ReactiveGroup, ReactionTemplate
 from kagome.reactive.topology import (
     BondTopology, apply_vinyl_addition, vinyl_addition_over_coordinates,
@@ -1004,15 +1004,23 @@ class PolymerizationWorkflow:
                 # accepted); no coordinate mutation occurs before this call, so
                 # reusing it is bit-identical to recomputing the minimum image
                 # (S2/W3, specs/decisions.md 2026-07-06).
-                events = self.bond_tracker.check_reactions_during_bias(
+                # All per-pair crossings are recorded for audit inside this
+                # call; the return is the list of candidates whose FULL reaction
+                # event fired — i.e. all their trigger pairs (amide formation
+                # AND both leaving-group dissociations for nylon) are satisfied
+                # simultaneously (paper §2.2 step 3-4). The biased phase ends
+                # only then, so the amide and its leaving groups are committed
+                # together at unbiased confirmation and the amide cannot revert.
+                fired = self.bond_tracker.check_reactions_during_bias(
                     active_pairs, state.positions, state.step, cycle, state.cell,
                     pair_dists=pair_dists,
                 )
-                if events:
+                if fired:
                     logger.info(
-                        'Cycle %d biased: tentative reaction at step %d (%d pair(s)) '
-                        '- ending biased phase for unbiased confirmation',
-                        cycle, step_in_phase + 1, len(events),
+                        "Cycle %d biased: candidate reaction (formation + "
+                        "dissociations) fired at step %d (%d candidate(s)) - "
+                        "ending biased phase for unbiased confirmation",
+                        cycle, step_in_phase + 1, len(fired),
                     )
                     break
 
@@ -1457,5 +1465,6 @@ class PolymerizationWorkflow:
                     r0=r0,
                     candidate_id=cand_idx,
                     counts_as_reaction=ps.count_as_reaction,
+                    is_trigger=ps.score_pair,
                 ))
         return pairs

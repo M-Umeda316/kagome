@@ -32,6 +32,7 @@ from scripts._systems import (
     _DIAMINE_SMILES,
     box_from_density,
     build_nylon66_system,
+    layout_bonds,
 )
 from kagome.backends.base import Calculator
 from kagome.boost.tdbb import TDBBParams
@@ -70,6 +71,34 @@ def main() -> None:
     parser.add_argument('--n-cycles', type=int, default=3)
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
+    parser.add_argument('--f2', type=float, default=10.0,
+                        help='TDBB Gaussian width f2 (Å⁻²). Paper default 10.0. With '
+                             'OrbMol-v2 the amine_N–carboxyl_C formation bias has a '
+                             'capture-shell dead-zone at f2=10 (force ≈0 in the [3,6] Å '
+                             'candidate window; decisions.md 2026-07-08) — use ~2 for '
+                             'OrbMol production, mirroring the vinyl/MA recipe.')
+    # Pre-TDBB relaxation of the classical-compressed dense structure. The
+    # compressed 0.5 g/mL box carries close intermolecular contacts (fmax
+    # ~60 kcal/mol/Å, unconverged) whose extreme forces segfault the MLIP on the
+    # first biased evaluation. FIRE minimize + unbiased equilibration relax them
+    # first, exactly as run_vinyl_aibn does (paper anchor PDF p.20: equilibration
+    # precedes production reactive MD). Nylon is step-growth condensation with no
+    # activation phase, so the order is simply: build → compress → minimize →
+    # equilibrate → TDBB. Both steps are driven by PolymerizationConfig and run
+    # inside wf.run() (workflows/polymerization.py run() lines 633-636), matching
+    # vinyl's non-activation path.
+    parser.add_argument('--minimize', dest='minimize', action='store_true', default=True,
+                        help='FIRE energy minimization before TDBB (default: on). '
+                             'Relaxes close contacts in the compressed structure '
+                             '(paper anchor PDF p.20).')
+    parser.add_argument('--no-minimize', dest='minimize', action='store_false',
+                        help='Skip pre-TDBB energy minimization.')
+    parser.add_argument('--minimize-fmax', type=float, default=1.0,
+                        help='FIRE convergence threshold (kcal/mol/Å). Default 1.0.')
+    parser.add_argument('--equil-steps', type=int, default=2000,
+                        help='Unbiased NPT equilibration steps before TDBB '
+                             '(paper anchor PDF p.20; length not specified, default 2000 '
+                             '= 500 fs matching a TDBB block). 0 disables.')
     parser.add_argument('--box-size', type=float, default=None,
                         help='Box edge (Å). If omitted, computed from --density and '
                              'reached by direct placement or classical compression '
@@ -195,7 +224,7 @@ def main() -> None:
         unbiased_steps=args.unbiased_steps,
         n_cycles=args.n_cycles,
         tdbb=TDBBParams(
-            f2=10.0,
+            f2=args.f2,
             gamma=1.0,
             f1_max_formation=250.0,
             f1_max_dissociation=125.0,
@@ -203,6 +232,9 @@ def main() -> None:
         ),
         seed=args.seed,
         save_interval=50,
+        minimize=args.minimize,
+        minimize_fmax=args.minimize_fmax,
+        equil_steps=args.equil_steps,
     )
 
     integrator = LangevinIntegrator(langevin_params)
@@ -226,16 +258,42 @@ def main() -> None:
         masses=masses,
     )
 
+    # Pre-TDBB relaxation runs inside wf.run() from the config above (FIRE
+    # minimize then unbiased equilibration), relaxing the classical-compressed
+    # dense box before the first biased MLIP step. Nylon has no activation phase,
+    # so this is the only pre-production stage (mirrors vinyl's non-activation
+    # path; see workflows/polymerization.py run() lines 633-636).
+    logger.info(
+        'Pre-TDBB: minimize=%s (fmax=%.2f), equilibration=%d steps',
+        config.minimize, config.minimize_fmax, config.equil_steps,
+    )
+
     logger.info(
         'Starting TDBB: %d cycles × (%d biased + %d unbiased steps), T=%.0f K',
         config.n_cycles, config.biased_steps, config.unbiased_steps, args.temperature,
     )
+
+    # Initial bond topology for trajectory + Carothers Fig. 4c (measured DPn vs
+    # conversion) output. Best-effort — never fail the expensive run over
+    # topology extraction. Seeds MUST match build_nylon66_system's placement:
+    # diamines first (rdkit_seed=args.seed), then diacids (rdkit_seed=args.seed+1),
+    # so the classical topology aligns 1:1 with coordinates/groups (RF23).
+    init_bonds = None
+    try:
+        init_bonds = layout_bonds([
+            (_DIAMINE_SMILES, args.n_diamines, args.seed),
+            (_DIACID_SMILES, args.n_diacids, args.seed + 1),
+        ])
+    except Exception as exc:  # noqa: BLE001 — topology output is non-critical
+        logger.warning('Bond-topology extraction failed (%s); trajectory will '
+                       'carry no explicit bonds and Fig. 4c is unavailable.', exc)
 
     wf = PolymerizationWorkflow(
         config, calc, template, groups,
         integrator=integrator,
         bond_tracker=tracker,
         barostat=barostat,
+        initial_bonds=init_bonds,
     )
 
     # Reactive-site count for the alpha(t) denominator. Capture BEFORE the run
@@ -278,6 +336,9 @@ def main() -> None:
         'biased_steps': args.biased_steps,
         'unbiased_steps': args.unbiased_steps,
         'n_cycles': args.n_cycles,
+        'minimize': args.minimize,
+        'minimize_fmax': args.minimize_fmax,
+        'equil_steps': args.equil_steps,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'n_reactive_sites': n_reactive_sites,

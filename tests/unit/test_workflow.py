@@ -644,6 +644,93 @@ class TestBiasedStepsLogging:
         assert biased_log.steps >= 1
 
 
+class TestConjunctiveBiasedPhaseTermination:
+    """F1' (paper §2.2 step 3-4): the biased phase ends only when a candidate's
+    FULL reaction event fires — ALL its trigger pairs (amide formation AND every
+    leaving-group dissociation) satisfied simultaneously — not on any single
+    subordinate crossing. The old _is_terminating_bias_event helper is removed;
+    termination is delegated to BondTracker.check_reactions_during_bias, which
+    returns the fired candidate_ids."""
+
+    def test_terminating_helper_removed(self):
+        """The per-event anchor helper (F1) no longer exists (F1' replaces it)."""
+        import kagome.workflows.polymerization as pmod
+        assert not hasattr(pmod, '_is_terminating_bias_event')
+
+    def test_phase_does_not_end_while_conjunction_unmet(self):
+        """Nylon-like candidate whose dissociation trigger is already satisfied
+        but whose amide formation is NOT (atoms far): the conjunction cannot hold
+        within the few biased steps, so the phase runs to completion — it must
+        never break on the lone dissociation crossing."""
+        template = ReactionTemplate(
+            name='conjunctive_gating',
+            groups=['N', 'C', 'H', 'O'],
+            pairs=[
+                # Counted amide-like formation, starts far (~4.5 A).
+                PairSpec('N', 'C', is_formation=True, r_min=0.5, r_max=5.0),
+                # Leaving-group dissociation, already 'dissociated' at start.
+                PairSpec('H', 'O', is_formation=False, r_min=0.5, r_max=5.0),
+            ],
+        )
+        groups = {
+            'N': ReactiveGroup('N', [0]),
+            'C': ReactiveGroup('C', [1]),
+            'H': ReactiveGroup('H', [2]),
+            'O': ReactiveGroup('O', [3]),
+        }
+        config = PolymerizationConfig(
+            biased_steps=3, unbiased_steps=1, n_cycles=1, seed=42,
+        )
+        calc = ToyCalculator()
+        tracker = BondTracker(threshold_fraction=1.0)
+        # H-O far apart -> dissociation trigger satisfied on step 1; N-C far apart
+        # so the formation trigger never crosses in 3 weak-bias steps.
+        state = SimulationState(
+            positions=np.array([
+                [0.0, 0.0, 0.0],
+                [4.5, 0.0, 0.0],
+                [0.0, 20.0, 0.0],
+                [0.0, 24.0, 0.0],
+            ]),
+            velocities=np.zeros((4, 3)),
+            species=['N', 'C', 'H', 'O'],
+        )
+        wf = PolymerizationWorkflow(
+            config, calc, template, groups, bond_tracker=tracker,
+        )
+        logs = wf.run(state)
+        biased_log = logs[0]
+        assert biased_log.phase == 'biased'
+        # The lone dissociation did NOT end the phase; the conjunction never held.
+        assert biased_log.steps == config.biased_steps
+
+    def test_single_formation_candidate_still_breaks_early(self):
+        """Vinyl-like single-trigger candidate: the phase still breaks as soon as
+        the lone formation trigger satisfies (F1 behaviour for a 1-pair candidate
+        is a special case of the conjunction)."""
+        template = ReactionTemplate(
+            name='single_form', groups=['A', 'B'],
+            pairs=[PairSpec('A', 'B', is_formation=True, r_min=0.5, r_max=5.0)],
+        )
+        groups = {'A': ReactiveGroup('A', [0]), 'B': ReactiveGroup('B', [1])}
+        config = PolymerizationConfig(
+            biased_steps=1000, unbiased_steps=1, n_cycles=1, seed=42,
+        )
+        calc = ToyCalculator()
+        tracker = BondTracker(threshold_fraction=1.0)
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(
+            config, calc, template, groups, bond_tracker=tracker,
+        )
+        logs = wf.run(state)
+        assert logs[0].phase == 'biased'
+        assert logs[0].steps < config.biased_steps
+
+
 class TestEquilibrationPhase:
     """Tests for _run_equilibration_phase (no bias, no bond tracking)."""
 
@@ -706,6 +793,54 @@ class TestEquilibrationPhase:
         wf = PolymerizationWorkflow(config, calc, template, groups)
         wf.run(state)
         assert state.step == 7
+
+
+class TestPreTDBBMinimize:
+    """Config-driven pre-TDBB minimize is what relaxes the classical-compressed
+    dense box before the first biased MLIP step. run_nylon66.py wires
+    minimize/minimize_fmax/equil_steps into PolymerizationConfig so wf.run()
+    performs this relaxation (fix for the nylon-6,6 first-forward-pass segfault;
+    paper anchor PDF p.20 — equilibration precedes production reactive MD)."""
+
+    def test_config_minimize_runs_minimize_phase(self, tmp_path):
+        """config.minimize=True makes run() emit a 'minimize' phase before TDBB."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=0, unbiased_steps=0, n_cycles=0, seed=42,
+            save_interval=1, minimize=True, minimize_fmax=1.0,
+            minimize_max_steps=20,
+        )
+        calc = ToyCalculator()
+        # Close contact so FIRE has something to relax (mirrors the compressed box).
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [0.6, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path)
+
+        _, frames = read_trajectory(tmp_path / 'trajectory.jsonl')
+        assert any(f.phase == 'minimize' for f in frames)
+
+    def test_config_no_minimize_skips_minimize_phase(self, tmp_path):
+        """config.minimize=False (the --no-minimize path) emits no minimize phase."""
+        template, groups = _make_simple_setup()
+        config = PolymerizationConfig(
+            biased_steps=0, unbiased_steps=0, n_cycles=0, seed=42,
+            save_interval=1, minimize=False,
+        )
+        calc = ToyCalculator()
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [0.6, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+        )
+        wf = PolymerizationWorkflow(config, calc, template, groups)
+        wf.run(state, output_dir=tmp_path)
+
+        _, frames = read_trajectory(tmp_path / 'trajectory.jsonl')
+        assert not any(f.phase == 'minimize' for f in frames)
 
 
 class TestRunActivation:

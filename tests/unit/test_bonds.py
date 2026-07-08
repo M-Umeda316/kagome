@@ -131,15 +131,20 @@ class TestBondTracker:
         )
 
     # ── check_reactions_during_bias (paper §2.2 step 3) ──────────────
+    # Return value is now the list of fired candidate_ids; the per-pair
+    # tentative crossings are recorded to tracker.events as the audit trail.
 
     def test_in_bias_formation_tentative(self):
-        """Formation pair emits tentative (not confirmed) in-bias."""
+        """Formation pair records a tentative (not confirmed) audit event and,
+        as a singleton candidate, fires."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_formation_pair(r0=2.0)
         positions = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
-        events = tracker.check_reactions_during_bias(
+        fired = tracker.check_reactions_during_bias(
             [pair], positions, step=10, cycle=0,
         )
+        assert fired == [-1]  # singleton (candidate_id<0) trigger crossing fires
+        events = tracker.events
         assert len(events) == 1
         assert events[0].event_type == 'tentative_formation'
         assert events[0].distance == pytest.approx(1.5)
@@ -148,32 +153,31 @@ class TestBondTracker:
         assert len(tracker.confirmed_formations()) == 0
 
     def test_in_bias_dissociation_tentative(self):
-        """Dissociation pair emits tentative (not confirmed) in-bias."""
+        """Dissociation pair records a tentative audit event and fires (singleton)."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_dissociation_pair(r0=1.5)
         positions = np.array([[0.0, 0.0, 0.0], [2.5, 0.0, 0.0]])
-        events = tracker.check_reactions_during_bias(
+        fired = tracker.check_reactions_during_bias(
             [pair], positions, step=10, cycle=0,
         )
+        assert fired == [-1]
+        events = tracker.events
         assert len(events) == 1
         assert events[0].event_type == 'tentative_dissociation'
         assert len(tracker.confirmed_dissociations()) == 0
 
-    def test_in_bias_no_duplicate_detection(self):
-        """Once tentatively detected, a second call does not re-detect the same pair."""
+    def test_in_bias_no_duplicate_audit_record(self):
+        """The per-pair audit record is written once; a second in-bias call does
+        not append a duplicate tentative event."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_formation_pair(r0=2.0)
         positions = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
 
-        first = tracker.check_reactions_during_bias(
-            [pair], positions, step=10, cycle=0,
-        )
-        assert len(first) == 1
+        tracker.check_reactions_during_bias([pair], positions, step=10, cycle=0)
+        assert len(tracker.events) == 1
 
-        second = tracker.check_reactions_during_bias(
-            [pair], positions, step=20, cycle=0,
-        )
-        assert len(second) == 0
+        tracker.check_reactions_during_bias([pair], positions, step=20, cycle=0)
+        assert len(tracker.events) == 1  # no new audit record
 
     def test_tentative_confirmed_after_unbiased_relaxation(self):
         """Tentative in-bias detection → confirmed by check_outcomes when still close."""
@@ -182,11 +186,11 @@ class TestBondTracker:
         positions_close = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
 
         tracker.record_attempts([pair], positions_close, step=0, cycle=0)
-        in_bias = tracker.check_reactions_during_bias(
+        fired = tracker.check_reactions_during_bias(
             [pair], positions_close, step=5, cycle=0,
         )
-        assert len(in_bias) == 1
-        assert in_bias[0].event_type == 'tentative_formation'
+        assert fired == [-1]
+        assert tracker.events[-1].event_type == 'tentative_formation'
 
         outcomes = tracker.check_outcomes(positions_close, step=200)
         assert len(outcomes) == 1
@@ -201,24 +205,25 @@ class TestBondTracker:
         positions_far = np.array([[0.0, 0.0, 0.0], [3.5, 0.0, 0.0]])
 
         tracker.record_attempts([pair], positions_close, step=0, cycle=0)
-        in_bias = tracker.check_reactions_during_bias(
+        fired = tracker.check_reactions_during_bias(
             [pair], positions_close, step=5, cycle=0,
         )
-        assert len(in_bias) == 1
+        assert fired == [-1]
 
         outcomes = tracker.check_outcomes(positions_far, step=200)
         assert len(outcomes) == 0
         assert len(tracker.confirmed_formations()) == 0
 
     def test_in_bias_formation_not_detected_when_far(self):
-        """Formation pair does NOT react when r > threshold·r0."""
+        """Formation pair neither fires nor records when r > threshold·r0."""
         tracker = BondTracker(threshold_fraction=1.0)
         pair = self._make_formation_pair(r0=2.0)
         positions = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        events = tracker.check_reactions_during_bias(
+        fired = tracker.check_reactions_during_bias(
             [pair], positions, step=10, cycle=0,
         )
-        assert len(events) == 0
+        assert fired == []
+        assert len(tracker.events) == 0
 
     # ── S2/W3: pair_dists reuse is bit-identical (specs/decisions.md 2026-07-06) ──
 
@@ -228,7 +233,8 @@ class TestBondTracker:
         The biased-phase hot path reuses the distances total_bias_fast already
         computed for the same coordinates instead of recomputing the minimum
         image inside check_reactions_during_bias.  The two paths must produce
-        bit-identical distances and identical events (S2/W3).
+        bit-identical distances, identical fired candidate_ids and identical
+        audit events (S2/W3).
         """
         from kagome.boost.tdbb import BoostState, TDBBParams, total_bias_fast
         from kagome.geometry import validated_box
@@ -254,15 +260,18 @@ class TestBondTracker:
         )
 
         tracker_recompute = BondTracker(threshold_fraction=1.0)
-        events_recompute = tracker_recompute.check_reactions_during_bias(
+        fired_recompute = tracker_recompute.check_reactions_during_bias(
             pairs, positions, step=10, cycle=0, cell=cell,
         )
         tracker_reuse = BondTracker(threshold_fraction=1.0)
-        events_reuse = tracker_reuse.check_reactions_during_bias(
+        fired_reuse = tracker_reuse.check_reactions_during_bias(
             pairs, positions, step=10, cycle=0, cell=cell,
             pair_dists=pair_dists,
         )
 
+        assert fired_reuse == fired_recompute
+        events_recompute = tracker_recompute.events
+        events_reuse = tracker_reuse.events
         assert len(events_reuse) == len(events_recompute)
         for ev_r, ev_c in zip(events_reuse, events_recompute):
             assert ev_r.atom_a == ev_c.atom_a
@@ -293,3 +302,162 @@ class TestBondTracker:
         assert confirmed[0].cycle == 1
         total_formations = tracker.confirmed_formations()
         assert len(total_formations) == 1
+
+
+class TestConjunctiveReactionEvent:
+    """F1' (paper §2.2 step 3-4): a candidate's reaction event fires / confirms
+    only when ALL its trigger pairs satisfy simultaneously (formation bonded AND
+    every dissociation broken). The bias-only water pair (is_trigger=False) never
+    gates the event; it may or may not close."""
+
+    @staticmethod
+    def _nylon_pairs(cid: int = 0) -> list[PairBias]:
+        """Nylon-like candidate: atoms 0=N, 1=C, 2=H(on N), 3=OH(on C).
+
+        Trigger pairs: amide N-C formation (counted), N-H dissociation, C-OH
+        dissociation. Bias-only pair: H-OH water formation (is_trigger=False,
+        counts_as_reaction=False).
+        """
+        return [
+            PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0,
+                     candidate_id=cid, is_trigger=True, counts_as_reaction=True),
+            PairBias(idx_a=0, idx_b=2, is_formation=False, r0=1.5,
+                     candidate_id=cid, is_trigger=True),
+            PairBias(idx_a=1, idx_b=3, is_formation=False, r0=1.5,
+                     candidate_id=cid, is_trigger=True),
+            PairBias(idx_a=2, idx_b=3, is_formation=True, r0=1.5,
+                     candidate_id=cid, is_trigger=False, counts_as_reaction=False),
+        ]
+
+    # ── firing (check_reactions_during_bias) ──────────────────────────
+
+    def test_does_not_fire_when_only_formation_satisfied(self):
+        """Amide formed but leaving groups still bonded → no fire, even though
+        the bias-only water pair is closed."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        positions = np.array([
+            [0.0, 0.0, 0.0],   # N
+            [1.8, 0.0, 0.0],   # C  (N-C = 1.8 <= 2.0 : formed)
+            [0.0, 1.0, 0.0],   # H  (N-H = 1.0 <= 1.5 : still bonded)
+            [0.5, 1.0, 0.0],   # OH (H-OH = 0.5 : water closed)
+        ])
+        fired = tracker.check_reactions_during_bias(
+            self._nylon_pairs(), positions, step=1, cycle=0,
+        )
+        assert fired == []
+
+    def test_fires_only_when_formation_and_both_dissociations_satisfied(self):
+        """Amide formed AND both leaving groups dissociated → fires, even though
+        the bias-only water pair is still open."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        positions = np.array([
+            [0.0, 0.0, 0.0],   # N
+            [1.8, 0.0, 0.0],   # C  (N-C = 1.8 : formed)
+            [0.0, 3.0, 0.0],   # H  (N-H = 3.0 > 1.5 : dissociated)
+            [1.8, 3.0, 0.0],   # OH (C-OH = 3.0 dissociated; H-OH = 1.8 : open)
+        ])
+        fired = tracker.check_reactions_during_bias(
+            self._nylon_pairs(), positions, step=1, cycle=0,
+        )
+        assert fired == [0]
+
+    # ── confirmation (check_outcomes) ─────────────────────────────────
+
+    @staticmethod
+    def _start_positions() -> np.ndarray:
+        return np.array([
+            [0.0, 0.0, 0.0], [1.8, 0.0, 0.0],
+            [0.0, 1.0, 0.0], [1.8, 1.0, 0.0],
+        ])
+
+    def test_confirms_whole_candidate_when_conjunction_holds(self):
+        """All triggers satisfied post-relaxation and water closed: the whole
+        candidate commits — counted amide formation, both dissociations, and the
+        non-counted water formation."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        pairs = self._nylon_pairs()
+        tracker.record_attempts(pairs, self._start_positions(), step=0, cycle=0)
+        relaxed = np.array([
+            [0.0, 0.0, 0.0],   # N
+            [1.8, 0.0, 0.0],   # C  (amide formed)
+            [0.0, 3.0, 0.0],   # H  (N-H = 3.0 dissociated)
+            [1.0, 3.0, 0.0],   # OH (C-OH = 3.1 dissociated; H-OH = 1.0 closed)
+        ])
+        confirmed = tracker.check_outcomes(relaxed, step=200)
+        sig = {(e.event_type, e.atom_a, e.atom_b, e.counts_as_reaction)
+               for e in confirmed}
+        assert ('confirmed_formation', 0, 1, True) in sig       # amide (counted)
+        assert ('confirmed_dissociation', 0, 2, True) in sig    # N-H
+        assert ('confirmed_dissociation', 1, 3, True) in sig    # C-OH
+        assert ('confirmed_formation', 2, 3, False) in sig      # water (uncounted)
+        assert len(confirmed) == 4
+        assert len(tracker.confirmed_formations()) == 2
+        assert len(tracker.confirmed_dissociations()) == 2
+
+    def test_water_pair_confirms_only_if_it_closed(self):
+        """Triggers satisfied but water still open: amide + dissociations commit,
+        water formation is NOT emitted."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        pairs = self._nylon_pairs()
+        tracker.record_attempts(pairs, self._start_positions(), step=0, cycle=0)
+        relaxed = np.array([
+            [0.0, 0.0, 0.0],
+            [1.8, 0.0, 0.0],
+            [0.0, 3.0, 0.0],   # N-H = 3.0 dissociated
+            [1.8, 3.0, 0.0],   # C-OH = 3.0 dissociated; H-OH = 1.8 still open
+        ])
+        confirmed = tracker.check_outcomes(relaxed, step=200)
+        sig = {(e.event_type, e.atom_a, e.atom_b) for e in confirmed}
+        assert ('confirmed_formation', 0, 1) in sig
+        assert ('confirmed_formation', 2, 3) not in sig  # water did not close
+        assert len(confirmed) == 3
+
+    def test_confirms_nothing_when_only_some_triggers_hold(self):
+        """One leaving group dissociated but the other still bonded → conjunction
+        fails → NOTHING confirms (no spurious lone dissociation)."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        pairs = self._nylon_pairs()
+        tracker.record_attempts(pairs, self._start_positions(), step=0, cycle=0)
+        relaxed = np.array([
+            [0.0, 0.0, 0.0],
+            [1.8, 0.0, 0.0],
+            [0.0, 3.0, 0.0],   # N-H = 3.0 dissociated
+            [1.8, 1.0, 0.0],   # C-OH = 1.0 STILL bonded
+        ])
+        confirmed = tracker.check_outcomes(relaxed, step=200)
+        assert confirmed == []
+        assert tracker.confirmed_formations() == []
+        assert tracker.confirmed_dissociations() == []
+
+    # ── vinyl (single-formation candidate) unchanged ──────────────────
+
+    def test_vinyl_single_formation_candidate_fires_and_confirms(self):
+        tracker = BondTracker(threshold_fraction=1.0)
+        pair = PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0,
+                        candidate_id=0, is_trigger=True)
+        close = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        assert tracker.check_reactions_during_bias(
+            [pair], close, step=1, cycle=0) == [0]
+        tracker.record_attempts([pair], close, step=0, cycle=0)
+        confirmed = tracker.check_outcomes(close, step=200)
+        assert len(confirmed) == 1
+        assert confirmed[0].event_type == 'confirmed_formation'
+
+    # ── activation / legacy (candidate_id < 0) unchanged ──────────────
+
+    def test_legacy_negative_candidate_id_fires_and_confirms_per_pair(self):
+        """A candidate_id<0 dissociation pair (activation style) fires and
+        confirms independently, on its own crossing."""
+        tracker = BondTracker(threshold_fraction=1.0)
+        diss = PairBias(idx_a=0, idx_b=1, is_formation=False, r0=1.5,
+                        candidate_id=-1)
+        bonded = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])  # not dissociated
+        broken = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])  # dissociated
+        assert tracker.check_reactions_during_bias(
+            [diss], bonded, step=1, cycle=0) == []
+        assert tracker.check_reactions_during_bias(
+            [diss], broken, step=2, cycle=0) == [-1]
+        tracker.record_attempts([diss], broken, step=0, cycle=0)
+        confirmed = tracker.check_outcomes(broken, step=200)
+        assert len(confirmed) == 1
+        assert confirmed[0].event_type == 'confirmed_dissociation'

@@ -417,3 +417,77 @@ class TestTopologyGuardWithConstraints:
         assert len(cands) == 0, (
             'Already-bonded main formation pair should be excluded'
         )
+
+
+class TestDissociationTopologyGuard:
+    """B2 (dual of L6): a dissociation pair may only break a bond that actually
+    exists. Candidates pairing a dissociation atom (nylon amine_N / carboxyl_C)
+    with a non-bonded partner from a different molecule must be rejected when a
+    topology is supplied. Without topology (activation path) the guard is a
+    no-op."""
+
+    @staticmethod
+    def _nylon_template():
+        return ReactionTemplate(
+            name='nylon_b2',
+            groups=['amine_N', 'carboxyl_C', 'amine_H', 'carboxyl_OH'],
+            pairs=[
+                PairSpec('amine_N', 'carboxyl_C', is_formation=True,
+                         r_min=3.0, r_max=6.0),
+                PairSpec('amine_N', 'amine_H', is_formation=False,
+                         r_min=0.0, r_max=3.0),
+                PairSpec('carboxyl_C', 'carboxyl_OH', is_formation=False,
+                         r_min=0.0, r_max=3.0),
+                PairSpec('amine_H', 'carboxyl_OH', is_formation=True,
+                         r_min=0.0, r_max=100.0, score_pair=False),
+            ],
+        )
+
+    def test_bonded_dissociation_allowed_nonbonded_rejected(self):
+        from kagome.reactive.topology import BondTopology
+
+        template = self._nylon_template()
+        # amine_H has two candidates: atom 2 (bonded to N) and atom 4 (a
+        # different molecule's H, geometrically close to N but NOT bonded).
+        groups = {
+            'amine_N':     ReactiveGroup('amine_N', [0]),
+            'carboxyl_C':  ReactiveGroup('carboxyl_C', [1]),
+            'amine_H':     ReactiveGroup('amine_H', [2, 4]),
+            'carboxyl_OH': ReactiveGroup('carboxyl_OH', [3]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],   # 0 amine_N
+            [4.0, 0.0, 0.0],   # 1 carboxyl_C   (N-C = 4.0 in [3,6])
+            [0.0, 1.0, 0.0],   # 2 amine_H bonded to N (N-H = 1.0 in [0,3])
+            [4.0, 1.0, 0.0],   # 3 carboxyl_OH bonded to C (C-OH = 1.0 in [0,3])
+            [0.0, 0.5, 0.0],   # 4 amine_H of another molecule (N-H4 = 0.5, unbonded)
+        ])
+
+        # Without topology BOTH amine_H atoms yield a candidate.
+        cands_no_topo = find_candidates(template, groups, positions)
+        assert {c.atom_indices[2] for c in cands_no_topo} == {2, 4}
+
+        # With the real intramolecular bonds only the bonded amine_H (2) survives.
+        topo = BondTopology.from_bonds([(0, 2, 1.0), (1, 3, 1.0)])
+        cands = find_candidates(template, groups, positions, topology=topo)
+        assert len(cands) == 1
+        assert cands[0].atom_indices == (0, 1, 2, 3)
+
+    def test_no_topology_is_noop(self):
+        """Activation path (topology=None): B2 does not filter anything."""
+        template = self._nylon_template()
+        groups = {
+            'amine_N':     ReactiveGroup('amine_N', [0]),
+            'carboxyl_C':  ReactiveGroup('carboxyl_C', [1]),
+            'amine_H':     ReactiveGroup('amine_H', [2, 4]),
+            'carboxyl_OH': ReactiveGroup('carboxyl_OH', [3]),
+        }
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [4.0, 1.0, 0.0],
+            [0.0, 0.5, 0.0],
+        ])
+        cands = find_candidates(template, groups, positions)
+        assert len(cands) == 2
