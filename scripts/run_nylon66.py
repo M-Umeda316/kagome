@@ -124,6 +124,19 @@ def main() -> None:
                         choices=['CPU', 'CUDA', 'OpenCL', 'Reference'],
                         help='OpenMM platform for --compress-backend classical '
                              '(default CPU, keeps the GPU free for the MLIP MD).')
+    # Cycle-boundary checkpointing for crash recovery on long (paper-scale) runs,
+    # mirroring run_vinyl_aibn. By default a checkpoint is written every cycle so
+    # a killed run can --resume from the last completed cycle. Nylon is step-growth
+    # with no activation/spin, so wf.run() restores positions/groups/tracker/rng
+    # from the checkpoint directly — no extra state to carry.
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Resume from <output-dir>/checkpoint.pkl if present: '
+                             'skip build/minimize/equilibration and continue from the '
+                             'next cycle after the last checkpoint (trajectory/bonds/'
+                             'topology are appended). No-op if no checkpoint exists.')
+    parser.add_argument('--no-checkpoint', action='store_true', default=False,
+                        help='Disable writing <output-dir>/checkpoint.pkl each cycle '
+                             '(checkpointing is on by default for resumable long runs).')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -305,11 +318,21 @@ def main() -> None:
         len(groups['amine_N'].atom_indices)
         + len(groups['carboxyl_C'].atom_indices)
     )
+    # Checkpointing: on by default (write each cycle); --resume continues from the
+    # last completed cycle. --no-checkpoint disables writing unless resuming.
+    ckpt_file = args.output_dir / 'checkpoint.pkl'
+    resuming = bool(args.resume and ckpt_file.exists())
+    run_checkpoint_path = None if (args.no_checkpoint and not args.resume) else ckpt_file
+    if args.resume and not ckpt_file.exists():
+        logger.warning('--resume given but %s not found; starting a fresh run.', ckpt_file)
+
     logs = wf.run(
         state,
         output_dir=args.output_dir,
         config_path='configs/boost/paper_faithful.yaml',
         n_monomers=n_reactive_sites,
+        checkpoint_path=run_checkpoint_path,
+        resume=resuming,
     )
 
     # A5: count one condensation per amide bond (amine_N-carboxyl_C). The paired
