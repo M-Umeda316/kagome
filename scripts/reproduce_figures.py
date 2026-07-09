@@ -31,6 +31,13 @@ from kagome.analysis.carothers import (
 )
 from kagome.analysis.conversion import conversion_timeseries, fit_conversion_exponential
 from kagome.analysis.density import reaction_density_profile
+from kagome.analysis.network import (
+    find_epoxide_rings,
+    gel_point_flory_stockmayer,
+    largest_component_fraction,
+    load_topology_snapshots,
+    species_series,
+)
 from kagome.io.readers import (
     read_bond_events,
     read_topology_snapshots,
@@ -368,6 +375,226 @@ def plot_density_profile(
     print(f'Saved density_profile.png/.pdf to {output_dir}')
 
 
+def plot_species_concentrations(
+    topology_path: Path,
+    species: list[str],
+    output_dir: Path,
+    timestep_fs: float = 1.0,
+) -> None:
+    """Fig. 5-style species concentration traces for epoxy-amine curing.
+
+    Raw per-snapshot counts from topology.jsonl — NO smoothing, filtering, or
+    averaging (paper Fig. 5 plots c(t)/c(0)).  Convention: species with a
+    nonzero initial count (epoxide, 1° amine, 2° amine) are plotted as
+    c(t)/c(0) on the left axis; produced species whose initial count is zero
+    (3° amine, hydroxyl — c/c0 undefined) are plotted as raw counts on a twin
+    right axis.  The x-axis is time in ps (step * timestep_fs / 1000); with
+    the default timestep_fs=1.0 it is numerically the step count in fs.
+
+    Paper anchor: arXiv:2511.22874 Fig. 5; design: specs/decisions.md
+    2026-07-09 Track 2 / E2 network-analysis entry.
+    """
+    snapshots = load_topology_snapshots(topology_path)
+    if not snapshots:
+        print(f'No topology snapshots in {topology_path} -- skipping species plot.')
+        return
+
+    series = species_series(snapshots, species)
+    steps = np.array([row['step'] for row in series], dtype=np.float64)
+    time_ps = steps * timestep_fs / 1000.0
+
+    traces = [
+        ('n_epoxide', 'epoxide', 'tab:blue'),
+        ('n_amine_primary', '1° amine', 'tab:green'),
+        ('n_amine_secondary', '2° amine', 'tab:orange'),
+        ('n_amine_tertiary', '3° amine', 'tab:red'),
+        ('n_hydroxyl', 'hydroxyl', 'tab:purple'),
+    ]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax_counts = ax.twinx()
+
+    ratio_max = 1.0
+    for key, label, color in traces:
+        counts = np.array([row[key] for row in series], dtype=np.float64)
+        c0 = counts[0]
+        if c0 > 0:
+            ratios = counts / c0
+            ratio_max = max(ratio_max, float(ratios.max()))
+            ax.plot(time_ps, ratios, 'o-', color=color, markersize=5,
+                    linewidth=1.0, label=f'{label} c/c₀')
+        else:
+            ax_counts.plot(time_ps, counts, 's--', color=color, markersize=5,
+                           linewidth=1.0, label=f'{label} (count)')
+
+    ax.set_xlabel('Time (ps)')
+    ax.set_ylabel('c(t) / c(0) (consumed species)')
+    ax_counts.set_ylabel('Count (produced species)')
+    # 2° amine is consumed AND produced (1° -> 2° -> 3°), so its c/c0 can
+    # exceed 1 while the amine pool shifts; do not clip it.
+    ax.set_ylim(0, ratio_max * 1.05)
+    ax_counts.set_ylim(bottom=0)
+    ax.set_title('Species concentrations during curing (Fig. 5)')
+
+    handles1, labels1 = ax.get_legend_handles_labels()
+    handles2, labels2 = ax_counts.get_legend_handles_labels()
+    ax.legend(handles1 + handles2, labels1 + labels2, loc='center left',
+              fontsize=8)
+
+    fig.tight_layout()
+    for fmt in ('png', 'pdf'):
+        fig.savefig(output_dir / f'species_concentrations.{fmt}', dpi=150)
+    plt.close(fig)
+    print(f'Saved species_concentrations.png/.pdf to {output_dir}')
+
+
+def plot_gel_curve(
+    topology_path: Path,
+    species: list[str],
+    output_dir: Path,
+    f: int = 2,
+    g: int = 5,
+    r: float = 1.0,
+) -> None:
+    """Gelation curve: largest monomer-component fraction vs epoxide conversion.
+
+    x = epoxide conversion (1 - n_epoxide / n_epoxide_initial) per topology
+    snapshot; y = fraction of monomers in the largest connected monomer-level
+    component (percolation indicator).  A vertical dashed line marks the
+    Flory-Stockmayer theoretical gel point alpha_gel = 1/sqrt(r(f-1)(g-1))
+    (textbook baseline, not from the paper; defaults f=2 DGEBA, g=5 DETA,
+    r=1 -> 0.5).  Design: specs/decisions.md 2026-07-09 Track 2 / E2 entry.
+    """
+    snapshots = load_topology_snapshots(topology_path)
+    if not snapshots:
+        print(f'No topology snapshots in {topology_path} -- skipping gel plot.')
+        return
+
+    # Monomer membership from the initial (cycle -1) snapshot, as in
+    # plot_dpn_vs_conversion.
+    monomer_sets = monomer_sets_from_bonds(snapshots[0][2])
+    if not monomer_sets:
+        print('No monomers recovered from initial topology -- skipping gel plot.')
+        return
+
+    n_epoxide_initial = len(find_epoxide_rings(snapshots[0][2], species))
+    if n_epoxide_initial == 0:
+        print('No epoxide rings in initial topology -- skipping gel plot.')
+        return
+
+    conversions: list[float] = []
+    fractions: list[float] = []
+    for _step, _cycle, bonds in snapshots:
+        n_epoxide = len(find_epoxide_rings(bonds, species))
+        conversions.append(1.0 - n_epoxide / n_epoxide_initial)
+        fractions.append(largest_component_fraction(bonds, monomer_sets))
+
+    alpha_gel = gel_point_flory_stockmayer(f, g, r)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(conversions, fractions, 'o-', color='tab:blue', markersize=6,
+            linewidth=1.0, label='Largest component (measured)')
+    ax.axvline(alpha_gel, color='k', linestyle='--', linewidth=1.0,
+               label=f'Flory-Stockmayer α_gel = {alpha_gel:.3f}')
+
+    ax.set_xlabel('Epoxide conversion α')
+    ax.set_ylabel('Largest monomer-component fraction')
+    ax.set_title('Gelation: network percolation vs conversion')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.05)
+    ax.legend(loc='upper left', fontsize=8)
+    fig.tight_layout()
+    for fmt in ('png', 'pdf'):
+        fig.savefig(output_dir / f'gel_curve.{fmt}', dpi=150)
+    plt.close(fig)
+    print(f'Saved gel_curve.png/.pdf to {output_dir}')
+
+
+def _species_from_summary(summary_path: Path) -> list[str] | None:
+    """Rebuild the run's species list from summary.json (primary path).
+
+    run_epoxy_amine.py records epoxy_smiles/amine_smiles/n_epoxies/n_amines in
+    summary.json; the layout order is epoxies first then amines with RDKit
+    seeds (seed, seed + 1), matching build_epoxy_amine_system.  The seed is
+    read from summary.json if present, else from manifest.json next to it
+    (run_epoxy_amine writes it there); element ordering from SMILES + AddHs is
+    actually seed-independent, so a missing seed only degrades determinism
+    bookkeeping, not the rebuilt species — we fall back to 42 with a warning.
+    Requires RDKit (returns None with a message if unavailable).
+    """
+    try:
+        summary = json.loads(summary_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f'Could not read summary {summary_path}: {exc}')
+        return None
+
+    required = ('epoxy_smiles', 'amine_smiles', 'n_epoxies', 'n_amines')
+    if any(key not in summary for key in required):
+        print(f'{summary_path} lacks {required} -- cannot rebuild species.')
+        return None
+
+    seed = summary.get('seed')
+    if seed is None:
+        manifest_path = summary_path.parent / 'manifest.json'
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                seed = manifest.get('seed', (manifest.get('extra') or {}).get('seed'))
+            except (OSError, json.JSONDecodeError):
+                seed = None
+    if seed is None:
+        print('WARNING: no seed in summary/manifest; using 42 (species '
+              'ordering is seed-independent, see _species_from_summary).')
+        seed = 42
+
+    try:
+        from scripts._systems import layout_species
+    except ImportError:
+        from _systems import layout_species  # script-dir sys.path fallback
+
+    try:
+        return layout_species([
+            (summary['epoxy_smiles'], int(summary['n_epoxies']), int(seed)),
+            (summary['amine_smiles'], int(summary['n_amines']), int(seed) + 1),
+        ])
+    except ImportError as exc:
+        print(f'RDKit unavailable -- cannot rebuild species from summary: {exc}')
+        return None
+
+
+def _resolve_species(
+    species_json: Path | None,
+    summary_path: Path | None,
+    trajectory_path: Path | None,
+) -> list[str] | None:
+    """Species list for the network-analysis figures.
+
+    Priority: explicit --species-json > rebuild from --summary (primary path,
+    needs RDKit) > 'species' recorded in the trajectory.jsonl header (written
+    by run_epoxy_amine trajectory output; no RDKit needed).
+    """
+    if species_json is not None:
+        return list(json.loads(species_json.read_text(encoding='utf-8')))
+
+    if summary_path is not None and summary_path.exists():
+        species = _species_from_summary(summary_path)
+        if species is not None:
+            return species
+
+    if trajectory_path is not None and trajectory_path.exists():
+        with open(trajectory_path, 'r', encoding='utf-8') as fh:
+            first = json.loads(fh.readline())
+        if first.get('_header') and first.get('species'):
+            print(f'Species taken from trajectory header: {trajectory_path}')
+            return list(first['species'])
+
+    print('No species source available (--species-json / --summary rebuild / '
+          'trajectory header) -- skipping species figures.')
+    return None
+
+
 def plot_s2_diagnostics(
     summary_paths: list[Path],
     output_dir: Path,
@@ -503,6 +730,18 @@ def main() -> None:
                              'next to --bonds.')
     parser.add_argument('--summary', type=Path, nargs='+', default=None,
                         help='summary.json file(s) for S2 diagnostics plot.')
+    parser.add_argument('--species-figures', action='store_true',
+                        dest='species_figures',
+                        help='Generate network-analysis figures (species '
+                             'concentrations, gel curve) from --topology. '
+                             'Species come from --species-json, or are rebuilt '
+                             'from the first --summary (epoxy-amine runs; '
+                             'needs RDKit), or read from the trajectory header.')
+    parser.add_argument('--species-json', type=Path, default=None,
+                        dest='species_json',
+                        help='JSON file containing the species list (element '
+                             'symbols per atom) for --species-figures. '
+                             'Overrides the summary-based rebuild.')
     parser.add_argument('--output-dir', type=Path, default=Path('runs/smoke/figures'))
     args = parser.parse_args()
 
@@ -587,7 +826,25 @@ def main() -> None:
             # Explicit --topology overrides the auto-detection guard.
             plot_dpn_vs_conversion(args.bonds, topo_path, n_sites, args.output_dir)
 
+    if args.species_figures:
+        if args.topology is None or not args.topology.exists():
+            parser.error('--species-figures requires --topology '
+                         '(topology.jsonl of an epoxy-amine run).')
+        species = _resolve_species(
+            args.species_json,
+            args.summary[0] if args.summary else None,
+            args.trajectory,
+        )
+        if species is not None:
+            plot_species_concentrations(
+                args.topology, species, args.output_dir,
+                timestep_fs=args.timestep_fs,
+            )
+            plot_gel_curve(args.topology, species, args.output_dir)
+
     if args.summary:
+        # S2 diagnostics needs per-cycle 'logs'; epoxy-amine summaries carry
+        # them too, so --summary serves both plots.
         plot_s2_diagnostics(args.summary, args.output_dir)
 
 
