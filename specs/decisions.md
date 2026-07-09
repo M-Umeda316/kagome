@@ -1539,6 +1539,7 @@ Use this template for each decision.
   - Root cause: `run_epoxy_amine.py` が `LangevinParams(temperature_K=...)` を friction 指定なし(既定 0.001)で構築していた。E0 実行結果エントリで「f2=2 + friction 0.01 + unbiased 1500 の OrbMol production レシピを踏襲」と決定済みだったのに **friction の配線を失念**。f2=2 + friction 0.001 の過熱は MA で実証済みの既知パターン(2026-07-07: 389→565 K)であり、本件はその再現(エポキシは発熱 −29.5 kcal/mol + 序盤の大 bias_E ~3700 でさらに顕著)。発散はしない(単調減衰へ転じる)が定常が高すぎる。
 - Decision: `--friction-per-fs` フラグを追加し**既定 0.01**(OrbMol f2=2 レシピ、2026-07-07 で 30cyc 検証済みの冷却レバー)。--friction-per-fs 0.001 で論文忠実値へ戻せる。summary.json に friction_per_fs を記録。
 - 検証: `runs/epoxy_amine_fric01`(同 seed、5 cyc、friction 0.01)で温度プロファイルが 333 K 近傍に収まるか実測(実行済み → 結果は本エントリ末尾に追記)。
+- **2026-07-09 fric01 検証結果(exit 0、PASS)**: 温度 **mean 362.3 K / max 579.6 K**(target 333)、チャンク別 mean 334〜422 K、**終盤 342 K で暴走なし**(friction 0.001 の mean 549 / max 873 / ピーク 745 K から正常化)。スパイクはバイアス相・反応イベント時のみで unbiased 相で 335〜345 K へ復帰 = 冷却レバーとして設計どおり。mean が target+29 K なのは小箱で bias 注入頻度が高いためで、paper-scale では選択ペア密度が下がり緩和見込み(要監視)。機構も維持: counted 開環 1 件確定(**ヒドロキシル O-H 込みの完全セットで確定**)+対応解離 2、発火は cycle 1。エポキシド転化率 0.05(5 cyc)。→ **friction 0.01 既定を確定**。paper-scale(100+50)へ進んで良い。
 - Scientific risk: 中(2026-07-07 friction エントリと同じ位置づけ)。二重逸脱(f2 10→2、friction 0.001→0.01)により絶対速度論は論文比較不可、トレンド比較のみ。smoke10 の 2 反応自体は「過熱状態でも連言機構が正しく動く」ことの実証であり、転化率の定量は fric01 系列で取り直す。
 - Licensing/commercial impact: なし。
 - Follow-up: (a) fric01 検証結果の追記。(b) paper-scale(100+50)は fric01 検証後に。(c) cycle 0 型の双性イオン確定の頻度が高い場合、k-l 成立を確認条件に加えるかを別途検討(論文は k-l をトリガーに含めないため現状が paper-faithful)。
