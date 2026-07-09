@@ -1543,3 +1543,15 @@ Use this template for each decision.
 - Scientific risk: 中(2026-07-07 friction エントリと同じ位置づけ)。二重逸脱(f2 10→2、friction 0.001→0.01)により絶対速度論は論文比較不可、トレンド比較のみ。smoke10 の 2 反応自体は「過熱状態でも連言機構が正しく動く」ことの実証であり、転化率の定量は fric01 系列で取り直す。
 - Licensing/commercial impact: なし。
 - Follow-up: (a) fric01 検証結果の追記。(b) paper-scale(100+50)は fric01 検証後に。(c) cycle 0 型の双性イオン確定の頻度が高い場合、k-l 成立を確認条件に加えるかを別途検討(論文は k-l をトリガーに含めないため現状が paper-faithful)。
+
+## 2026-07-09: 【Track 2 / E2 準備】ネットワーク解析基盤(種濃度・ゲル点・架橋密度)の設計と実装
+- Context: paper-scale epoxy(別マシンで実行予定)と ref#2(Provenzano 2025, ACS Appl. Polym. Mater. 7(8):4876)比較に必要な解析が未実装: (a) 論文 Fig.5 相当の種濃度追跡、(b) ゲル点、(c) 架橋密度。大マシンの結果到着前にローカルで先行実装し、既存 smoke データで動作検証まで済ませる。
+- Paper anchor: arXiv:2511.22874 Fig.5(epoxy 硬化の種濃度 c(t)/c(0) 変化)。ゲル点の理論基準は Flory-Stockmayer(Flory 1941; 教科書理論。論文外の追加だが ref#2 系の標準比較指標)。
+- Decision(設計):
+  (a) `src/kagome/analysis/network.py`(新規、純関数・MD/IO 非依存・RDKit 非依存): topology.jsonl のスナップショット(bonds+species)からグラフパターンで種を判定 — エポキシド=C-C-O 三員環、アミン次数=N の H 隣接数(2H=1°, 1H=2°, 0H=3°)、ヒドロキシル=C1H1 配位の O。関数: `species_series`(サイクル別種カウント)、`largest_component_fraction`(carothers.monomer_sets_from_bonds 再利用の単量体グラフ最大連結成分=ゲル化指標)、`gel_point_flory_stockmayer(f, g, r)`(α_gel = 1/√(r(f−1)(g−1)); DGEBA f=2 + DETA g=5、r=1 で 0.5)、`crosslink_counts`(3° アミン N 数+全環開環 DGEBA 数を分離して返す=ref#2 の定義に後で揃えられる構造)。
+  (b) `scripts/reproduce_figures.py` に `plot_species_concentrations`(c(t)/c(0)、生カウント・スムージング/フィルタなし=ask-first 非該当。初期 0 の生成種は生カウントを右軸)と `plot_gel_curve`(最大成分フラクション vs エポキシド転化率+FS 理論線)。species は --species-json > summary.json からの再構築(SMILES+counts+seed、seed は manifest.json フォールバック)> trajectory ヘッダの優先順位で解決。
+  (c) `tests/unit/test_network.py`: 合成トポロジ(手組みグラフ)で各判定関数、開環イベント前後の種収支(epoxide −1, 1° −1, 2° +1, OH +1)、FS 式の解析値、実データ回帰(runs/epoxy_amine_smoke10 存在時のみ skipif)。
+- 論文にない仮定(明示): FS 理論線は比較基準としての追加(論文は理論ゲル点を示さない)。架橋点の定義は「3° アミン N」と「両エポキシド消費 DGEBA」を分離集計(合算の重み付けは E2 で ref#2 に整合させる)。トポロジのみから種判定するため、双性イオン確定(2026-07-09 E1 実走結果の観察)では一時的に N が過大次数/H が無配位になる点は docstring に明記(1° 判定は H≥2 として過渡的過プロトン化に防御的)。
+- 実装(2026-07-09、サブエージェント実装+orchestrator レビュー): 上記 (a)(b)(c) 一式。テスト: test_network.py+test_carothers.py = 57 passed、全 `pytest tests/unit` = **491 passed**(退行なし)。実データ検証(smoke10): 種再構築が trajectory 記録と完全一致、初期 epoxide 20 / 1° 10 / 2° 5 / OH 0 → 最終 epoxide 18(転化率 0.10 = summary と一致)/ 1° 8 / 2° 7 / **OH 1**(cycle-0 開環が双性イオン型確定で O-H 欠落=既知観察と整合)、最大成分比 1/15→2/15(ゲル化前、当然)。図出力: `figures/species_concentrations.png/.pdf`、`gel_curve.png/.pdf`。
+- Licensing/commercial impact: なし(新規依存なし)。
+- Follow-up: (a) E2 本番で ref#2 の定義(ゲル点判定・架橋密度の規格化)と突き合わせ。(b) 実データ回帰テストの OH=1 アサーションは k-l 確認条件を変えた場合に要更新(テスト内コメントに明記済み)。
