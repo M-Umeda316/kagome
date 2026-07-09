@@ -1525,3 +1525,20 @@ Use this template for each decision.
 - Scientific risk: 低〜中。機構は nylon で E2E 実証済みの連言イベントの同型適用。未検証は (a) DGEBA の嵩高さ・芳香環存在下での OrbMol 安定性(スモークで確認)、(b) 2級アミン付加の立体障害が biased 窓内で越えられるか(paper-scale で計測)。
 - Licensing/commercial impact: なし(OrbMol-v2 のみ、RDKit/既存依存のみ使用)。
 - Follow-up: (a) GPU スモーク(2 DGEBA + 1 DETA)で配線確認。(b) 小規模実走(10+5)で最初の開環確定を確認。(c) paper-scale(100+50)+ Fig.5 相当の種濃度追跡。(d) E2: ref#2(Provenzano 2025)配合との外部比較。(e) ブランチ+PR でコミット(E0 スクリプト群と併せて)。
+- **2026-07-09 実走結果 → 次エントリ(機構成功、ただし friction 未配線で過熱 → 修正)**。
+
+## 2026-07-09: 【Track 2 / E1 実走結果】開環付加の機構検証 SUCCESS(2/20 開環確定)。ただし friction 未配線で過熱 → 0.01 を既定化
+- Context: `runs/epoxy_amine_smoke10`(10 DGEBA + 5 DETA = 590 原子、10 cyc、NVT 333 K、f2=2、seed 7、OrbMol/cuda、exit 0 完走、約 2.5 h)。配線スモーク(2+1、runs/epoxy_e1_smoke)も exit 0。PR #10(feat/epoxy-amine-bulk-curing)。
+- 機構検証(SUCCESS):
+  - **counted 開環確定 2 件**(epoxide conversion 0.10 = 2/20 環、amine-H conversion 0.08)、確定解離 4(=2 反応 × N-H/環 C-O のペア、spurious なし)、ヒドロキシル O-H 形成 1(counts=False)。
+  - 連言イベントは cycle 0/1/2/3 で発火(発火 4 → 確定 2 = unbiased 確認で 2 件棄却。連言確定の厳格さとして正常)。cycle 9 も発火したが未確定。
+  - **cycle 2 は完全な 4 点セット**をトポロジに記録: +N-C(403,569), +O-H(402,556), −環 C-O(402,403), −N-H(556,569)= nylon 縮合と同じクリーンな協奏組み替え。
+  - 候補数 29→21→11→9→13→7→5→1→6→1 と反応進行で単調減衰傾向 = EpoxyAmineAdditionUpdater のサイト消費が機能。
+  - **観察(cycle 0)**: N-C 形成+N-H/環 C-O 解離は確定したが、ヒドロキシル O-H が確認時点で未成立(r>r0=1.57 Å)= 双性イオン的中間状態で確定。トポロジ上 H が一時的に無結合になる(n_bonds 615→614)。k-l は bias-only(非トリガー)なので設計どおりの挙動だが、ネットワーク解析でトポロジを使う際は「O-H は後続 MD で自然形成しるがトポロジ再判定はされない」点に留意。転化率カウント(counted N-C のみ)には無影響。
+- **問題: 温度過熱**。trajectory 実測(target 333 K): 序盤 4000-12000 步で mean 745 K まで上昇 → 終盤 417-440 K まで緩降下、全体 mean 549 K / max 873 K。**333 K に一度も収束せず**。
+  - Root cause: `run_epoxy_amine.py` が `LangevinParams(temperature_K=...)` を friction 指定なし(既定 0.001)で構築していた。E0 実行結果エントリで「f2=2 + friction 0.01 + unbiased 1500 の OrbMol production レシピを踏襲」と決定済みだったのに **friction の配線を失念**。f2=2 + friction 0.001 の過熱は MA で実証済みの既知パターン(2026-07-07: 389→565 K)であり、本件はその再現(エポキシは発熱 −29.5 kcal/mol + 序盤の大 bias_E ~3700 でさらに顕著)。発散はしない(単調減衰へ転じる)が定常が高すぎる。
+- Decision: `--friction-per-fs` フラグを追加し**既定 0.01**(OrbMol f2=2 レシピ、2026-07-07 で 30cyc 検証済みの冷却レバー)。--friction-per-fs 0.001 で論文忠実値へ戻せる。summary.json に friction_per_fs を記録。
+- 検証: `runs/epoxy_amine_fric01`(同 seed、5 cyc、friction 0.01)で温度プロファイルが 333 K 近傍に収まるか実測(実行済み → 結果は本エントリ末尾に追記)。
+- Scientific risk: 中(2026-07-07 friction エントリと同じ位置づけ)。二重逸脱(f2 10→2、friction 0.001→0.01)により絶対速度論は論文比較不可、トレンド比較のみ。smoke10 の 2 反応自体は「過熱状態でも連言機構が正しく動く」ことの実証であり、転化率の定量は fric01 系列で取り直す。
+- Licensing/commercial impact: なし。
+- Follow-up: (a) fric01 検証結果の追記。(b) paper-scale(100+50)は fric01 検証後に。(c) cycle 0 型の双性イオン確定の頻度が高い場合、k-l 成立を確認条件に加えるかを別途検討(論文は k-l をトリガーに含めないため現状が paper-faithful)。

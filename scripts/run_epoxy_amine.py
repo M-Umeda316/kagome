@@ -117,6 +117,14 @@ def main() -> None:
     parser.add_argument('--temperature', type=float, default=333.0,
                         help='Production temperature (K). Paper p.24: epoxy curing '
                              'production at 333 K.')
+    parser.add_argument('--friction-per-fs', type=float, default=0.01,
+                        help='Langevin friction (1/fs). Paper SI value is 0.001 '
+                             '(1.0 ps⁻¹), but the OrbMol f2=2 recipe needs 0.01 as '
+                             'the cooling lever: with 0.001 the bias work + ring-'
+                             'opening exotherm (-29.5 kcal/mol) accumulates and the '
+                             '10+5 smoke overheated to mean 549 K at a 333 K target '
+                             '(decisions.md 2026-07-07 friction / 2026-07-09 E1). '
+                             'Pass 0.001 to restore the paper-faithful value.')
     parser.add_argument('--pressure', type=float, default=1.0)
     parser.add_argument('--no-barostat', action='store_true')
     parser.add_argument('--backend', type=str, default='orb',
@@ -228,7 +236,8 @@ def main() -> None:
 
     initial_box_edge_A = float(cell[0, 0])
 
-    langevin_params = LangevinParams(temperature_K=args.temperature)
+    langevin_params = LangevinParams(
+        temperature_K=args.temperature, friction_per_fs=args.friction_per_fs)
     config = PolymerizationConfig(
         timestep_fs=0.25,
         biased_steps=args.biased_steps,
@@ -347,6 +356,7 @@ def main() -> None:
         'cell_periodic': True,
         'backend': calc.name,
         'temperature_K': args.temperature,
+        'friction_per_fs': args.friction_per_fs,
         'biased_steps': args.biased_steps,
         'unbiased_steps': args.unbiased_steps,
         'n_cycles': args.n_cycles,
