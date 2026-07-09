@@ -17,6 +17,11 @@ _INITIATOR_SMILES = 'CC(C)C#N'   # isobutyronitrile (closed-shell IBN radical mo
 _AIBN_SMILES = 'CC(C)(C#N)N=NC(C)(C)C#N'  # azobisisobutyronitrile (intact, for activation)
 _DIAMINE_SMILES = 'NCCCCCCN'     # hexamethylenediamine
 _DIACID_SMILES = 'OC(=O)CCCCC(=O)O'  # adipic acid
+# Bulk epoxy-amine curing (Track 2 E1, decisions.md 2026-07-09). Organic-only:
+# the paper's CuO surface is excluded (2026-06-20, OrbMol domain), monomers
+# match the paper's resin (Table S3: DGEBA + DETA) and ref#2 (Provenzano 2025).
+_DGEBA_SMILES = 'CC(C)(c1ccc(OCC2CO2)cc1)c1ccc(OCC2CO2)cc1'  # bisphenol A diglycidyl ether
+_DETA_SMILES = 'NCCNCCN'         # diethylenetriamine (2 primary + 1 secondary N)
 
 from kagome.chem.builders import box_from_density, _rdkit_mol  # noqa: F401 — re-export
 
@@ -702,6 +707,161 @@ def build_nylon66_system(
     }
 
     return positions, species, template, groups
+
+
+# ── bulk epoxy-amine curing system (Track 2 E1) ─────────────────────────────
+
+def _find_epoxide_c_o(smiles: str) -> list[tuple[int, int]]:
+    """Return [(terminal_C_idx, ring_O_idx), ...] for each epoxide ring.
+
+    terminal_C is the less-substituted (more-H) ring carbon — the carbon a
+    primary/secondary amine attacks in the ring-opening addition (decisions.md
+    2026-07-08 E0 design; E0 scan verified this channel on OrbMol 2026-07-09).
+    """
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    patt = Chem.MolFromSmarts('C1CO1')
+    results = []
+    for match in mol.GetSubstructMatches(patt):
+        c_atoms = [i for i in match if mol.GetAtomWithIdx(i).GetSymbol() == 'C']
+        o_atoms = [i for i in match if mol.GetAtomWithIdx(i).GetSymbol() == 'O']
+        if len(c_atoms) != 2 or len(o_atoms) != 1:
+            continue
+
+        def _h_count(idx: int) -> int:
+            return sum(1 for n in mol.GetAtomWithIdx(idx).GetNeighbors()
+                       if n.GetSymbol() == 'H')
+
+        terminal = max(c_atoms, key=_h_count)
+        results.append((terminal, o_atoms[0]))
+    return results
+
+
+def _find_amine_n_h(smiles: str) -> list[tuple[int, list[int]]]:
+    """Return [(N_idx, [H_idx, ...]), ...] for every sp3 amine N with >=1 H.
+
+    Both primary (2 H) and secondary (1 H) amines are reactive toward epoxide
+    ring opening (1° -> 2° -> 3° multi-addition), so all N-H hydrogens are
+    registered — the group updater retires the N only when its last H is gone.
+    """
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    results = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != 'N' or atom.GetIsAromatic():
+            continue
+        h_indices = [n.GetIdx() for n in atom.GetNeighbors()
+                     if n.GetSymbol() == 'H']
+        if h_indices:
+            results.append((atom.GetIdx(), h_indices))
+    return results
+
+
+def build_epoxy_amine_system(
+    n_epoxies: int,
+    n_amines: int,
+    box_size: float,
+    rng: np.random.Generator,
+    epoxy_smiles: str = _DGEBA_SMILES,
+    amine_smiles: str = _DETA_SMILES,
+    min_sep: float = 2.5,
+    rdkit_seed: int = 42,
+) -> tuple[np.ndarray, list[str], ReactionTemplate, dict[str, ReactiveGroup],
+           dict[int, list[int]]]:
+    """Build a bulk epoxy-amine curing system (ring-opening addition).
+
+    4-group template structurally identical to nylon condensation (Table S2
+    machinery; decisions.md 2026-07-08 E0 design / 2026-07-09 E0 PROCEED):
+    Groups: amine_N (i), epoxy_C (j), amine_H (k), ring_O (l)
+    Pairs:  (i,j) N-C formation / (i,k) N-H dissociation /
+            (j,l) ring C-O dissociation / (k,l) hydroxyl O-H, bias-only.
+    Unlike nylon, no atom leaves the molecule: the ring O stays bonded to the
+    beta carbon and becomes the beta-hydroxyl.
+
+    Returns (positions, species, template, groups, amine_h_map) where
+    amine_h_map maps each global amine-N index to the global indices of ALL its
+    N-H hydrogens (consumed one per addition; drives 1° -> 2° -> 3° group
+    reassignment in EpoxyAmineAdditionUpdater).
+    """
+    epoxy_pos, epoxy_sp = _rdkit_3d(epoxy_smiles, seed=rdkit_seed)
+    amine_pos, amine_sp = _rdkit_3d(amine_smiles, seed=rdkit_seed + 1)
+
+    local_epoxide_pairs = _find_epoxide_c_o(epoxy_smiles)
+    local_amine_nh = _find_amine_n_h(amine_smiles)
+    if not local_epoxide_pairs:
+        raise ValueError(f'No epoxide ring found in {epoxy_smiles!r}')
+    if not local_amine_nh:
+        raise ValueError(f'No amine N-H found in {amine_smiles!r}')
+
+    n_per_epoxy = len(epoxy_sp)
+    n_per_amine = len(amine_sp)
+
+    fragments = (
+        [(epoxy_pos, epoxy_sp)] * n_epoxies
+        + [(amine_pos, amine_sp)] * n_amines
+    )
+    positions, species = _place_fragments_in_box(
+        fragments, box_size, rng, min_sep=min_sep,
+    )
+
+    epoxy_offset = 0
+    amine_offset = n_epoxies * n_per_epoxy
+
+    epoxy_C_indices: list[int] = []
+    ring_O_indices: list[int] = []
+    for i in range(n_epoxies):
+        base = epoxy_offset + i * n_per_epoxy
+        for c_idx, o_idx in local_epoxide_pairs:
+            epoxy_C_indices.append(base + c_idx)
+            ring_O_indices.append(base + o_idx)
+
+    amine_N_indices: list[int] = []
+    amine_H_indices: list[int] = []
+    amine_h_map: dict[int, list[int]] = {}
+    for j in range(n_amines):
+        base = amine_offset + j * n_per_amine
+        for n_idx, h_indices in local_amine_nh:
+            global_n = base + n_idx
+            global_hs = [base + h for h in h_indices]
+            amine_N_indices.append(global_n)
+            amine_H_indices.extend(global_hs)
+            amine_h_map[global_n] = global_hs
+
+    template = ReactionTemplate(
+        name='epoxy_amine_ring_opening',
+        groups=['amine_N', 'epoxy_C', 'amine_H', 'ring_O'],
+        pairs=[
+            PairSpec(
+                group_a='amine_N', group_b='epoxy_C',
+                is_formation=True, r_min=3.0, r_max=6.0,
+            ),
+            PairSpec(
+                group_a='amine_N', group_b='amine_H',
+                is_formation=False, r_min=0.0, r_max=3.0,
+            ),
+            PairSpec(
+                group_a='epoxy_C', group_b='ring_O',
+                is_formation=False, r_min=0.0, r_max=3.0,
+            ),
+            PairSpec(
+                group_a='amine_H', group_b='ring_O',
+                is_formation=True, r_min=0.0, r_max=100.0,
+                score_pair=False, count_as_reaction=False,
+            ),
+        ],
+    )
+    groups = {
+        'amine_N': ReactiveGroup('amine_N', amine_N_indices),
+        'epoxy_C': ReactiveGroup('epoxy_C', epoxy_C_indices),
+        'amine_H': ReactiveGroup('amine_H', amine_H_indices),
+        'ring_O':  ReactiveGroup('ring_O',  ring_O_indices),
+    }
+
+    return positions, species, template, groups, amine_h_map
 
 
 # ── AIBN decomposition (Activation) ────────────────────────────────────────
