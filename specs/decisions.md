@@ -1429,6 +1429,21 @@ Use this template for each decision.
 - Follow-up: (a) f2=2 で再走(`runs/nylon66_f2test`)し confirmed_formations(counted C-N)>0 になるか確認。(b) C-N が出れば B2/F3 に進み topology/Carothers を正す。(c) 依然 0 なら NEXT GATE の GPU PES scan で OrbMol の bonded C-N チャネル有無を判定。
 - **2026-07-08 F1 再走結果(exit 0 完走)**: F1 は設計どおり機能。biased ステップ数が 129〜1005(旧 52〜112 の早期打ち切りから大幅増)へ延び、各サイクルで **anchor=C-N 形成の跨ぎで終了**、min_pair_dist は後半 1.92〜1.94 Å まで到達(C-N を真に結合距離へ寄せた)。**しかし counted confirmed_formations は 10/10 サイクルで 0**(carothers_p=0.0, dpn=1.0)。→ f2 でも F1 でも縮合は確定せず。**真因は下記アーキテクチャ限界**(次エントリ)。副次観測: 唯一の confirmed_formation は (70,309) counts=False r=1.02 Å=**水の O-H**(アミン H70 がカルボキシル O309 へプロトン移動して O-H が成立)。水生成の半分は起きるが、原子除去が無いためアミド C-N 側は復元する——機構仮説の直接証拠。confirmed_dissociations=7 は全て B2 の spurious(非結合/脱離基ペアが bias で離散)で H2 スキップ済み。
 
+## 2026-07-14: 大マシン py-spy 実測に基づく orb backend 高速化(--compile 配線バグ修正 + empty_cache 条件化)
+- Trigger: nylon66 paper-scale 走行中(大マシン RTX 5000 Ada 32GB + Xeon 8558U、WSL)に `py-spy top --pid` で非侵襲プロファイル(rate 100 と 10 の2回、順位一致。両回とも behind-in-sampling 警告ありのため % は傾向値)。OwnTime 上位: torch forward(linear)/silu > `torch.cuda.empty_cache()`(~9%) > `_compute_neighbor_list_with_fallback`。GIL 0% / Active ~27%。trajectory.jsonl の JSON 書き出しは上位に不在(容疑者から除外)。
+- 結論: ボトルネックは Orb GNN の Python 側フォワード(小カーネル大量発行の CPU オーバーヘッド)+ 毎ステップ empty_cache。GPU-Util ~60% で頭打ちの観測(2026-07-13 較正)と整合。fix-plan-2026-07-06 B3(empty_cache コスト実測)をこれで回収。
+- Decision 1(empty_cache 条件化): `create_orb_calculator(empty_cache: bool = True)` を追加し、`compute()` 末尾の毎ステップ `torch.cuda.empty_cache()` をゲート。**既定 True で挙動不変**(16 GB での VRAM 断片化対策 2026-06-15 を維持)。32 GB 機では run スクリプトの `--no-empty-cache` で無効化(CPU 時間 ~9% 削減見込み)。
+- Decision 2(--compile 配線 + バグ修正): orb-models は model compile を公式サポート(Apache-2.0 の既存機能、upstream 公称 10k 原子で ~1.7x)。backend の既存 `compile` 引数を run スクリプト(run_nylon66 / run_epoxy_amine / run_vinyl_aibn)の `--compile` フラグに配線。**バグ修正**: 従来 `TORCHDYNAMO_DISABLE=1` を無条件 setdefault していたため(Windows の nvalchemiops/cl.exe 対策)、`compile=True` を渡しても dynamo ごと無効化され eager 実行になっていた。`_configure_torch_env()` に分離し、compile=False の時のみ設定(Windows 対策は維持)。compile=True で環境変数が既に立っている場合は warning。
+- 新規依存なし。両フラグとも opt-in で、**デフォルト挙動は完全不変**(既存 run の再現性に影響なし)。summary JSON に `compile` / `empty_cache` を記録(実験トレーサビリティ)。
+- Tests: `test_backends.py::TestOrbTorchEnvConfig`(dynamo env 分岐 3 件)、`TestOrbEmptyCacheGating`(fake model で empty_cache 呼出の有無 2 件)。
+- **Validation protocol(未実施、大マシンでの採用前に必須)**:
+  (a) 数値等価性: 同一構造・同一 seed で compile 有/無の energy/forces を比較(目安 forces atol 1e-4 kcal/mol/Å — torch.compile はカーネル融合で浮動小数点演算順序が変わりうる)。短尺 run(nylon 10+10 2cycle 等)で反応イベント列が一致するかも確認。
+  (b) 性能: s/step を compile 有/無 × empty_cache 有/無の 4 通りで実測。重合でグラフサイズが変わるため再コンパイル頻度をログで監視(頻発すると逆効果の可能性)。
+  (c) 初回コンパイルの数分は paper-scale では償却可。
+- Scientific risk: 低(既定 OFF。採用は (a) の検証通過後)。
+- Licensing/commercial impact: なし(orb-models Apache-2.0 の既存機能、新規依存なし)。
+- Follow-up: 大マシンの次回 run(epoxy paper-scale 等)で validation protocol を通してから `--compile --no-empty-cache` を採用。
+
 ## 2026-07-08: 【重要・アーキテクチャ限界】MLIP 原子集合が反応で不変 → 段階成長縮合は現構造では確定不能
 - Context: F1 修正後も nylon の counted amide 形成が 10/10 サイクルで 0。f2/トリガの問題を全て潰した上でコードを精査し、根本原因を特定。
 - 根本原因(コードで確定): 反応実行(`apply_vinyl_addition` topology.py:119、`_apply_topology_edits` polymerization.py:1131-1179)は**サイドカーの結合グラフ `BondTopology`(add_bond/remove_bond/set_order)のみを編集し、OrbMol に渡す原子集合(state.positions / state.species)は一切変更しない**。全ラン通じ `n_atoms=440` 不変。確定は unbiased 緩和の終端 `check_outcomes` で距離判定(D1, 2026-07-03)。

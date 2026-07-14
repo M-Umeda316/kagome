@@ -51,11 +51,17 @@ logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def _create_backend(backend: str, device: str, model: str) -> Calculator:
+def _create_backend(backend: str, device: str, model: str,
+                    compile_model: bool = False,
+                    empty_cache: bool = True) -> Calculator:
     if backend == 'orb':
         from kagome.backends.orb_backend import create_orb_calculator
-        return create_orb_calculator(device=device)
+        return create_orb_calculator(device=device, compile=compile_model,
+                                     empty_cache=empty_cache)
     else:
+        if compile_model or not empty_cache:
+            logger.warning('--compile/--no-empty-cache only apply to the orb '
+                           'backend; ignored for %r.', backend)
         from kagome.backends.mace_backend import create_mace_calculator
         return create_mace_calculator(model=model, device=device)
 
@@ -112,6 +118,18 @@ def main() -> None:
     parser.add_argument('--backend', type=str, default='orb',
                         choices=['orb', 'mace'])
     parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--compile', action='store_true', default=False,
+                        help='torch.compile the OrbMol model (orb backend only, '
+                             'Linux/WSL). Cuts the kernel-launch CPU overhead that '
+                             'py-spy measured as the paper-scale bottleneck '
+                             '(decisions.md 2026-07-14). First evaluation compiles '
+                             'for minutes; graph-size changes may recompile.')
+    parser.add_argument('--no-empty-cache', dest='empty_cache',
+                        action='store_false', default=True,
+                        help='Skip per-step torch.cuda.empty_cache() (orb backend, '
+                             'cuda only; ~9%% of CPU time). Safe on >=32 GB GPUs; '
+                             'keep the default on 16 GB, where allocator '
+                             'fragmentation exhausts VRAM (decisions.md 2026-06-15).')
     parser.add_argument('--model', type=str, default='small',
                         help='MACE model size (only used with --backend mace)')
     parser.add_argument('--compress-backend', type=str, default='classical',
@@ -144,7 +162,9 @@ def main() -> None:
     counts = {_DIAMINE_SMILES: args.n_diamines, _DIACID_SMILES: args.n_diacids}
 
     # Backend is created before the build so the 'ml' compress option can reuse it.
-    calc = _create_backend(args.backend, args.device, args.model)
+    calc = _create_backend(args.backend, args.device, args.model,
+                           compile_model=args.compile,
+                           empty_cache=args.empty_cache)
     logger.info('Backend: %s', calc.name)
 
     def _build(edge: float, gen):
@@ -355,6 +375,8 @@ def main() -> None:
         'box_size_A': initial_box_edge_A,
         'cell_periodic': True,
         'backend': calc.name,
+        'compile': args.compile,
+        'empty_cache': args.empty_cache,
         'temperature_K': args.temperature,
         'biased_steps': args.biased_steps,
         'unbiased_steps': args.unbiased_steps,

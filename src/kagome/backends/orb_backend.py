@@ -33,24 +33,51 @@ _LOCAL_MODELS = {
 }
 
 
+def _configure_torch_env(compile: bool) -> None:
+    """Set torch-related env vars; must run before torch/orb_models import.
+
+    TORCHDYNAMO_DISABLE=1 is the Windows workaround for nvalchemiops PME
+    triggering torch._inductor C++ compilation (requires cl.exe). It also
+    disables torch.compile process-wide, so it must NOT be set when
+    compile=True (Linux/WSL) — otherwise the "compiled" model silently runs
+    eager (decisions.md 2026-07-14).
+    """
+    os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+    os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+    if not compile:
+        os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
+    elif os.environ.get('TORCHDYNAMO_DISABLE') == '1':
+        logger.warning(
+            'compile=True but TORCHDYNAMO_DISABLE=1 is set in the environment; '
+            'torch.compile will be a no-op (model runs eager).'
+        )
+
+
 def create_orb_calculator(
     model: str = 'orbmol_v2',
     device: str = 'cpu',
     compile: bool = False,
     charge: int = 0,
     spin: int = 1,
+    empty_cache: bool = True,
 ) -> 'OrbCalculatorAdapter':
     """Create an OrbMol-v2 backed calculator.
 
     model: 'orbmol_v2' (conservative, forces as energy gradients).
     device: 'cpu' or 'cuda'.
-    compile: whether to use torch.compile (requires C++ compiler on Windows).
+    compile: whether to use torch.compile (requires C++ compiler on Windows;
+        upstream reports ~1.7x inference speedup and kernel-launch CPU
+        overhead is the measured paper-scale bottleneck, decisions.md
+        2026-07-14).
     charge: total molecular charge.
     spin: spin multiplicity (2S+1).
+    empty_cache: call torch.cuda.empty_cache() after every compute (cuda
+        only). Required on 16 GB GPUs where per-step neighbour-graph size
+        changes fragment the caching allocator (decisions.md 2026-06-15);
+        safe to disable on >=32 GB GPUs, where it costs ~9% of CPU time
+        (py-spy, decisions.md 2026-07-14).
     """
-    os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
-    os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
-    os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+    _configure_torch_env(compile)
 
     try:
         from orb_models.forcefield import pretrained
@@ -89,6 +116,7 @@ def create_orb_calculator(
         charge=charge,
         spin=spin,
         model_id=resolved_model_id,
+        empty_cache=empty_cache,
     )
 
 
@@ -104,6 +132,7 @@ class OrbCalculatorAdapter(Calculator):
         charge: int = 0,
         spin: int = 1,
         model_id: str = '',
+        empty_cache: bool = True,
     ) -> None:
         self._model = model
         self._adapter = atoms_adapter
@@ -111,6 +140,7 @@ class OrbCalculatorAdapter(Calculator):
         self._name = name
         self._charge = charge
         self._spin = spin
+        self._empty_cache = empty_cache
         self._model_id = model_id or name
         self._pbc_checked = False
         self._device_logged = False
@@ -202,12 +232,15 @@ class OrbCalculatorAdapter(Calculator):
         # Release the per-call autograd workspace back to the allocator. The
         # neighbour-graph size varies per step, so without this the CUDA caching
         # allocator fragments and reserved VRAM creeps up until a long paper-scale
-        # run exhausts memory and hangs (observed at 2520 atoms). batch/result are
-        # dropped first so their tensors are freeable. See specs/decisions.md
-        # 2026-06-15 VRAM record.
+        # run exhausts memory and hangs (observed at 2520 atoms on 16 GB). batch/
+        # result are dropped first so their tensors are freeable. See specs/
+        # decisions.md 2026-06-15 VRAM record. empty_cache() synchronizes and
+        # cost ~9% of CPU time at paper scale (py-spy, decisions.md 2026-07-14),
+        # so it is gated for GPUs with headroom (>=32 GB).
         if self._device == 'cuda':
             del batch, result
-            import torch
-            torch.cuda.empty_cache()
+            if self._empty_cache:
+                import torch
+                torch.cuda.empty_cache()
 
         return energy, forces

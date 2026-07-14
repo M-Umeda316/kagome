@@ -41,16 +41,18 @@ python scripts/run_vinyl_aibn.py --backend orb --device cuda
 |---|---|---|
 | `model` | `orbmol_v2` | モデル名 |
 | `device` | `cpu` | `cpu` or `cuda` |
-| `compile` | `False` | torch.compile の使用 (Linux のみ) |
+| `compile` | `False` | torch.compile の使用 (Linux のみ)。run スクリプトの `--compile` から指定可 |
 | `charge` | `0` | 分子の全電荷 |
 | `spin` | `1` | スピン多重度 (2S+1) |
+| `empty_cache` | `True` | 毎ステップ `torch.cuda.empty_cache()` を呼ぶ。32 GB 以上の GPU では `--no-empty-cache` で無効化可 (CPU 時間 ~9% 削減、decisions.md 2026-07-14) |
 
 ### 注意事項
 
 - **VRAM**: 2520 原子で約 9.5 GB。24 GB 以上の GPU を推奨
 - **Windows**: `nvalchemiops` は `torch.compile` が必要なため PME 静電が利用不可。非周期計算は問題なし
 - **ローカルチェックポイント**: `models/orbmol-v2-teqabfhg-20260523.ckpt` があれば優先使用。なければ自動ダウンロード
-- **CUDA メモリ**: 近傍グラフサイズの変動により `empty_cache()` を毎ステップ呼び出し
+- **CUDA メモリ**: 近傍グラフサイズの変動により `empty_cache()` を毎ステップ呼び出し (16 GB GPU での断片化対策、decisions.md 2026-06-15)。VRAM に余裕がある GPU (32 GB 以上) では `empty_cache=False` (`--no-empty-cache`) で無効化でき、CPU 時間を ~9% 削減 (py-spy 実測、decisions.md 2026-07-14)
+- **torch.compile**: `compile=True` (run スクリプトの `--compile`) で有効。upstream 公称 ~1.7x。従来は `TORCHDYNAMO_DISABLE=1` が無条件設定されていたため無効化されていたが、compile=False の時のみ設定するよう修正済み (decisions.md 2026-07-14)。採用前に compile 有無での数値等価性検証が必要
 
 ---
 
