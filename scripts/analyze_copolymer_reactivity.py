@@ -15,6 +15,19 @@ monomer was consumed. The relative reactivity index is
 and the ratio R_acrylate / R_methacrylate says which monomer reacts faster per
 available molecule. >1 means acrylate is preferentially incorporated.
 
+Cross-propagation: the radical_C endpoint of each confirmed formation belongs
+to a molecule block (initiator, or the monomer whose beta-C currently carries
+the radical after chain propagation), so every event is also classified as
+(terminal species -> incorporated species). The 2x2 monomer part of that table
+estimates the Mayo-Lewis reactivity ratios
+
+    r_acrylate      = (N_AA / N_AM) * (avail_M / avail_A)
+    r_methacrylate  = (N_MM / N_MA) * (avail_A / avail_M)
+
+using INITIAL availabilities (a low-conversion approximation; at equimolar feed
+the availability factor is 1). Initiator-terminal events are tallied separately
+and excluded from the ratios.
+
 Usage:
     python scripts/analyze_copolymer_reactivity.py --run-dir runs/copoly_smoke_orb
 """
@@ -26,15 +39,18 @@ from collections import Counter
 from pathlib import Path
 
 from scripts._systems import (
+    _INITIATOR_SMILES,
     _METHACRYLATE_SMILES,
     _MONOMER_SMILES,
     copolymer_alpha_species,
+    copolymer_atom_species,
 )
 
 _SMILES_NAME = {
     _MONOMER_SMILES: 'acrylate',
     _METHACRYLATE_SMILES: 'methacrylate',
 }
+_TERMINAL_NAME = {**_SMILES_NAME, _INITIATOR_SMILES: 'initiator'}
 
 
 def analyze(run_dir: Path) -> dict:
@@ -48,11 +64,13 @@ def analyze(run_dir: Path) -> dict:
         (_METHACRYLATE_SMILES, n_mac),
     ]
     alpha_species = copolymer_alpha_species(monomer_specs, n_init)
+    atom_species = copolymer_atom_species(monomer_specs, n_init)
     avail = {_MONOMER_SMILES: n_acr, _METHACRYLATE_SMILES: n_mac}
 
     bonds_path = run_dir / 'bonds.jsonl'
     incorporated: Counter[str] = Counter()
     per_cycle: dict[int, Counter[str]] = {}
+    cross: Counter[tuple[str, str]] = Counter()  # (terminal, incorporated)
     n_unmapped = 0
     for line in bonds_path.read_text(encoding='utf-8').splitlines():
         if not line.strip():
@@ -64,12 +82,22 @@ def analyze(run_dir: Path) -> dict:
             continue
         # The alpha-C is whichever endpoint is in the alpha->species map;
         # the other endpoint is the radical_C. Orientation-independent.
-        smi = alpha_species.get(ev['atom_a']) or alpha_species.get(ev['atom_b'])
-        if smi is None:
+        a, b = ev['atom_a'], ev['atom_b']
+        if a in alpha_species:
+            alpha_idx, radical_idx = a, b
+        elif b in alpha_species:
+            alpha_idx, radical_idx = b, a
+        else:
             n_unmapped += 1
             continue
+        smi = alpha_species[alpha_idx]
         incorporated[smi] += 1
         per_cycle.setdefault(ev['cycle'], Counter())[smi] += 1
+        # The radical's block is the chain's terminal unit at addition time
+        # (initiator block before the first addition, else the monomer whose
+        # beta-C received the radical in the last chain propagation).
+        term_name = _TERMINAL_NAME.get(atom_species.get(radical_idx, ''), 'unknown')
+        cross[(term_name, _SMILES_NAME[smi])] += 1
 
     total = sum(incorporated.values())
     result = {
@@ -98,6 +126,26 @@ def analyze(run_dir: Path) -> dict:
         )
     result['per_cycle'] = {
         str(cyc): dict(cnt) for cyc, cnt in sorted(per_cycle.items())
+    }
+
+    terminals = ('initiator', 'acrylate', 'methacrylate')
+    result['cross_propagation'] = {
+        term: {
+            mono: cross.get((term, mono), 0)
+            for mono in ('acrylate', 'methacrylate')
+        }
+        for term in terminals
+    }
+    # Mayo-Lewis ratios from monomer-terminal events only, availability-
+    # corrected with INITIAL counts (low-conversion approximation).
+    n_aa = cross.get(('acrylate', 'acrylate'), 0)
+    n_am = cross.get(('acrylate', 'methacrylate'), 0)
+    n_mm = cross.get(('methacrylate', 'methacrylate'), 0)
+    n_ma = cross.get(('methacrylate', 'acrylate'), 0)
+    result['reactivity_ratio_estimates'] = {
+        'r_acrylate': (n_aa / n_am) * (n_mac / n_acr) if n_am and n_acr else None,
+        'r_methacrylate': (n_mm / n_ma) * (n_acr / n_mac) if n_ma and n_mac else None,
+        'monomer_terminal_events': n_aa + n_am + n_mm + n_ma,
     }
     return result
 
@@ -151,6 +199,27 @@ def main() -> None:
                   f"statistically firm ratio. Rerun larger / multi-seed to confirm.")
     else:
         print("No confirmed incorporations yet — cannot compare reactivity.")
+
+    if result['total_incorporations'] > 0:
+        print()
+        print('Cross-propagation (terminal unit -> incorporated monomer):')
+        print(f"{'terminal':<14}{'-> acrylate':>12}{'-> methacrylate':>17}")
+        for term in ('initiator', 'acrylate', 'methacrylate'):
+            row = result['cross_propagation'][term]
+            print(f"{term:<14}{row['acrylate']:>12}{row['methacrylate']:>17}")
+        est = result['reactivity_ratio_estimates']
+        n_term = est['monomer_terminal_events']
+        print()
+        r_a = est['r_acrylate']
+        r_m = est['r_methacrylate']
+        r_a_s = '-' if r_a is None else f'{r_a:.2f}'
+        r_m_s = '-' if r_m is None else f'{r_m:.2f}'
+        print(f"Mayo-Lewis estimates (initial-availability corrected, "
+              f"{n_term} monomer-terminal events):")
+        print(f"  r_acrylate = {r_a_s}   r_methacrylate = {r_m_s}")
+        if n_term < 20:
+            print(f"  NOTE: {n_term} monomer-terminal events -- ratios need "
+                  f"O(10+) events PER TERMINAL to be meaningful.")
 
 
 if __name__ == '__main__':
