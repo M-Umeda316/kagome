@@ -1429,6 +1429,21 @@ Use this template for each decision.
 - Follow-up: (a) f2=2 で再走(`runs/nylon66_f2test`)し confirmed_formations(counted C-N)>0 になるか確認。(b) C-N が出れば B2/F3 に進み topology/Carothers を正す。(c) 依然 0 なら NEXT GATE の GPU PES scan で OrbMol の bonded C-N チャネル有無を判定。
 - **2026-07-08 F1 再走結果(exit 0 完走)**: F1 は設計どおり機能。biased ステップ数が 129〜1005(旧 52〜112 の早期打ち切りから大幅増)へ延び、各サイクルで **anchor=C-N 形成の跨ぎで終了**、min_pair_dist は後半 1.92〜1.94 Å まで到達(C-N を真に結合距離へ寄せた)。**しかし counted confirmed_formations は 10/10 サイクルで 0**(carothers_p=0.0, dpn=1.0)。→ f2 でも F1 でも縮合は確定せず。**真因は下記アーキテクチャ限界**(次エントリ)。副次観測: 唯一の confirmed_formation は (70,309) counts=False r=1.02 Å=**水の O-H**(アミン H70 がカルボキシル O309 へプロトン移動して O-H が成立)。水生成の半分は起きるが、原子除去が無いためアミド C-N 側は復元する——機構仮説の直接証拠。confirmed_dissociations=7 は全て B2 の spurious(非結合/脱離基ペアが bias で離散)で H2 スキップ済み。
 
+## 2026-07-14: 大マシン py-spy 実測に基づく orb backend 高速化(--compile 配線バグ修正 + empty_cache 条件化)
+- Trigger: nylon66 paper-scale 走行中(大マシン RTX 5000 Ada 32GB + Xeon 8558U、WSL)に `py-spy top --pid` で非侵襲プロファイル(rate 100 と 10 の2回、順位一致。両回とも behind-in-sampling 警告ありのため % は傾向値)。OwnTime 上位: torch forward(linear)/silu > `torch.cuda.empty_cache()`(~9%) > `_compute_neighbor_list_with_fallback`。GIL 0% / Active ~27%。trajectory.jsonl の JSON 書き出しは上位に不在(容疑者から除外)。
+- 結論: ボトルネックは Orb GNN の Python 側フォワード(小カーネル大量発行の CPU オーバーヘッド)+ 毎ステップ empty_cache。GPU-Util ~60% で頭打ちの観測(2026-07-13 較正)と整合。fix-plan-2026-07-06 B3(empty_cache コスト実測)をこれで回収。
+- Decision 1(empty_cache 条件化): `create_orb_calculator(empty_cache: bool = True)` を追加し、`compute()` 末尾の毎ステップ `torch.cuda.empty_cache()` をゲート。**既定 True で挙動不変**(16 GB での VRAM 断片化対策 2026-06-15 を維持)。32 GB 機では run スクリプトの `--no-empty-cache` で無効化(CPU 時間 ~9% 削減見込み)。
+- Decision 2(--compile 配線 + バグ修正): orb-models は model compile を公式サポート(Apache-2.0 の既存機能、upstream 公称 10k 原子で ~1.7x)。backend の既存 `compile` 引数を run スクリプト(run_nylon66 / run_epoxy_amine / run_vinyl_aibn)の `--compile` フラグに配線。**バグ修正**: 従来 `TORCHDYNAMO_DISABLE=1` を無条件 setdefault していたため(Windows の nvalchemiops/cl.exe 対策)、`compile=True` を渡しても dynamo ごと無効化され eager 実行になっていた。`_configure_torch_env()` に分離し、compile=False の時のみ設定(Windows 対策は維持)。compile=True で環境変数が既に立っている場合は warning。
+- 新規依存なし。両フラグとも opt-in で、**デフォルト挙動は完全不変**(既存 run の再現性に影響なし)。summary JSON に `compile` / `empty_cache` を記録(実験トレーサビリティ)。
+- Tests: `test_backends.py::TestOrbTorchEnvConfig`(dynamo env 分岐 3 件)、`TestOrbEmptyCacheGating`(fake model で empty_cache 呼出の有無 2 件)。
+- **Validation protocol(未実施、大マシンでの採用前に必須)**:
+  (a) 数値等価性: 同一構造・同一 seed で compile 有/無の energy/forces を比較(目安 forces atol 1e-4 kcal/mol/Å — torch.compile はカーネル融合で浮動小数点演算順序が変わりうる)。短尺 run(nylon 10+10 2cycle 等)で反応イベント列が一致するかも確認。
+  (b) 性能: s/step を compile 有/無 × empty_cache 有/無の 4 通りで実測。重合でグラフサイズが変わるため再コンパイル頻度をログで監視(頻発すると逆効果の可能性)。
+  (c) 初回コンパイルの数分は paper-scale では償却可。
+- Scientific risk: 低(既定 OFF。採用は (a) の検証通過後)。
+- Licensing/commercial impact: なし(orb-models Apache-2.0 の既存機能、新規依存なし)。
+- Follow-up: 大マシンの次回 run(epoxy paper-scale 等)で validation protocol を通してから `--compile --no-empty-cache` を採用。
+
 ## 2026-07-08: 【重要・アーキテクチャ限界】MLIP 原子集合が反応で不変 → 段階成長縮合は現構造では確定不能
 - Context: F1 修正後も nylon の counted amide 形成が 10/10 サイクルで 0。f2/トリガの問題を全て潰した上でコードを精査し、根本原因を特定。
 - 根本原因(コードで確定): 反応実行(`apply_vinyl_addition` topology.py:119、`_apply_topology_edits` polymerization.py:1131-1179)は**サイドカーの結合グラフ `BondTopology`(add_bond/remove_bond/set_order)のみを編集し、OrbMol に渡す原子集合(state.positions / state.species)は一切変更しない**。全ラン通じ `n_atoms=440` 不変。確定は unbiased 緩和の終端 `check_outcomes` で距離判定(D1, 2026-07-03)。
@@ -1574,3 +1589,20 @@ Use this template for each decision.
 - Scientific risk: 中。手法差(距離ベース 500 K vs PES ベース 333 K)により到達転化率・ネットワーク形成経路が本質的に異なりうる — それ自体が E2 の測定対象。ref#2 のフルカーブ(0–90%)生データは Zenodo に含まれず 45% 例のみ(フルカーブは xlinker.py 再実行が必要 = 現時点ではスコープ外、必要になれば別途判断)。
 - Licensing/commercial impact: **Provenzano 2025 Zenodo 一式(コード+データ)= CC-BY-4.0、帰属表示の上で商用利用可**。dependency-license-matrix.md に追記。比較解析はデータの読み取りのみで xlinker コードは実行・改変・同梱しない(現スコープ)。
 - Follow-up: (a) 比較解析スクリプト `scripts/compare_epoxy_external.py` + Zenodo 取得スクリプト + LAMMPS data パーサ + unit テスト(本エントリと同日実装、サブエージェント)。(b) E2 比較ラン config(100+40、5:2)の作成はラン計画確定時。(c) Orselly 2022(Track 3)の DGEBA/DETA 値をメモ: Tg 実験 119–142 °C / sim 123 °C、ヤング率 実験 2.55 / sim 2.57 GPa、密度 実験 1.178 / sim 1.111 g/cm³(CHARMM CGenFF、カットオフ 2–3 Å、900 K、目標転化 95%)。
+
+## 2026-07-16: 「Track 拡張 / 共重合(アクリレート+メタクリレート混合ビニル系)ビルダー」の設計と実装
+- Context: ユーザ要望で、単一モノマーではなくアクリレート+メタクリレートの**混合(共重合)ラジカル系**を走らせたい。既存 `build_vinyl_aibn_system` は単一モノマー種を前提に固定ストライド `mono_offset + j*n_per_mono` でグローバル index を計算しており(`_systems.py`)、原子数の異なる2種(methyl acrylate 12原子 vs methyl methacrylate 15原子)を1つの箱に混在できないことが唯一のブロッカー(Explore 調査 2026-07-16)。VinylChainPropagationUpdater / apply_vinyl_addition / valence guard / groups.py / find_candidates / conversion(α 分母 monomer_site_count)は全て種非依存で、正しいグローバル index と結合 propagation_map さえ渡せば無改変で動く。
+- Paper anchor: 論文 §2/Table S1(vinyl ラジカル重合の 4-group ij+ik+jl 基準)。共重合(2種モノマー混合)は**論文外の拡張**であり、論文は各モノマーを個別系として扱う(methyl acrylate, methacrylate, styrene… を別々に。§ Systems studied)。本実装は「同一テンプレート(radical_C/vinyl_alpha_C/chain_C/vinyl_beta_C)の下で両種の反応性原子を同一群に登録する」という拡張であり、TDBB の方程式・スケジュール・反応選択ロジックは無改変。
+- Decision(論文外の仮定として明示):
+  (i) **両モノマー種の alpha-C を単一 vinyl_alpha_C 群に、beta-C を単一 vinyl_beta_C 群に統合**する。ラジカルはどちらのモノマーにも無差別に付加でき(head-to-tail 位置化学は _find_vinyl_alpha_beta が種ごとに解決)、共重合の連鎖統計は MLIP エネルギー論に委ねる(2026-06-20「atom-typing only、余分なバイアスを足さない」方針の踏襲)。反応性比(r1/r2)を制御するバイアスは**入れない**(paper-faithful; 論文は付加選択にバイアスを足さない)。
+  (ii) **オフセットは種固定ストライドを廃し、配置順に沿って running offset を累積**する(`_place_fragments_in_box` の返す fragment 順=種の登録順が唯一の権威)。これにより原子数の異なる任意個数・任意種のモノマー混合を許容。propagation_map / chain_c_map は各 fragment のローカル alpha/beta/radical/chain_c を running offset に加えて構成。
+  (iii) 配置順: initiators → monomer_specs の順(spec0 を count0 回、spec1 を count1 回…)。conformer seed は種ごとに rdkit_seed+1+k(幾何のみ変化、原子順序は SMILES で決定的)。
+  (iv) α 転化率分母は両種 alpha-C の総数(monomer_site_count が vinyl_alpha_C 群サイズを数えるため自動で正しい)。summary の n_monomers は両種の合計を渡す。
+- 実装:
+  (a) `scripts/_systems.py`: `build_vinyl_copolymer_system(monomer_specs, n_initiators, box_size, rng, initiator_smiles, min_sep, rdkit_seed)` を追加(既存 build_vinyl_aibn_system は無改変)。戻り値シグネチャは build_vinyl_aibn_system と同一(positions, species, template, groups, propagation_map, chain_c_map)。
+  (b) `scripts/run_vinyl_copolymer.py`: 新規の lean ランナー。`--n-acrylate`/`--n-methacrylate`/`--n-initiators`、`--backend {toy,orb,mace,aimnet}`(toy はスモーク用の LJ、GPU 不要)、NVT/NPT、density/box、cycles/steps、seed、checkpoint/resume。wf.run で manifest 記録。分類ラベルの trajectory-topology 出力(vinyl_initial_bonds 等の単一ストライド前提ヘルパ)は共重合レイアウトと非整合なため**呼ばない**(initial_bonds=None; 軌跡は距離推論で描画。科学的成果物=転化率・反応イベントには無影響)。
+  (c) `tests/unit/test_copolymer.py`: ビルダーのオフセット正当性(原子数・群サイズ・propagation_map の alpha∈vinyl_alpha_C / beta∈vinyl_beta_C・2種のストライド差)、MD なし候補生成(find_candidates + score + select)。
+- 論文になる仮定(明示): (i)(ii) は上記の通り論文外。共重合の反応性比や配列(交互/ランダム/ブロック)は制御せず MLIP に委ねるため、得られる共重合体は**統計的にランダム共重合寄り**になる見込み(定量検証は別途)。
+- Scientific risk: 中。TDBB コアは無改変だが「2種混在の候補選択・付加選択が MLIP のみで妥当に振る舞うか」は smoke で確認が必要(toy では幾何のみ、実 MLIP は別途)。反応性比の制御が無いため、実験の共重合組成曲線との定量比較には使えない(トレンド観察用)。
+- Licensing/commercial impact: なし(RDKit + 既存依存のみ。toy は自前 LJ、OrbMol-v2 は既存記録済み)。
+- Follow-up: (a) toy スモーク(少数系)で通し確認。(b) orb バックエンドで小規模実走→開環/付加が両種で起きるか。(c) 反応性比を見たい場合は組成 vs 転化率の解析を別途(現状は未実装)。

@@ -166,3 +166,87 @@ class TestOrbBackend:
         assert forces.shape == (2, 3)
         np.testing.assert_allclose(forces[0], -forces[1], atol=1e-4)
         assert 'orb' in calc.name
+
+
+class TestOrbTorchEnvConfig:
+    """compile=True must not set TORCHDYNAMO_DISABLE=1, which disables
+    torch.compile process-wide (decisions.md 2026-07-14). compile=False keeps
+    the Windows cl.exe workaround."""
+
+    def test_no_compile_sets_dynamo_disable(self, monkeypatch):
+        import os
+        from kagome.backends.orb_backend import _configure_torch_env
+        monkeypatch.delenv('TORCHDYNAMO_DISABLE', raising=False)
+        _configure_torch_env(compile=False)
+        assert os.environ.get('TORCHDYNAMO_DISABLE') == '1'
+
+    def test_compile_leaves_dynamo_enabled(self, monkeypatch):
+        import os
+        from kagome.backends.orb_backend import _configure_torch_env
+        monkeypatch.delenv('TORCHDYNAMO_DISABLE', raising=False)
+        _configure_torch_env(compile=True)
+        assert 'TORCHDYNAMO_DISABLE' not in os.environ
+
+    def test_compile_warns_when_dynamo_already_disabled(self, monkeypatch, caplog):
+        from kagome.backends.orb_backend import _configure_torch_env
+        monkeypatch.setenv('TORCHDYNAMO_DISABLE', '1')
+        with caplog.at_level(logging.WARNING):
+            _configure_torch_env(compile=True)
+        assert any('no-op' in r.message for r in caplog.records)
+
+
+class TestOrbEmptyCacheGating:
+    """Per-step torch.cuda.empty_cache() costs ~9% CPU at paper scale (py-spy,
+    decisions.md 2026-07-14); empty_cache=False must skip it while the default
+    keeps the 16 GB fragmentation mitigation (decisions.md 2026-06-15)."""
+
+    def _make_adapter(self, empty_cache: bool):
+        pytest.importorskip('torch')
+        pytest.importorskip('ase')
+        import torch
+        from kagome.backends.orb_backend import OrbCalculatorAdapter
+
+        class _FakeModel:
+            def parameters(self):
+                yield torch.zeros(1)
+
+            def __call__(self, batch):
+                return {
+                    'energy': torch.tensor(-1.0),
+                    'grad_forces': torch.zeros((2, 3)),
+                }
+
+        class _FakeBatch:
+            positions = None
+
+        class _FakeAtomsAdapter:
+            def from_ase_atoms(self, atoms, device=None):
+                return _FakeBatch()
+
+        # device='cuda' exercises the cleanup branch; the fake adapter/model
+        # never touch a real GPU.
+        return OrbCalculatorAdapter(
+            _FakeModel(), _FakeAtomsAdapter(),
+            device='cuda', empty_cache=empty_cache,
+        )
+
+    def _compute(self, calc):
+        positions = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        return calc.compute(positions, ['C', 'C'])
+
+    def test_empty_cache_called_by_default(self, monkeypatch):
+        torch = pytest.importorskip('torch')
+        calls = []
+        monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: calls.append(1))
+        calc = self._make_adapter(empty_cache=True)
+        self._compute(calc)
+        assert calls == [1]
+
+    def test_empty_cache_skipped_when_disabled(self, monkeypatch):
+        torch = pytest.importorskip('torch')
+        calls = []
+        monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: calls.append(1))
+        calc = self._make_adapter(empty_cache=False)
+        energy, forces = self._compute(calc)
+        assert calls == []
+        assert forces.shape == (2, 3)
