@@ -1589,3 +1589,20 @@ Use this template for each decision.
 - Scientific risk: 中。手法差(距離ベース 500 K vs PES ベース 333 K)により到達転化率・ネットワーク形成経路が本質的に異なりうる — それ自体が E2 の測定対象。ref#2 のフルカーブ(0–90%)生データは Zenodo に含まれず 45% 例のみ(フルカーブは xlinker.py 再実行が必要 = 現時点ではスコープ外、必要になれば別途判断)。
 - Licensing/commercial impact: **Provenzano 2025 Zenodo 一式(コード+データ)= CC-BY-4.0、帰属表示の上で商用利用可**。dependency-license-matrix.md に追記。比較解析はデータの読み取りのみで xlinker コードは実行・改変・同梱しない(現スコープ)。
 - Follow-up: (a) 比較解析スクリプト `scripts/compare_epoxy_external.py` + Zenodo 取得スクリプト + LAMMPS data パーサ + unit テスト(本エントリと同日実装、サブエージェント)。(b) E2 比較ラン config(100+40、5:2)の作成はラン計画確定時。(c) Orselly 2022(Track 3)の DGEBA/DETA 値をメモ: Tg 実験 119–142 °C / sim 123 °C、ヤング率 実験 2.55 / sim 2.57 GPa、密度 実験 1.178 / sim 1.111 g/cm³(CHARMM CGenFF、カットオフ 2–3 Å、900 K、目標転化 95%)。
+
+## 2026-07-16: 「Track 拡張 / 共重合(アクリレート+メタクリレート混合ビニル系)ビルダー」の設計と実装
+- Context: ユーザ要望で、単一モノマーではなくアクリレート+メタクリレートの**混合(共重合)ラジカル系**を走らせたい。既存 `build_vinyl_aibn_system` は単一モノマー種を前提に固定ストライド `mono_offset + j*n_per_mono` でグローバル index を計算しており(`_systems.py`)、原子数の異なる2種(methyl acrylate 12原子 vs methyl methacrylate 15原子)を1つの箱に混在できないことが唯一のブロッカー(Explore 調査 2026-07-16)。VinylChainPropagationUpdater / apply_vinyl_addition / valence guard / groups.py / find_candidates / conversion(α 分母 monomer_site_count)は全て種非依存で、正しいグローバル index と結合 propagation_map さえ渡せば無改変で動く。
+- Paper anchor: 論文 §2/Table S1(vinyl ラジカル重合の 4-group ij+ik+jl 基準)。共重合(2種モノマー混合)は**論文外の拡張**であり、論文は各モノマーを個別系として扱う(methyl acrylate, methacrylate, styrene… を別々に。§ Systems studied)。本実装は「同一テンプレート(radical_C/vinyl_alpha_C/chain_C/vinyl_beta_C)の下で両種の反応性原子を同一群に登録する」という拡張であり、TDBB の方程式・スケジュール・反応選択ロジックは無改変。
+- Decision(論文外の仮定として明示):
+  (i) **両モノマー種の alpha-C を単一 vinyl_alpha_C 群に、beta-C を単一 vinyl_beta_C 群に統合**する。ラジカルはどちらのモノマーにも無差別に付加でき(head-to-tail 位置化学は _find_vinyl_alpha_beta が種ごとに解決)、共重合の連鎖統計は MLIP エネルギー論に委ねる(2026-06-20「atom-typing only、余分なバイアスを足さない」方針の踏襲)。反応性比(r1/r2)を制御するバイアスは**入れない**(paper-faithful; 論文は付加選択にバイアスを足さない)。
+  (ii) **オフセットは種固定ストライドを廃し、配置順に沿って running offset を累積**する(`_place_fragments_in_box` の返す fragment 順=種の登録順が唯一の権威)。これにより原子数の異なる任意個数・任意種のモノマー混合を許容。propagation_map / chain_c_map は各 fragment のローカル alpha/beta/radical/chain_c を running offset に加えて構成。
+  (iii) 配置順: initiators → monomer_specs の順(spec0 を count0 回、spec1 を count1 回…)。conformer seed は種ごとに rdkit_seed+1+k(幾何のみ変化、原子順序は SMILES で決定的)。
+  (iv) α 転化率分母は両種 alpha-C の総数(monomer_site_count が vinyl_alpha_C 群サイズを数えるため自動で正しい)。summary の n_monomers は両種の合計を渡す。
+- 実装:
+  (a) `scripts/_systems.py`: `build_vinyl_copolymer_system(monomer_specs, n_initiators, box_size, rng, initiator_smiles, min_sep, rdkit_seed)` を追加(既存 build_vinyl_aibn_system は無改変)。戻り値シグネチャは build_vinyl_aibn_system と同一(positions, species, template, groups, propagation_map, chain_c_map)。
+  (b) `scripts/run_vinyl_copolymer.py`: 新規の lean ランナー。`--n-acrylate`/`--n-methacrylate`/`--n-initiators`、`--backend {toy,orb,mace,aimnet}`(toy はスモーク用の LJ、GPU 不要)、NVT/NPT、density/box、cycles/steps、seed、checkpoint/resume。wf.run で manifest 記録。分類ラベルの trajectory-topology 出力(vinyl_initial_bonds 等の単一ストライド前提ヘルパ)は共重合レイアウトと非整合なため**呼ばない**(initial_bonds=None; 軌跡は距離推論で描画。科学的成果物=転化率・反応イベントには無影響)。
+  (c) `tests/unit/test_copolymer.py`: ビルダーのオフセット正当性(原子数・群サイズ・propagation_map の alpha∈vinyl_alpha_C / beta∈vinyl_beta_C・2種のストライド差)、MD なし候補生成(find_candidates + score + select)。
+- 論文になる仮定(明示): (i)(ii) は上記の通り論文外。共重合の反応性比や配列(交互/ランダム/ブロック)は制御せず MLIP に委ねるため、得られる共重合体は**統計的にランダム共重合寄り**になる見込み(定量検証は別途)。
+- Scientific risk: 中。TDBB コアは無改変だが「2種混在の候補選択・付加選択が MLIP のみで妥当に振る舞うか」は smoke で確認が必要(toy では幾何のみ、実 MLIP は別途)。反応性比の制御が無いため、実験の共重合組成曲線との定量比較には使えない(トレンド観察用)。
+- Licensing/commercial impact: なし(RDKit + 既存依存のみ。toy は自前 LJ、OrbMol-v2 は既存記録済み)。
+- Follow-up: (a) toy スモーク(少数系)で通し確認。(b) orb バックエンドで小規模実走→開環/付加が両種で起きるか。(c) 反応性比を見たい場合は組成 vs 転化率の解析を別途(現状は未実装)。

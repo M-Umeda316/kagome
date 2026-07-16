@@ -562,6 +562,144 @@ def build_vinyl_aibn_system(
     return positions, species, template, groups, propagation_map, chain_c_map
 
 
+def build_vinyl_copolymer_system(
+    monomer_specs: list[tuple[str, int]],
+    n_initiators: int,
+    box_size: float,
+    rng: np.random.Generator,
+    initiator_smiles: str = _INITIATOR_SMILES,
+    min_sep: float = 2.5,
+    rdkit_seed: int = 42,
+) -> tuple[np.ndarray, list[str], ReactionTemplate, dict[str, ReactiveGroup],
+           dict[int, int], dict[int, int]]:
+    """Build a MIXED-monomer vinyl + initiator system (copolymerization).
+
+    Generalizes :func:`build_vinyl_aibn_system` to several distinct monomer
+    species in one box — e.g. methyl acrylate + methyl methacrylate. Unlike the
+    single-species builder, atom counts differ between species, so global index
+    arithmetic uses a *running offset accumulated in placement order* rather than
+    a single fixed per-monomer stride (specs/decisions.md 2026-07-16).
+
+    Both species' alpha carbons are registered into the SAME ``vinyl_alpha_C``
+    group and both beta carbons into the SAME ``vinyl_beta_C`` group, so the
+    radical adds to either monomer with no extra selection bias — the
+    copolymer sequence is left to the MLIP energetics (paper-faithful:
+    §2/Table S1 add no per-addition bias; no reactivity-ratio control).
+
+    Parameters
+    ----------
+    monomer_specs : list of (smiles, count)
+        Each distinct monomer species and how many copies to place. Order is
+        the placement order (after the initiators).
+    n_initiators : int
+        Number of isobutyronitrile radical models (closed-shell approximation,
+        see :func:`build_vinyl_aibn_system` NOTE).
+
+    Placement order: all initiators first, then each monomer spec in the given
+    order (spec[0] × count[0], spec[1] × count[1], …).
+
+    Returns the SAME tuple shape as :func:`build_vinyl_aibn_system`:
+    ``(positions, species, template, groups, propagation_map, chain_c_map)``.
+
+    Paper anchor: Fig. 1, Section 2, Table S1 (ij+ik+jl criterion). The mixed
+    system is a documented extension of the paper's per-monomer setup.
+    """
+    if not monomer_specs:
+        raise ValueError('monomer_specs must contain at least one (smiles, count).')
+    if any(count < 0 for _, count in monomer_specs):
+        raise ValueError('monomer counts must be non-negative.')
+
+    # ── single-molecule 3D templates ──
+    init_pos, init_sp = _rdkit_3d(initiator_smiles, seed=rdkit_seed)
+    local_radical = _find_ibn_radical_c(initiator_smiles)
+    local_chain_c = _find_chain_c_neighbor(initiator_smiles, local_radical)
+
+    # One template + local alpha/beta per DISTINCT species (geometry seed varies
+    # per species; atom ordering is deterministic per SMILES).
+    mono_templates: list[tuple[np.ndarray, list[str], int, int]] = []
+    for k, (smiles, _count) in enumerate(monomer_specs):
+        mpos, msp = _rdkit_3d(smiles, seed=rdkit_seed + 1 + k)
+        local_alpha, local_beta = _find_vinyl_alpha_beta(smiles)
+        mono_templates.append((mpos, msp, local_alpha, local_beta))
+
+    # ── build the placement list AND parallel per-fragment metadata ──
+    # frag_meta[i] = ('init', None, None) or ('mono', local_alpha, local_beta),
+    # walked in the SAME order the placer concatenates species.
+    fragments: list[tuple[np.ndarray, list[str]]] = [(init_pos, init_sp)] * n_initiators
+    frag_meta: list[tuple[str, int | None, int | None]] = [('init', None, None)] * n_initiators
+    for k, (_smiles, count) in enumerate(monomer_specs):
+        mpos, msp, local_alpha, local_beta = mono_templates[k]
+        fragments += [(mpos, msp)] * count
+        frag_meta += [('mono', local_alpha, local_beta)] * count
+
+    positions, species = _place_fragments_in_box(
+        fragments, box_size, rng, min_sep=min_sep,
+    )
+
+    # ── global index arithmetic via running offset (heterogeneous atom counts) ──
+    radical_C_indices: list[int] = []
+    chain_C_indices: list[int] = []
+    alpha_C_indices: list[int] = []
+    beta_C_indices: list[int] = []
+    propagation_map: dict[int, int] = {}
+    chain_c_map: dict[int, int] = {}
+
+    offset = 0
+    for (_fpos, fsp), (kind, local_alpha, local_beta) in zip(fragments, frag_meta):
+        if kind == 'init':
+            radical = offset + local_radical
+            chain = offset + local_chain_c
+            radical_C_indices.append(radical)
+            chain_C_indices.append(chain)
+            chain_c_map[radical] = chain
+        else:
+            alpha = offset + local_alpha
+            beta = offset + local_beta
+            alpha_C_indices.append(alpha)
+            beta_C_indices.append(beta)
+            propagation_map[alpha] = beta
+        offset += len(fsp)
+
+    # ── reaction template (identical to the single-monomer 4-group template) ──
+    template = ReactionTemplate(
+        name='radical_vinyl_copolymerization',
+        groups=['radical_C', 'vinyl_alpha_C', 'chain_C', 'vinyl_beta_C'],
+        pairs=[
+            PairSpec(
+                group_a='radical_C',
+                group_b='vinyl_alpha_C',
+                is_formation=True,
+                r_min=3.0,
+                r_max=6.0,
+            ),
+            PairSpec(
+                group_a='radical_C',
+                group_b='chain_C',
+                is_formation=True,
+                r_min=0.0,
+                r_max=3.0,
+                constraint_only=True,
+            ),
+            PairSpec(
+                group_a='vinyl_alpha_C',
+                group_b='vinyl_beta_C',
+                is_formation=True,
+                r_min=0.0,
+                r_max=3.0,
+                constraint_only=True,
+            ),
+        ],
+    )
+    groups = {
+        'radical_C':      ReactiveGroup('radical_C',      radical_C_indices),
+        'vinyl_alpha_C':  ReactiveGroup('vinyl_alpha_C',  alpha_C_indices),
+        'chain_C':        ReactiveGroup('chain_C',        chain_C_indices),
+        'vinyl_beta_C':   ReactiveGroup('vinyl_beta_C',   beta_C_indices),
+    }
+
+    return positions, species, template, groups, propagation_map, chain_c_map
+
+
 # ── nylon-6,6 step-growth system ────────────────────────────────────────────
 
 def _find_terminal_amine_n(smiles: str) -> list[int]:
