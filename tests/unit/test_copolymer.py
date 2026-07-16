@@ -110,6 +110,36 @@ class TestCopolymerBuilder:
             )
 
 
+class TestCopolymerAlphaSpecies:
+    """copolymer_alpha_species must reconstruct the SAME alpha indices as the
+    builder, so the reactivity analysis labels the right species."""
+
+    def test_matches_builder_alpha_indices(self):
+        from scripts._systems import copolymer_alpha_species
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        _, _, _, groups, _, _ = _build(3, 2, 1)
+        mapping = copolymer_alpha_species(specs, n_initiators=1)
+        # every alpha index in the builder's group is mapped, and vice versa
+        assert set(mapping) == set(groups['vinyl_alpha_C'].atom_indices)
+
+    def test_species_labels_partition_correctly(self):
+        from scripts._systems import copolymer_alpha_species
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        mapping = copolymer_alpha_species(specs, n_initiators=1)
+        n_acr = sum(1 for s in mapping.values() if s == ACRYLATE)
+        n_mac = sum(1 for s in mapping.values() if s == METHACRYLATE)
+        assert n_acr == 3
+        assert n_mac == 2
+
+    def test_acrylate_indices_precede_methacrylate(self):
+        from scripts._systems import copolymer_alpha_species
+        mapping = copolymer_alpha_species([(ACRYLATE, 2), (METHACRYLATE, 2)],
+                                          n_initiators=1)
+        acr = sorted(i for i, s in mapping.items() if s == ACRYLATE)
+        mac = sorted(i for i, s in mapping.items() if s == METHACRYLATE)
+        assert max(acr) < min(mac)  # placement order preserved
+
+
 class TestCopolymerCandidateGeneration:
     """Candidate generation runs on the mixed layout without MD."""
 
