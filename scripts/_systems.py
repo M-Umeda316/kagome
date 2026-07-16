@@ -700,6 +700,68 @@ def build_vinyl_copolymer_system(
     return positions, species, template, groups, propagation_map, chain_c_map
 
 
+def copolymer_alpha_species(
+    monomer_specs: list[tuple[str, int]],
+    n_initiators: int,
+    initiator_smiles: str = _INITIATOR_SMILES,
+) -> dict[int, str]:
+    """Map each monomer's alpha-C global index to its species SMILES.
+
+    Reconstructs the SAME global indices as :func:`build_vinyl_copolymer_system`
+    without needing the rng or placement — the offsets depend only on the atom
+    counts and the placement order (initiators first, then each monomer spec in
+    order), both deterministic per SMILES. Used by the reactivity analysis to
+    label which species each confirmed formation incorporated
+    (specs/decisions.md 2026-07-16).
+
+    Returns ``{alpha_C_global_idx: monomer_smiles}``.
+    """
+    n_per_init = len(_rdkit_3d(initiator_smiles)[1])
+
+    alpha_species: dict[int, str] = {}
+    offset = n_initiators * n_per_init
+    for smiles, count in monomer_specs:
+        _pos, sp = _rdkit_3d(smiles)
+        n_per_mono = len(sp)
+        local_alpha, _local_beta = _find_vinyl_alpha_beta(smiles)
+        for _ in range(count):
+            alpha_species[offset + local_alpha] = smiles
+            offset += n_per_mono
+    return alpha_species
+
+
+def copolymer_atom_species(
+    monomer_specs: list[tuple[str, int]],
+    n_initiators: int,
+    initiator_smiles: str = _INITIATOR_SMILES,
+) -> dict[int, str]:
+    """Map EVERY atom's global index to the SMILES of its molecule block.
+
+    Same deterministic offsets as :func:`build_vinyl_copolymer_system` and
+    :func:`copolymer_alpha_species` (initiators first, then each monomer spec
+    in order). Initiator atoms map to ``initiator_smiles``. Used to classify
+    the radical_C endpoint of a confirmed formation: the block holding the
+    radical is the chain's terminal unit, giving the cross-propagation table
+    (which terminal species added which monomer; specs/decisions.md 2026-07-16).
+
+    Returns ``{atom_global_idx: block_smiles}`` covering all atoms.
+    """
+    atom_species: dict[int, str] = {}
+    offset = 0
+    n_per_init = len(_rdkit_3d(initiator_smiles)[1])
+    for _ in range(n_initiators):
+        for i in range(n_per_init):
+            atom_species[offset + i] = initiator_smiles
+        offset += n_per_init
+    for smiles, count in monomer_specs:
+        n_per_mono = len(_rdkit_3d(smiles)[1])
+        for _ in range(count):
+            for i in range(n_per_mono):
+                atom_species[offset + i] = smiles
+            offset += n_per_mono
+    return atom_species
+
+
 # ── nylon-6,6 step-growth system ────────────────────────────────────────────
 
 def _find_terminal_amine_n(smiles: str) -> list[int]:

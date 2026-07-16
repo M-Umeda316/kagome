@@ -110,6 +110,152 @@ class TestCopolymerBuilder:
             )
 
 
+class TestCopolymerAlphaSpecies:
+    """copolymer_alpha_species must reconstruct the SAME alpha indices as the
+    builder, so the reactivity analysis labels the right species."""
+
+    def test_matches_builder_alpha_indices(self):
+        from scripts._systems import copolymer_alpha_species
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        _, _, _, groups, _, _ = _build(3, 2, 1)
+        mapping = copolymer_alpha_species(specs, n_initiators=1)
+        # every alpha index in the builder's group is mapped, and vice versa
+        assert set(mapping) == set(groups['vinyl_alpha_C'].atom_indices)
+
+    def test_species_labels_partition_correctly(self):
+        from scripts._systems import copolymer_alpha_species
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        mapping = copolymer_alpha_species(specs, n_initiators=1)
+        n_acr = sum(1 for s in mapping.values() if s == ACRYLATE)
+        n_mac = sum(1 for s in mapping.values() if s == METHACRYLATE)
+        assert n_acr == 3
+        assert n_mac == 2
+
+    def test_acrylate_indices_precede_methacrylate(self):
+        from scripts._systems import copolymer_alpha_species
+        mapping = copolymer_alpha_species([(ACRYLATE, 2), (METHACRYLATE, 2)],
+                                          n_initiators=1)
+        acr = sorted(i for i, s in mapping.items() if s == ACRYLATE)
+        mac = sorted(i for i, s in mapping.items() if s == METHACRYLATE)
+        assert max(acr) < min(mac)  # placement order preserved
+
+
+class TestCopolymerAtomSpecies:
+    """copolymer_atom_species must label every atom with its block, on the
+    same offsets as the builder, so radical endpoints classify correctly."""
+
+    def test_covers_all_atoms_and_agrees_with_alpha_map(self):
+        from scripts._systems import (
+            copolymer_alpha_species,
+            copolymer_atom_species,
+        )
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        pos, _, _, _, _, _ = _build(3, 2, 1)
+        atom_map = copolymer_atom_species(specs, n_initiators=1)
+        assert set(atom_map) == set(range(pos.shape[0]))
+        # every alpha-C's block label matches the alpha map's species label
+        alpha_map = copolymer_alpha_species(specs, n_initiators=1)
+        for idx, smi in alpha_map.items():
+            assert atom_map[idx] == smi
+
+    def test_initiator_atoms_labeled_initiator(self):
+        from scripts._systems import _rdkit_3d, copolymer_atom_species
+        atom_map = copolymer_atom_species(
+            [(ACRYLATE, 2), (METHACRYLATE, 2)], n_initiators=2)
+        n_init_atoms = 2 * len(_rdkit_3d('CC(C)C#N')[1])
+        for i in range(n_init_atoms):
+            assert atom_map[i] == 'CC(C)C#N'
+        assert atom_map[n_init_atoms] == ACRYLATE
+
+
+class TestCrossPropagationAnalysis:
+    """analyze() classifies each confirmed formation as
+    (terminal species -> incorporated species) from the radical endpoint."""
+
+    def _fake_run_dir(self, tmp_path, events):
+        import json
+        (tmp_path / 'summary.json').write_text(json.dumps({
+            'n_acrylate': 3, 'n_methacrylate': 2, 'n_initiators': 1,
+        }), encoding='utf-8')
+        lines = [json.dumps(ev) for ev in events]
+        (tmp_path / 'bonds.jsonl').write_text('\n'.join(lines), encoding='utf-8')
+        return tmp_path
+
+    def test_initiator_then_chain_terminal(self, tmp_path):
+        from scripts._systems import (
+            _rdkit_3d,
+            copolymer_alpha_species,
+            copolymer_atom_species,
+        )
+        from scripts.analyze_copolymer_reactivity import analyze
+
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        alpha = copolymer_alpha_species(specs, n_initiators=1)
+        acr_alphas = sorted(i for i, s in alpha.items() if s == ACRYLATE)
+        mac_alphas = sorted(i for i, s in alpha.items() if s == METHACRYLATE)
+        n_init_atoms = len(_rdkit_3d('CC(C)C#N')[1])
+
+        # event 1: initiator radical (atom 1, inside the initiator block)
+        # adds the first acrylate; event 2: the radical now sits on that
+        # acrylate's beta-C (same block as its alpha) and adds a methacrylate.
+        first_acr_alpha = acr_alphas[0]
+        assert first_acr_alpha >= n_init_atoms
+        events = [
+            {'event_type': 'confirmed_formation', 'cycle': 0,
+             'atom_a': 1, 'atom_b': first_acr_alpha},
+            {'event_type': 'confirmed_formation', 'cycle': 1,
+             'atom_a': mac_alphas[0], 'atom_b': first_acr_alpha + 1},
+            {'event_type': 'tentative_formation', 'cycle': 2,
+             'atom_a': 1, 'atom_b': acr_alphas[1]},  # must be ignored
+        ]
+        result = analyze(self._fake_run_dir(tmp_path, events))
+
+        cross = result['cross_propagation']
+        assert cross['initiator'] == {'acrylate': 1, 'methacrylate': 0}
+        assert cross['acrylate'] == {'acrylate': 0, 'methacrylate': 1}
+        assert cross['methacrylate'] == {'acrylate': 0, 'methacrylate': 0}
+        assert result['total_incorporations'] == 2
+        est = result['reactivity_ratio_estimates']
+        assert est['monomer_terminal_events'] == 1
+        # acr->mac exists but acr->acr is 0: point estimate degenerates to 0.0
+        assert est['r_acrylate'] == 0.0
+        assert est['r_methacrylate'] is None  # no mac->acr denominator event
+
+    def test_reactivity_ratios_from_full_2x2(self, tmp_path):
+        from scripts._systems import copolymer_alpha_species
+        from scripts.analyze_copolymer_reactivity import analyze
+
+        specs = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+        alpha = copolymer_alpha_species(specs, n_initiators=1)
+        acr = sorted(i for i, s in alpha.items() if s == ACRYLATE)
+        mac = sorted(i for i, s in alpha.items() if s == METHACRYLATE)
+
+        # radical endpoints chosen INSIDE monomer blocks (alpha+1 = same block):
+        # acr*->acr x2, acr*->mac x1, mac*->mac x2, mac*->acr x1
+        events = [
+            {'event_type': 'confirmed_formation', 'cycle': 0,
+             'atom_a': acr[0] + 1, 'atom_b': acr[1]},
+            {'event_type': 'confirmed_formation', 'cycle': 1,
+             'atom_a': acr[1] + 1, 'atom_b': acr[2]},
+            {'event_type': 'confirmed_formation', 'cycle': 2,
+             'atom_a': acr[2] + 1, 'atom_b': mac[0]},
+            {'event_type': 'confirmed_formation', 'cycle': 3,
+             'atom_a': mac[0] + 1, 'atom_b': mac[1]},
+            {'event_type': 'confirmed_formation', 'cycle': 4,
+             'atom_a': mac[1] + 1, 'atom_b': mac[1]},
+            {'event_type': 'confirmed_formation', 'cycle': 5,
+             'atom_a': mac[1] + 2, 'atom_b': acr[0]},
+        ]
+        # NOTE: event 5 reuses mac[1] as alpha; fine — analyze() does not
+        # dedupe, it just classifies endpoints.
+        result = analyze(self._fake_run_dir(tmp_path, events))
+        est = result['reactivity_ratio_estimates']
+        # r_acr = (2/1) * (n_mac/n_acr = 2/3), r_mac = (2/1) * (3/2)
+        assert est['r_acrylate'] == pytest.approx(2 * 2 / 3)
+        assert est['r_methacrylate'] == pytest.approx(2 * 3 / 2)
+        assert est['monomer_terminal_events'] == 6
+
+
 class TestCopolymerCandidateGeneration:
     """Candidate generation runs on the mixed layout without MD."""
 

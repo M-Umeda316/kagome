@@ -1606,3 +1606,16 @@ Use this template for each decision.
 - Scientific risk: 中。TDBB コアは無改変だが「2種混在の候補選択・付加選択が MLIP のみで妥当に振る舞うか」は smoke で確認が必要(toy では幾何のみ、実 MLIP は別途)。反応性比の制御が無いため、実験の共重合組成曲線との定量比較には使えない(トレンド観察用)。
 - Licensing/commercial impact: なし(RDKit + 既存依存のみ。toy は自前 LJ、OrbMol-v2 は既存記録済み)。
 - Follow-up: (a) toy スモーク(少数系)で通し確認。(b) orb バックエンドで小規模実走→開環/付加が両種で起きるか。(c) 反応性比を見たい場合は組成 vs 転化率の解析を別途(現状は未実装)。
+
+## 2026-07-17: 共重合の相対反応性・クロス成長解析(analyze_copolymer_reactivity)
+- Context: 共重合ラン(2026-07-16 エントリの拡張系)から「どちらのモノマーがどれだけ取り込まれたか」に加え、「**どちらの種の成長末端が**どちらのモノマーを取り込んだか」(クロス成長表)を集計したい。`runs/copoly_reactivity_orb`(20MA+20MMA+3init、20 cycles、orb)で確定 4 件を初適用。
+- Paper anchor: 論文 §2(TDBB の confirmed formation = radical_C–vinyl_alpha_C ペアの記録)。解析はログの読み取りのみで、TDBB・反応選択・MD は無改変。反応性比(Mayo-Lewis r1/r2)自体は論文外の解析軸。
+- Decision(論文外の仮定として明示):
+  (i) **原子 index→分子ブロックの写像は決定的に再構成できる**(`copolymer_atom_species`)。ビルダーの配置順(initiators→monomer_specs 順)と各 SMILES の原子数のみに依存し、rng・座標に依らない(`copolymer_alpha_species` と同一のオフセット規約。unit テストでビルダーの群 index と突き合わせ)。
+  (ii) **confirmed_formation の radical 端点が属するブロック = 付加時点の連鎖末端種**とみなす。根拠: vinyl 連鎖成長では確定形成のたびに VinylChainPropagationUpdater がラジカルを新モノマーの beta-C へ移すため、radical_C は常に「最後に付加したモノマーのブロック」(最初の付加のみ initiator ブロック)にある。
+  (iii) **Mayo-Lewis 推定は初期存在量補正の低転化率近似**: r_A = (N_AA/N_AM)·(avail_M/avail_A)、r_M = (N_MM/N_MA)·(avail_A/avail_M)。存在量は初期値固定(逐次消費は未補正)。等モル仕込みでは補正係数 1。initiator 末端イベントは r 推定から除外し別行で報告。分母イベント 0 のときは None、分子 0 のときは点推定 0.0。
+  (iv) イベント数が少ない間は無意味なため、出力に警告(全体 n<10、モノマー末端イベント n<20)を常設。文献の r 値はスクリプト出力に**埋め込まない**(出典管理は specs 側で行う)。
+- 実装: `scripts/_systems.py` に `copolymer_atom_species`、`scripts/analyze_copolymer_reactivity.py` にクロス表(initiator/acrylate/methacrylate 末端 × 取込種)と `reactivity_ratio_estimates` を追加。`tests/unit/test_copolymer.py` に写像テスト+合成 bonds.jsonl による end-to-end 分類テスト(16 passed)。
+- Scientific risk: 低〜中。解析のみで物理は不変。ただし (iii) の低転化率近似は転化率が上がると系統誤差(残存モノマー組成のドリフト)を生む — 高転化率まで回す場合は逐次存在量補正(イベント順に残数を減算)へ拡張する余地を明記しておく。
+- Licensing/commercial impact: なし(標準ライブラリのみ)。
+- Follow-up: `runs/copoly_50x50_seed7`(50+50+5、30 cycles、実行中)完走後にクロス表を再集計。必要なら逐次存在量補正・ダイアッド統計(配列のブロック性/交互性)を追加。
