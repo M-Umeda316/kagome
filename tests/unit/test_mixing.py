@@ -26,6 +26,7 @@ from kagome.prep.mixing import (
     MixTranslatorConfig,
     build_classical_mix,
     connected_components,
+    fragment_cache_key,
     is_placeholder_h,
     radical_cap_counts,
 )
@@ -137,6 +138,132 @@ def test_placeholder_h_only_for_disconnected_h():
     )
 
 
+# ── config validation (review 2026-07-17, findings 1 & 4) ─────────────────────
+
+def test_config_rejects_unknown_charge_method():
+    with pytest.raises(ValueError, match='charge_method'):
+        MixTranslatorConfig(charge_method='am1bcc')
+
+
+def test_config_rejects_split_nonbonded_forces():
+    """combine_nonbonded_forces=False would leave placeholder H missing from
+    the split vdW force (particle-count mismatch) — rejected up front."""
+    with pytest.raises(ValueError, match='combine_nonbonded_forces'):
+        MixTranslatorConfig(combine_nonbonded_forces=False)
+
+
+# ── cache key separation (finding 3) ──────────────────────────────────────────
+
+def test_cache_key_separates_charge_configs():
+    """Templates charged under different configs must never collide."""
+    base = MixTranslatorConfig(charge_method='gasteiger')
+    keys = {
+        fragment_cache_key('CC', base),
+        fragment_cache_key('CC', MixTranslatorConfig(charge_method='nagl')),
+        fragment_cache_key('CC', MixTranslatorConfig(
+            charge_method='nagl', nagl_model='other-model.pt')),
+        fragment_cache_key('CC', MixTranslatorConfig(
+            charge_method='gasteiger', forcefield='openff-2.1.0.offxml')),
+    }
+    assert len(keys) == 4          # all distinct
+    # same config + same graph -> same key (cache still works)
+    assert fragment_cache_key('CC', base) == fragment_cache_key(
+        'CC', MixTranslatorConfig(charge_method='gasteiger'))
+
+
+# ── multi-cap geometry (finding 2) ────────────────────────────────────────────
+
+def test_multi_cap_positions_are_distinct():
+    """A 2-deficit centre (carbene-like CH2) gets two NON-coincident cap H;
+    coincident caps would give a zero H-C-H angle and NaN angle forces."""
+    from kagome.prep.mixing import _cap_positions
+
+    species = ['C', 'H', 'H']
+    topo = BondTopology.from_bonds([(0, 1, 1.0), (0, 2, 1.0)])
+    pos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    caps = _cap_positions(0, 2, pos, topo, len(species))
+    assert caps.shape == (2, 3)
+    # both at the C-H bond length from the parent
+    np.testing.assert_allclose(
+        np.linalg.norm(caps - pos[0], axis=1), 1.09, atol=1e-9,
+    )
+    # and clearly separated from each other
+    assert np.linalg.norm(caps[0] - caps[1]) > 1.0
+
+
+def test_isolated_heavy_atom_caps_all_distinct():
+    """An atom that lost every bond (4-deficit C) gets 4 pairwise-distinct caps."""
+    from kagome.prep.mixing import _cap_positions
+
+    topo = BondTopology()          # no bonds at all
+    pos = np.zeros((1, 3))
+    caps = _cap_positions(0, 4, pos, topo, 1)
+    assert caps.shape == (4, 3)
+    for a in range(4):
+        for b in range(a + 1, 4):
+            assert np.linalg.norm(caps[a] - caps[b]) > 0.5
+
+
+def test_fragment_positions_spread_caps_through_build_path():
+    """The full fragment path (RDKit build + positions) keeps 2 caps distinct."""
+    from kagome.prep.mixing import _build_fragment_rdkit, _fragment_positions
+
+    species = ['C', 'H', 'H']
+    topo = BondTopology.from_bonds([(0, 1, 1.0), (0, 2, 1.0)])
+    pos = np.array([[0.0, 0.0, 0.0], [1.09, 0.0, 0.0], [0.0, 1.09, 0.0]])
+
+    caps = radical_cap_counts(topo, species, [0, 1, 2])
+    assert caps == {0: 2}
+    mol, local_to_global, cap_parents = _build_fragment_rdkit(
+        topo, species, [0, 1, 2], caps,
+    )
+    assert cap_parents == [0, 0]
+    coords = _fragment_positions(local_to_global, cap_parents, pos, topo, 3)
+    cap_coords = [c for c, g in zip(coords, local_to_global) if g is None]
+    assert len(cap_coords) == 2
+    assert np.linalg.norm(cap_coords[0] - cap_coords[1]) > 1.0
+
+
+# ── unknown-element guard (finding 5) ─────────────────────────────────────────
+
+def test_unknown_element_deficit_raises():
+    """A valence-deficient atom of an element outside NEUTRAL_VALENCE must fail
+    loudly (silent skipping would corrupt the omm<->mlip map)."""
+    species = ['Si', 'H', 'H']     # SiH2: deficit 2, Si not in NEUTRAL_VALENCE
+    topo = BondTopology.from_bonds([(0, 1, 1.0), (0, 2, 1.0)])
+    with pytest.raises(ValueError, match='NEUTRAL_VALENCE'):
+        radical_cap_counts(topo, species, [0, 1, 2])
+
+
+def test_unknown_element_saturated_passes():
+    """A saturated unknown element is allowed through (no cap needed)."""
+    species = ['Si', 'H', 'H', 'H', 'H']   # SiH4: saturated
+    topo = BondTopology.from_bonds(
+        [(0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (0, 4, 1.0)],
+    )
+    caps = radical_cap_counts(topo, species, list(range(5)))
+    assert caps == {}
+
+
+# ── write_back input validation (finding 6) ───────────────────────────────────
+
+def test_write_back_rejects_nonfinite_input():
+    """MD-divergence NaN must be reported as bad INPUT, not as a mapping bug."""
+    mix = ClassicalMix(
+        system=None,
+        positions_A=np.zeros((2, 3)),
+        box_vectors_A=np.eye(3) * 10.0,
+        omm_to_mlip=[0, 1],
+        mlip_to_omm={0: 0, 1: 1},
+        n_mlip_atoms=2,
+    )
+    bad = np.zeros((2, 3))
+    bad[1, 2] = np.nan
+    with pytest.raises(ValueError, match='non-finite'):
+        mix.write_back(bad)
+
+
 # ── OpenMM-dependent: build, round trip, cache, energy ─────────────────────────
 
 @requires_openmm
@@ -154,6 +281,12 @@ def test_build_smoke_and_index_map_complete():
     # index map covers every MLIP atom exactly once
     assert len(mix.mlip_to_omm) == len(species)
     assert set(mix.mlip_to_omm) == set(range(len(species)))
+    # metadata records the ACTUAL charge method and the minimization contract
+    assert mix.metadata['charge_method'] == 'gasteiger'
+    assert mix.metadata['charge_methods_used'] == ['gasteiger']
+    assert mix.metadata['charge_method_requested'] == 'gasteiger'
+    assert mix.metadata['nagl_fallback'] is False
+    assert mix.metadata['requires_minimization'] is True
 
 
 @requires_openmm
@@ -224,6 +357,27 @@ def test_energy_evaluation_is_finite():
     context.setPositions((mix.positions_A * 0.1) * ommunit.nanometer)  # Å -> nm
     energy = context.getState(getEnergy=True).getPotentialEnergy()
     assert np.isfinite(energy.value_in_unit(ommunit.kilojoule_per_mole))
+
+
+@requires_openmm
+def test_element_verification_catches_reordering():
+    """_verify_topology_elements: matching order passes, a species mismatch
+    raises (D-4-style guard against silent atom scrambling; finding 8)."""
+    from openff.toolkit import Molecule, Topology
+
+    from kagome.prep.mixing import _verify_topology_elements
+
+    water = Molecule.from_smiles('O')      # atom order O, H, H
+    top = Topology.from_molecules([water])
+
+    _verify_topology_elements(top, [0, 1, 2], ['O', 'H', 'H'])  # no raise
+    with pytest.raises(ValueError, match='element mismatch'):
+        _verify_topology_elements(top, [0, 1, 2], ['N', 'H', 'H'])
+    with pytest.raises(ValueError, match='atom count'):
+        _verify_topology_elements(top, [0, 1], ['O', 'H'])
+    # a cap slot (None) must be H: position 0 is O -> mismatch
+    with pytest.raises(ValueError, match='element mismatch'):
+        _verify_topology_elements(top, [None, 1, 2], ['O', 'H', 'H'])
 
 
 @requires_openmm

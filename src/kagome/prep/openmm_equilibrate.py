@@ -90,7 +90,7 @@ def _build_openff_topology(species: list[str], specs: list[MoleculeSpec], cfg):
     for spec in specs:
         rdmol = _rdkit_mol(spec.smiles, spec.rdkit_seed)
         offmol = Molecule.from_rdkit(rdmol, allow_undefined_stereo=True)
-        _assign_charges(offmol, rdmol, cfg)
+        _assign_charges(offmol, cfg)
         unique.append(offmol)
         ordered.extend([offmol] * spec.count)
 
@@ -106,33 +106,15 @@ def _build_openff_topology(species: list[str], specs: list[MoleculeSpec], cfg):
     return topology, unique
 
 
-def _assign_charges(offmol, rdmol, cfg) -> None:
-    """Assign partial charges to an OpenFF Molecule (nagl, else Gasteiger)."""
-    if cfg.charge_method == 'nagl':
-        try:
-            from openff.nagl_models import load_nagl_model_specs  # noqa: F401
-            from openff.toolkit.utils.nagl_wrapper import NAGLToolkitWrapper
+def _assign_charges(offmol, cfg) -> str:
+    """Assign partial charges (NAGL, else Gasteiger) via the shared prep helper.
 
-            offmol.assign_partial_charges(
-                cfg.nagl_model, toolkit_registry=NAGLToolkitWrapper(),
-            )
-            return
-        except Exception as exc:  # noqa: BLE001 - fall back, don't fail prep
-            logger.warning(
-                'NAGL charge assignment failed (%s); falling back to Gasteiger.',
-                exc,
-            )
+    Delegates to :func:`kagome.prep.charges.assign_charges` — one implementation
+    for prep and the mixing translator. Returns the method actually used.
+    """
+    from kagome.prep.charges import assign_charges
 
-    from openff.units import unit
-    from rdkit.Chem import AllChem
-
-    AllChem.ComputeGasteigerCharges(rdmol)
-    charges = np.array(
-        [float(a.GetDoubleProp('_GasteigerCharge')) for a in rdmol.GetAtoms()],
-        dtype=np.float64,
-    )
-    charges = np.nan_to_num(charges, nan=0.0, posinf=0.0, neginf=0.0)
-    offmol.partial_charges = charges * unit.elementary_charge
+    return assign_charges(offmol, cfg.charge_method, cfg.nagl_model)
 
 
 def _make_system(topology, unique_offmols, cfg):

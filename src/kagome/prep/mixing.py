@@ -9,9 +9,9 @@ coordinates into an OpenMM ``System`` parameterized with OpenFF Sage 2.2 + NAGL
 charges (Gasteiger fallback), and hands back a mapping so the mixed coordinates
 can be written straight back onto the MLIP atom order.
 
-It deliberately reuses the existing prep machinery's design
-(:mod:`kagome.prep.openmm_equilibrate` — ``_build_openff_topology`` /
-``_assign_charges`` / ``_make_system``); the difference is that the connectivity
+It shares the charge-assignment implementation with the prep stage
+(:mod:`kagome.prep.charges` — NAGL first, Gasteiger fallback) and mirrors the
+rest of :mod:`kagome.prep.openmm_equilibrate`; the difference is that the connectivity
 comes from a live ``BondTopology`` (molecules span non-contiguous global indices
 once chains grow) rather than from static per-SMILES ``MoleculeSpec`` blocks, so
 this module keeps an explicit ``omm <-> mlip`` index map instead of relying on a
@@ -41,16 +41,15 @@ imports cleanly in ML-only environments.
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
 
+from kagome.analysis.carothers import monomer_sets_from_bonds
+from kagome.prep.charges import CHARGE_METHODS, assign_charges
 from kagome.reactive.topology import BondTopology
 from kagome.units import NM_PER_ANGSTROM
-
-logger = logging.getLogger(__name__)
 
 # Neutral (uncharged, closed-shell) valence per element: the summed bond order a
 # saturated atom carries. A heavy atom whose summed order falls below this is an
@@ -68,6 +67,13 @@ NEUTRAL_VALENCE: dict[str, int] = {
 # classical minimizer P3 runs before mixing.
 _CAP_H_BOND_A = 1.09
 
+# Tilt (degrees) of each cap-H direction off the vacant-valence axis when a
+# centre needs MORE than one cap: half the tetrahedral angle, so 2-4 caps spread
+# azimuthally like the vacant sp3 lobes instead of stacking on one point (which
+# would give a zero H-C-H angle and NaN angle forces). Deterministic geometry,
+# no rng. See specs/decisions.md 2026-07-17 addendum.
+_MULTI_CAP_TILT_DEG = 54.7356
+
 # Cached Sage-derived aliphatic-H (sigma_nm, epsilon_kJ/mol), keyed by forcefield
 # name, used for placeholder-H nonbonded params. Derived from the force field
 # itself (methane's H) rather than hardcoded, so it tracks the chosen FF.
@@ -82,25 +88,50 @@ class MixTranslatorConfig:
     fallback) so the mixing PES matches the prep PES. ``charge_method`` is
     ``'nagl'`` | ``'gasteiger'``; NAGL falls back to Gasteiger automatically on
     any failure (e.g. no network for the model download).
+
+    ``combine_nonbonded_forces`` must stay ``True`` (validated): placeholder H
+    are appended to the single combined ``NonbondedForce`` only, and a split
+    vdW/electrostatics layout would leave them missing from the vdW
+    ``CustomNonbondedForce`` (particle-count mismatch at Context creation).
+    The field is kept to document the constraint and reserve the option.
     """
 
     charge_method: str = 'nagl'                     # 'nagl' | 'gasteiger'
     forcefield: str = 'openff-2.2.0.offxml'         # Sage 2.2
     nagl_model: str = 'openff-gnn-am1bcc-0.1.0-rc.3.pt'
-    combine_nonbonded_forces: bool = True
+    combine_nonbonded_forces: bool = True           # must remain True (see above)
+
+    def __post_init__(self) -> None:
+        if self.charge_method not in CHARGE_METHODS:
+            raise ValueError(
+                f'charge_method must be one of {CHARGE_METHODS}; '
+                f'got {self.charge_method!r}'
+            )
+        if not self.combine_nonbonded_forces:
+            raise ValueError(
+                'combine_nonbonded_forces=False is not supported: placeholder '
+                'H particles are added to the combined NonbondedForce only, so '
+                'a split vdW force would have a particle-count mismatch '
+                '(specs/decisions.md 2026-07-17 addendum).'
+            )
 
 
 @dataclass
 class FragmentParamCache:
     """Caches OpenFF-parameterized (charge-assigned) fragment templates.
 
-    Keyed by the fragment's canonical graph (RDKit canonical SMILES of the
-    *capped* molecule). Free monomers and equal-length chains are graph-
-    isomorphic, so the expensive per-fragment charge assignment (NAGL model
-    inference) runs once per distinct graph instead of once per molecule per
-    cycle. Cache values are charged OpenFF ``Molecule`` templates; interchange
-    maps each stored template onto every isomorphic copy in the topology by
-    graph isomorphism, so per-instance atom order does not matter.
+    Keyed by :func:`fragment_cache_key` — the fragment's canonical graph (RDKit
+    canonical SMILES of the *capped* molecule) prefixed with the charge/FF
+    options (``charge_method``, ``nagl_model``, ``forcefield``), so a cache
+    shared across differently-configured builds can never serve a template
+    charged under another method. Free monomers and equal-length chains are
+    graph-isomorphic, so the expensive per-fragment charge assignment (NAGL
+    model inference) runs once per distinct graph instead of once per molecule
+    per cycle. Cache values are ``(template, method_used)`` pairs — the charged
+    OpenFF ``Molecule`` plus the charge method that actually produced it
+    (``'gasteiger'`` when NAGL fell back); interchange maps each stored template
+    onto every isomorphic copy in the topology by graph isomorphism, so
+    per-instance atom order does not matter.
 
     ``hits`` / ``misses`` are exposed for test assertions and audit logging.
     """
@@ -110,23 +141,44 @@ class FragmentParamCache:
     misses: int = 0
 
     def get_or_assign(self, key: str, build_template):
-        """Return the cached charged template for ``key`` or build+store it.
+        """Return the cached ``(template, method_used)`` for ``key`` or build it.
 
-        ``build_template`` is a zero-arg callable returning a charge-assigned
-        OpenFF ``Molecule``; it is only invoked on a miss.
+        ``build_template`` is a zero-arg callable returning a
+        ``(charged OpenFF Molecule, method_used)`` pair; it is only invoked on a
+        miss.
         """
         if key in self._templates:
             self.hits += 1
             return self._templates[key]
         self.misses += 1
-        template = build_template()
-        self._templates[key] = template
-        return template
+        value = build_template()
+        self._templates[key] = value
+        return value
+
+
+def fragment_cache_key(canonical_smiles: str, cfg: MixTranslatorConfig) -> str:
+    """Cache key for a capped fragment graph under the given charge/FF options.
+
+    Includes the requested charge method, NAGL model, and force field so
+    templates charged under one configuration are never reused by another
+    (review 2026-07-17: charge-template contamination).
+    """
+    return (
+        f'{cfg.charge_method}|{cfg.nagl_model}|{cfg.forcefield}|'
+        f'{canonical_smiles}'
+    )
 
 
 @dataclass
 class ClassicalMix:
     """A classical OpenMM system built from a reactive bond graph.
+
+    .. warning::
+        ``positions_A`` are a *starting guess*, not an equilibrated state: cap H
+        sit at idealized directions and a shed placeholder H still sits ~1 Å
+        from its former parent (severe LJ overlap; energy is finite but huge).
+        The consumer (P3) MUST energy-minimize before any dynamics —
+        ``metadata['requires_minimization']`` records this contract.
 
     Attributes
     ----------
@@ -174,6 +226,16 @@ class ClassicalMix:
                 f'omm_positions must be ({len(self.omm_to_mlip)}, 3); '
                 f'got {omm_positions_A.shape}'
             )
+        if not np.isfinite(omm_positions_A).all():
+            bad = sorted(
+                np.where(~np.isfinite(omm_positions_A).all(axis=1))[0].tolist()
+            )
+            raise ValueError(
+                'write_back: input coordinates are non-finite at OpenMM '
+                f'particle indices {bad[:10]}'
+                f'{"..." if len(bad) > 10 else ""} — the classical MD likely '
+                'diverged (NaN); fix the mixing run, not the mapping.'
+            )
         out = np.full((self.n_mlip_atoms, 3), np.nan, dtype=np.float64)
         for omm_idx, mlip_idx in enumerate(self.omm_to_mlip):
             if mlip_idx is not None:
@@ -196,28 +258,17 @@ def connected_components(
     Each component is returned as a sorted list of global indices; the list of
     components is sorted by each component's minimum index for determinism.
     Isolated atoms (no bonds) come back as singletons.
+
+    Reuses the carothers component finder instead of a second union-find (the
+    ``network.largest_component_fraction`` precedent): one self-edge per atom
+    keeps isolated atoms (shed placeholder H) in the component list.
     """
-    parent = list(range(n_atoms))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
-    for i, j, _order in topology.bonds():
-        if i < n_atoms and j < n_atoms:
-            union(i, j)
-
-    groups: dict[int, list[int]] = {}
-    for atom in range(n_atoms):
-        groups.setdefault(find(atom), []).append(atom)
-    return [sorted(g) for g in sorted(groups.values(), key=min)]
+    edges: list[tuple[int, int]] = [(a, a) for a in range(n_atoms)]
+    edges.extend(
+        (i, j) for i, j, _order in topology.bonds()
+        if i < n_atoms and j < n_atoms
+    )
+    return monomer_sets_from_bonds(edges)
 
 
 def radical_cap_counts(
@@ -228,20 +279,53 @@ def radical_cap_counts(
     ``deficit = round(neutral_valence[element] - summed_bond_order)``; a positive
     deficit marks an open-shell radical centre (an opened vinyl growth end). H
     atoms are never capped (that would build H2) — a lone/deficient H is a
-    placeholder handled separately. Atoms with unknown elements or a non-positive
-    deficit are omitted.
+    placeholder handled separately.
+
+    An element OUTSIDE :data:`NEUTRAL_VALENCE` that is itself valence-deficient
+    (per RDKit's default valence) raises ``ValueError`` instead of being
+    silently skipped: an uncapped open-shell atom would otherwise reach OpenFF
+    (or grow implicit H) and corrupt the ``omm <-> mlip`` index map (review
+    2026-07-17). Saturated unknown elements pass through uncapped.
     """
     counts: dict[int, int] = {}
     for atom in atoms:
         el = species[atom]
-        if el == 'H' or el not in NEUTRAL_VALENCE:
+        if el == 'H':
             continue
         order_sum = sum(topology.order(atom, nbr)
                         for nbr in topology.neighbors(atom))
+        if el not in NEUTRAL_VALENCE:
+            _check_unknown_element_saturated(el, atom, order_sum)
+            continue
         deficit = round(NEUTRAL_VALENCE[el] - order_sum)
         if deficit > 0:
             counts[atom] = deficit
     return counts
+
+
+def _check_unknown_element_saturated(el: str, atom: int, order_sum: float) -> None:
+    """Raise if an element outside NEUTRAL_VALENCE is valence-deficient.
+
+    Uses RDKit's periodic-table default valence as the reference. Elements whose
+    default valence RDKit does not define (returns < 0, e.g. transition metals)
+    are rejected outright — the translator cannot decide whether they need caps.
+    """
+    from rdkit import Chem
+
+    default = Chem.GetPeriodicTable().GetDefaultValence(el)
+    if default < 0:
+        raise ValueError(
+            f'element {el!r} (atom {atom}) is outside NEUTRAL_VALENCE and has '
+            'no RDKit default valence; the translator cannot determine its cap '
+            'count. Extend NEUTRAL_VALENCE to support it.'
+        )
+    if round(default - order_sum) > 0:
+        raise ValueError(
+            f'atom {atom} (element {el!r}) is valence-deficient (bond-order sum '
+            f'{order_sum} < default valence {default}) but {el!r} is outside '
+            'NEUTRAL_VALENCE — refusing to translate an uncapped open-shell '
+            'atom. Extend NEUTRAL_VALENCE to support it.'
+        )
 
 
 def is_placeholder_h(
@@ -277,7 +361,12 @@ def _build_fragment_rdkit(
     local_to_global: list[int | None] = []
     for g in atoms:
         local_to_global.append(g)
-        global_to_local[g] = rw.AddAtom(Chem.Atom(species[g]))
+        atom = Chem.Atom(species[g])
+        # The bond graph is the complete connectivity: never let RDKit grow
+        # implicit hydrogens (they would add OpenMM particles that are absent
+        # from local_to_global and shift the omm<->mlip map).
+        atom.SetNoImplicit(True)
+        global_to_local[g] = rw.AddAtom(atom)
 
     bt = Chem.BondType
     type_map = {
@@ -301,7 +390,9 @@ def _build_fragment_rdkit(
         if g not in atom_set:
             continue
         for _ in range(cap_counts[g]):
-            cap_local = rw.AddAtom(Chem.Atom('H'))
+            cap_atom = Chem.Atom('H')
+            cap_atom.SetNoImplicit(True)
+            cap_local = rw.AddAtom(cap_atom)
             rw.AddBond(global_to_local[g], cap_local, bt.SINGLE)
             local_to_global.append(None)
             cap_parents.append(g)
@@ -334,37 +425,6 @@ def _reference_h_vdw(cfg: MixTranslatorConfig) -> tuple[float, float]:
     return vdw
 
 
-def _assign_charges_offmol(offmol, cfg: MixTranslatorConfig) -> None:
-    """Assign partial charges to an OpenFF Molecule (NAGL, else Gasteiger).
-
-    Mirrors ``openmm_equilibrate._assign_charges`` but takes the OpenFF molecule
-    directly (the fragment was built from a graph, not a SMILES round-trip).
-    """
-    from openff.units import unit as offunit
-
-    if cfg.charge_method == 'nagl':
-        try:
-            from openff.toolkit.utils.nagl_wrapper import NAGLToolkitWrapper
-
-            offmol.assign_partial_charges(
-                cfg.nagl_model, toolkit_registry=NAGLToolkitWrapper(),
-            )
-            return
-        except Exception as exc:  # noqa: BLE001 - fall back, don't fail mixing
-            logger.warning(
-                'NAGL charge assignment failed (%s); falling back to Gasteiger.',
-                exc,
-            )
-
-    offmol.assign_partial_charges('gasteiger')
-    # Gasteiger can emit NaN for exotic valences; scrub to keep the system finite.
-    charges = np.array(
-        [c.m_as(offunit.elementary_charge) for c in offmol.partial_charges],
-        dtype=np.float64,
-    )
-    if not np.isfinite(charges).all():
-        charges = np.nan_to_num(charges, nan=0.0, posinf=0.0, neginf=0.0)
-        offmol.partial_charges = charges * offunit.elementary_charge
 
 
 # ── public entry point ───────────────────────────────────────────────────────
@@ -424,10 +484,11 @@ def build_classical_mix(
 
     instance_offmols: list = []          # one per fragment, Topology order
     unique_templates: list = []          # charged templates, charge_from_molecules
-    unique_keys: set[str] = set()        # graph keys already in unique_templates
+    unique_keys: set[str] = set()        # cache keys already in unique_templates
     omm_to_mlip: list[int | None] = []   # OpenMM particle -> MLIP idx (or None)
     frag_positions: list[NDArray] = []   # per-fragment (n_local, 3) Å
     placeholder_atoms: list[int] = []    # lone H global indices
+    charge_methods_used: set[str] = set()
     n_cap_h = 0
 
     for atoms in components:
@@ -443,14 +504,22 @@ def build_classical_mix(
         n_cap_h += sum(1 for g in local_to_global if g is None)
 
         offmol = Molecule.from_rdkit(mol, allow_undefined_stereo=True)
-        key = _fragment_key(mol)
+        if offmol.n_atoms != len(local_to_global):
+            raise ValueError(
+                f'fragment atom count changed in RDKit->OpenFF conversion '
+                f'({offmol.n_atoms} != {len(local_to_global)}) for the fragment '
+                f'containing atoms {atoms[:6]}... — the omm<->mlip map would '
+                'be corrupt (implicit H or dropped atoms?).'
+            )
+        key = fragment_cache_key(_fragment_key(mol), cfg)
 
         def _make_template(m=mol):
             template = Molecule.from_rdkit(m, allow_undefined_stereo=True)
-            _assign_charges_offmol(template, cfg)
-            return template
+            method = assign_charges(template, cfg.charge_method, cfg.nagl_model)
+            return template, method
 
-        template = cache.get_or_assign(key, _make_template)
+        template, method_used = cache.get_or_assign(key, _make_template)
+        charge_methods_used.add(method_used)
         if key not in unique_keys:
             unique_keys.add(key)
             unique_templates.append(template)
@@ -465,6 +534,7 @@ def build_classical_mix(
 
     # Assemble the OpenFF topology (all fragment instances) and Sage system.
     off_top = Topology.from_molecules(instance_offmols)
+    _verify_topology_elements(off_top, omm_to_mlip, species)
     off_top.box_vectors = (
         cell_A * NM_PER_ANGSTROM
     ) * offunit.nanometer
@@ -489,6 +559,10 @@ def build_classical_mix(
         nb = next(f for f in system.getForces()
                   if isinstance(f, openmm.NonbondedForce))
         for g in placeholder_atoms:
+            if species[g] != 'H':
+                raise ValueError(
+                    f'placeholder particle {g} is {species[g]!r}, expected H'
+                )
             sys_idx = system.addParticle(1.008 * ommunit.amu)
             nb_idx = nb.addParticle(
                 0.0 * ommunit.elementary_charge,
@@ -525,10 +599,23 @@ def build_classical_mix(
             f'mapped (missing {missing[:10]}{"..." if len(missing) > 10 else ""})'
         )
 
+    methods = sorted(charge_methods_used) if charge_methods_used else []
     meta = {
         'translator': 'graph->openff-openmm',
         'forcefield': cfg.forcefield,
-        'charge_method': cfg.charge_method,
+        # The method(s) that actually produced the charges — NOT the request —
+        # so a NAGL->Gasteiger fallback is recorded truthfully (review
+        # 2026-07-17). 'mixed' can occur when a cache carries templates from an
+        # earlier build in which NAGL still worked.
+        'charge_method': methods[0] if len(methods) == 1 else 'mixed',
+        'charge_method_requested': cfg.charge_method,
+        'charge_methods_used': methods,
+        'nagl_fallback': (
+            cfg.charge_method == 'nagl' and 'gasteiger' in charge_methods_used
+        ),
+        # positions_A are a starting guess (cap H idealized, placeholder H
+        # overlapping its former parent): P3 must minimize before dynamics.
+        'requires_minimization': True,
         'n_mlip_atoms': n_atoms,
         'n_components': len(components),
         'n_fragments': len(instance_offmols),
@@ -557,14 +644,54 @@ def _fragment_key(mol) -> str:
     return Chem.MolToSmiles(mol)
 
 
-def _cap_position(
+def _verify_topology_elements(
+    off_top, omm_to_mlip: list[int | None], species: list[str],
+) -> None:
+    """Verify every OpenFF topology atom's element against the index map.
+
+    The prep-stage analogue of decision D-4's atom-order check: particle ``k``
+    of the assembled topology must be ``species[omm_to_mlip[k]]`` (or ``'H'``
+    for a classical-only cap, ``omm_to_mlip[k] is None``). Any mismatch means
+    the fragment assembly reordered/changed atoms and the coordinate write-back
+    would silently scramble the system — fail loudly instead (review
+    2026-07-17).
+    """
+    symbols = [atom.symbol for atom in off_top.atoms]
+    if len(symbols) != len(omm_to_mlip):
+        raise ValueError(
+            f'OpenFF topology has {len(symbols)} atoms but the omm<->mlip map '
+            f'covers {len(omm_to_mlip)} — fragment assembly changed the atom '
+            'count.'
+        )
+    for k, (symbol, mlip_idx) in enumerate(zip(symbols, omm_to_mlip)):
+        expected = 'H' if mlip_idx is None else species[mlip_idx]
+        if symbol != expected:
+            raise ValueError(
+                f'element mismatch at OpenMM particle {k}: topology has '
+                f'{symbol!r}, expected {expected!r} '
+                f'(mlip index {mlip_idx}) — atom ordering was not preserved.'
+            )
+
+
+def _cap_positions(
     parent: int,
+    count: int,
     positions_A: NDArray[np.floating],
     topology: BondTopology,
     n_atoms: int,
 ) -> NDArray[np.floating]:
-    """Place a cap H ~1.09 Å from its radical parent, opposite the parent's
-    existing real neighbours (a plausible vacant-valence direction)."""
+    """Deterministic starting coordinates for ``count`` cap H on one centre.
+
+    All caps sit ``_CAP_H_BOND_A`` (Å) from the parent. The vacant-valence axis
+    is the negated sum of unit vectors to the parent's existing real neighbours
+    (``[0, 0, 1]`` for an isolated heavy atom). One cap goes straight along the
+    axis; two or more are tilted ``_MULTI_CAP_TILT_DEG`` off it and spread
+    azimuthally (``2*pi/count`` apart) so no two caps coincide — coincident caps
+    would give zero cap-parent-cap angles and NaN angle forces (review
+    2026-07-17). Pure geometry, no rng: bitwise reproducible.
+
+    Returns a ``(count, 3)`` array in Å.
+    """
     p = positions_A[parent]
     dirs = np.zeros(3, dtype=np.float64)
     for nbr in topology.neighbors(parent):
@@ -574,8 +701,29 @@ def _cap_position(
             if norm > 1e-9:
                 dirs += d / norm
     norm = np.linalg.norm(dirs)
-    unit = -dirs / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
-    return p + _CAP_H_BOND_A * unit
+    axis = -dirs / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
+
+    if count == 1:
+        return (p + _CAP_H_BOND_A * axis)[None, :]
+
+    # Orthonormal frame (axis, v, w) for the azimuthal spread.
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(float(axis @ ref)) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0])
+    v = ref - float(ref @ axis) * axis
+    v /= np.linalg.norm(v)
+    w = np.cross(axis, v)
+
+    tilt = np.deg2rad(_MULTI_CAP_TILT_DEG)
+    out = np.empty((count, 3), dtype=np.float64)
+    for k in range(count):
+        az = 2.0 * np.pi * k / count
+        direction = (
+            np.cos(tilt) * axis
+            + np.sin(tilt) * (np.cos(az) * v + np.sin(az) * w)
+        )
+        out[k] = p + _CAP_H_BOND_A * direction
+    return out
 
 
 def _fragment_positions(
@@ -588,16 +736,26 @@ def _fragment_positions(
     """Coordinates (Å) for a fragment's OpenMM atoms, cap H included.
 
     Real atoms take their MLIP coordinate; cap H are placed near their radical
-    parent (see :func:`_cap_position`).
+    parent (see :func:`_cap_positions` — a centre's caps are spread so they
+    never coincide).
     """
     out = np.zeros((len(local_to_global), 3), dtype=np.float64)
-    cap_i = 0
+
+    # Group consecutive caps by parent so multi-cap centres get spread
+    # positions (cap_parents is in append order: same parent's caps adjacent).
+    cap_slots = [k for k, g in enumerate(local_to_global) if g is None]
+    assert len(cap_slots) == len(cap_parents)
+    per_parent: dict[int, list[int]] = {}
+    for slot, parent in zip(cap_slots, cap_parents):
+        per_parent.setdefault(parent, []).append(slot)
+
     for k, g in enumerate(local_to_global):
         if g is not None:
             out[k] = positions_A[g]
-        else:
-            out[k] = _cap_position(
-                cap_parents[cap_i], positions_A, topology, n_atoms,
-            )
-            cap_i += 1
+    for parent, slots in per_parent.items():
+        coords = _cap_positions(
+            parent, len(slots), positions_A, topology, n_atoms,
+        )
+        for slot, coord in zip(slots, coords):
+            out[slot] = coord
     return out
