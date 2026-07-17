@@ -160,25 +160,39 @@ def score_candidates(
 
 @dataclass
 class SelectionDecision:
-    """Audit record for one candidate in the greedy non-overlap pass (RF18).
+    """Audit record for one candidate in the non-overlap selection pass (RF18).
 
     reason is 'selected' or 'overlap:[...]' listing the already-used atoms that
-    caused the candidate to be dropped.
+    caused the candidate to be dropped. ``pool_size`` is set only for
+    policy='softmax' picks (WM-P5a): the number of candidates still viable
+    (non-overlapping with what was already selected) that competed for that
+    particular pick. It stays None for policy='deterministic', so existing
+    consumers of this dataclass are unaffected.
     """
     atom_indices: tuple[int, ...]
     score: float
     selected: bool
     reason: str
+    pool_size: int | None = None
 
 
-def audited_selection(
+# Below this softmax_temperature, weights would collapse to (near) a one-hot
+# on the best score anyway; treat it as exactly deterministic to avoid 0/0 and
+# float-overflow edge cases as T -> 0. This is what makes the T -> 0 limit of
+# policy='softmax' recover policy='deterministic' exactly (WM-P5a).
+_MIN_SOFTMAX_TEMPERATURE = 1e-9
+
+
+def _select_deterministic(
     candidates: list[Candidate],
 ) -> tuple[list[Candidate], list[SelectionDecision]]:
     """Greedy non-overlapping selection that also returns a per-candidate audit.
 
-    Single source of the selection logic; ``select_non_overlapping`` is a thin
-    wrapper that discards the audit. ``candidates`` is assumed already sorted by
-    score (see ``score_candidates``), so the audit reflects the true ranking.
+    ``candidates`` is assumed already sorted by score (see ``score_candidates``),
+    so the audit reflects the true ranking. This is the paper-faithful default
+    (best-score-first greedy, Eq. 7) and its behaviour is frozen: WM-P5a adds
+    policy='softmax' as an opt-in alternative alongside it, never changing this
+    path.
     """
     used_atoms: set[int] = set()
     selected: list[Candidate] = []
@@ -201,7 +215,118 @@ def audited_selection(
     return selected, decisions
 
 
-def select_non_overlapping(candidates: list[Candidate]) -> list[Candidate]:
-    """Greedy non-overlapping selection: skip candidates with already-used atoms."""
-    selected, _ = audited_selection(candidates)
+def _softmax_probs(
+    scores: NDArray[np.floating], temperature: float,
+) -> NDArray[np.floating]:
+    """exp(-(score - min_score)/T), normalised (WM-P5a). Lower score is better,
+    so the minimum-score candidate always gets the largest weight; subtracting
+    the min keeps the exponent <= 0 for numerical stability."""
+    shifted = scores - scores.min()
+    weights = np.exp(-shifted / temperature)
+    return weights / weights.sum()
+
+
+def _select_softmax(
+    candidates: list[Candidate],
+    temperature: float,
+    rng: np.random.Generator,
+) -> tuple[list[Candidate], list[SelectionDecision]]:
+    """Non-overlapping selection where each pick is a softmax draw over the
+    candidates currently viable (non-overlapping with what's already been
+    selected), instead of always taking the best score first (WM-P5a).
+
+    ``candidates`` is assumed sorted by score, purely so ties and the T -> 0
+    limit agree with ``_select_deterministic``; the draw itself does not
+    depend on input order.
+    """
+    if temperature < 0.0:
+        raise ValueError(f'softmax_temperature must be >= 0, got {temperature}')
+
+    used_atoms: set[int] = set()
+    selected: list[Candidate] = []
+    decisions: list[SelectionDecision] = []
+    pool = list(candidates)
+
+    while pool:
+        viable: list[Candidate] = []
+        for c in pool:
+            clash = set(c.atom_indices) & used_atoms
+            if clash:
+                decisions.append(SelectionDecision(
+                    c.atom_indices, c.score, False, f'overlap:{sorted(clash)}',
+                ))
+            else:
+                viable.append(c)
+        if not viable:
+            break
+
+        if len(viable) == 1 or temperature <= _MIN_SOFTMAX_TEMPERATURE:
+            pick_idx = int(np.argmin([c.score for c in viable]))
+        else:
+            scores = np.array([c.score for c in viable], dtype=np.float64)
+            probs = _softmax_probs(scores, temperature)
+            pick_idx = int(rng.choice(len(viable), p=probs))
+
+        picked = viable[pick_idx]
+        selected.append(picked)
+        used_atoms |= set(picked.atom_indices)
+        decisions.append(SelectionDecision(
+            picked.atom_indices, picked.score, True, 'selected',
+            pool_size=len(viable),
+        ))
+        pool = [c for c in viable if c is not picked]
+
+    return selected, decisions
+
+
+def audited_selection(
+    candidates: list[Candidate],
+    *,
+    policy: str = 'deterministic',
+    softmax_temperature: float | None = None,
+    rng: np.random.Generator | None = None,
+) -> tuple[list[Candidate], list[SelectionDecision]]:
+    """Non-overlapping candidate selection that also returns a per-candidate
+    audit trail. Single source of the selection logic; ``select_non_overlapping``
+    is a thin wrapper that discards the audit.
+
+    policy:
+      - 'deterministic' (default): best-score-first greedy (Eq. 7), the
+        paper-faithful behaviour. Bit-identical to pre-WM-P5a callers; extra
+        kwargs are accepted but ignored on this path.
+      - 'softmax': each pick is a draw with probability proportional to
+        exp(-(score - min_score)/softmax_temperature) among the candidates
+        still viable at that point. Requires ``softmax_temperature`` and
+        ``rng``. ``rng`` must be the caller's single shared
+        ``np.random.Generator`` so runs stay reproducible per seed.
+        softmax_temperature -> 0 recovers the deterministic order exactly
+        (see ``_MIN_SOFTMAX_TEMPERATURE``).
+
+    WM-P5a: optional stochastic candidate-selection policy for well-mixed
+    measurement mode; see specs/decisions.md "2026-07-17: well-mixed 測定モード"
+    item (iv) if present on your branch.
+    """
+    if policy == 'deterministic':
+        return _select_deterministic(candidates)
+    if policy == 'softmax':
+        if softmax_temperature is None:
+            raise ValueError("policy='softmax' requires softmax_temperature")
+        if rng is None:
+            raise ValueError("policy='softmax' requires rng")
+        return _select_softmax(candidates, softmax_temperature, rng)
+    raise ValueError(f'Unknown selection policy: {policy!r}')
+
+
+def select_non_overlapping(
+    candidates: list[Candidate],
+    *,
+    policy: str = 'deterministic',
+    softmax_temperature: float | None = None,
+    rng: np.random.Generator | None = None,
+) -> list[Candidate]:
+    """Non-overlapping selection: skip candidates with already-used atoms.
+    See ``audited_selection`` for the ``policy`` options."""
+    selected, _ = audited_selection(
+        candidates, policy=policy, softmax_temperature=softmax_temperature, rng=rng,
+    )
     return selected

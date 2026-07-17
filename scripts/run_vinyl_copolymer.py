@@ -125,6 +125,16 @@ def main() -> None:
     parser.add_argument('--f1-max-dissociation', type=float, default=125.0)
     parser.add_argument('--select-rmin', type=float, default=None)
     parser.add_argument('--select-rmax', type=float, default=None)
+    # WM-P5a (specs/decisions.md "2026-07-17: well-mixed 測定モード" item (iv)):
+    # optional stochastic candidate-selection policy. 'deterministic' (default)
+    # is the paper-faithful best-score-first greedy, unchanged.
+    parser.add_argument('--selection-policy', choices=['deterministic', 'softmax'],
+                        default='deterministic',
+                        help='biased-phase candidate-selection policy (default: '
+                             'deterministic, paper-faithful).')
+    parser.add_argument('--selection-temperature', type=float, default=None,
+                        help='softmax temperature (score units); required when '
+                             '--selection-policy softmax, ignored otherwise.')
     # backend
     parser.add_argument('--backend', choices=['toy', 'orb', 'mace', 'aimnet'],
                         default='orb')
@@ -141,6 +151,11 @@ def main() -> None:
     n_monomers = args.n_acrylate + args.n_methacrylate
     if n_monomers == 0:
         parser.error('Need at least one monomer (--n-acrylate / --n-methacrylate).')
+    if args.selection_policy == 'softmax' and args.selection_temperature is None:
+        parser.error('--selection-policy softmax requires --selection-temperature.')
+    if args.selection_policy == 'deterministic' and args.selection_temperature is not None:
+        parser.error('--selection-temperature was given without '
+                      '--selection-policy softmax.')
 
     ckpt_file = args.output_dir / 'checkpoint.pkl'
     resuming = bool(args.resume and ckpt_file.exists())
@@ -259,6 +274,8 @@ def main() -> None:
         minimize=args.minimize,
         minimize_fmax=args.minimize_fmax,
         equil_steps=args.equil_steps,
+        selection_policy=args.selection_policy,
+        selection_temperature=args.selection_temperature,
     )
 
     integrator = LangevinIntegrator(langevin_params)
@@ -311,6 +328,8 @@ def main() -> None:
             minimize=False,
             minimize_fmax=config.minimize_fmax,
             equil_steps=0,
+            selection_policy=config.selection_policy,
+            selection_temperature=config.selection_temperature,
         )
         wf.config = config
 
@@ -350,6 +369,8 @@ def main() -> None:
         'n_cycles': args.n_cycles,
         'minimize': args.minimize,
         'equil_steps': args.equil_steps,
+        'selection_policy': args.selection_policy,
+        'selection_temperature': args.selection_temperature,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'propagation_events': n_form,
