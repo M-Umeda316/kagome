@@ -51,6 +51,7 @@ from kagome.integrators.langevin import LangevinIntegrator, LangevinParams
 from kagome.integrators.mc_barostat import MCBarostat, MCBarostatParams
 from kagome.reactive.bonds import BondTracker
 from kagome.workflows.polymerization import (
+    MixConfig,
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
@@ -135,6 +136,33 @@ def main() -> None:
     parser.add_argument('--selection-temperature', type=float, default=None,
                         help='softmax temperature (score units); required when '
                              '--selection-policy softmax, ignored otherwise.')
+    # WM-P3 (specs/decisions.md "2026-07-17: well-mixed 測定モード" item (i),
+    # 追補 2026-07-18): optional per-cycle classical mixing stage. Off by
+    # default — the paper-faithful loop is unchanged. --mix-ps and
+    # --mix-settle-steps have NO defaults on purpose (decisions.md (v): mixing
+    # durations must be chosen explicitly until the P4 sweep measures them).
+    parser.add_argument('--mix', action='store_true',
+                        help='enable the classical (OpenFF/OpenMM) mixing '
+                             'stage after each cycle (well-mixed measurement '
+                             'mode; NOT paper-faithful).')
+    parser.add_argument('--mix-ps', type=float, default=None,
+                        help='classical mixing duration per cycle in ps; '
+                             'required with --mix.')
+    parser.add_argument('--mix-settle-steps', type=int, default=None,
+                        help='MLIP settle steps after coordinate write-back; '
+                             'required with --mix.')
+    parser.add_argument('--mix-timestep-fs', type=float, default=0.5,
+                        help='classical mixing timestep (ClassicalPrepConfig '
+                             'precedent).')
+    parser.add_argument('--mix-friction-per-ps', type=float, default=1.0)
+    parser.add_argument('--mix-platform',
+                        choices=['CUDA', 'OpenCL', 'CPU', 'Reference'],
+                        default='CPU',
+                        help='OpenMM platform for the mixing MD.')
+    parser.add_argument('--mix-charge-method', choices=['nagl', 'gasteiger'],
+                        default='nagl',
+                        help='partial-charge method for the mixing force '
+                             'field (NAGL falls back to Gasteiger).')
     # backend
     parser.add_argument('--backend', choices=['toy', 'orb', 'mace', 'aimnet'],
                         default='orb')
@@ -156,6 +184,18 @@ def main() -> None:
     if args.selection_policy == 'deterministic' and args.selection_temperature is not None:
         parser.error('--selection-temperature was given without '
                       '--selection-policy softmax.')
+    if args.mix:
+        if args.mix_ps is None or args.mix_settle_steps is None:
+            parser.error('--mix requires both --mix-ps and --mix-settle-steps '
+                         '(no defaults until the P4 sweep — decisions.md (v)).')
+        try:
+            import openff.toolkit  # noqa: F401
+            import openmm  # noqa: F401
+        except ImportError as exc:
+            parser.error(f'--mix needs OpenMM + OpenFF in this environment '
+                         f'(prep extras): {exc}')
+    elif args.mix_ps is not None or args.mix_settle_steps is not None:
+        parser.error('--mix-ps/--mix-settle-steps were given without --mix.')
 
     ckpt_file = args.output_dir / 'checkpoint.pkl'
     resuming = bool(args.resume and ckpt_file.exists())
@@ -257,6 +297,15 @@ def main() -> None:
 
     langevin_params = LangevinParams(
         temperature_K=args.temperature, friction_per_fs=args.friction_per_fs)
+    mix_config = MixConfig(
+        mix_time_ps=args.mix_ps,
+        settle_steps=args.mix_settle_steps,
+        temperature_K=args.temperature,
+        timestep_fs=args.mix_timestep_fs,
+        friction_per_ps=args.mix_friction_per_ps,
+        platform=args.mix_platform,
+        charge_method=args.mix_charge_method,
+    ) if args.mix else None
     config = PolymerizationConfig(
         timestep_fs=args.timestep_fs,
         biased_steps=args.biased_steps,
@@ -276,6 +325,7 @@ def main() -> None:
         equil_steps=args.equil_steps,
         selection_policy=args.selection_policy,
         selection_temperature=args.selection_temperature,
+        mixing=mix_config,
     )
 
     integrator = LangevinIntegrator(langevin_params)
@@ -317,6 +367,23 @@ def main() -> None:
         _spin = _extra.get('spin')
         if _spin is not None and getattr(calc, 'supports_spin', False):
             calc.set_spin(int(_spin))
+        # Guard the measurement mode across resume: silently switching mixing
+        # on/off (or changing its duration) mid-run would corrupt the well-mixed
+        # measurement without any recorded reason. The checkpoint records the
+        # mixing setup; a mismatch with the current CLI args is a hard error.
+        # (Older checkpoints predate this key: absent => the run had mixing off.)
+        _ckpt_mix = _extra.get('mixing')
+        _now_mix = ({'mix_ps': args.mix_ps,
+                     'mix_settle_steps': args.mix_settle_steps,
+                     'mix_timestep_fs': args.mix_timestep_fs,
+                     'mix_platform': args.mix_platform,
+                     'mix_charge_method': args.mix_charge_method}
+                    if args.mix else None)
+        if _ckpt_mix != _now_mix:
+            parser.error(
+                f'--mix settings differ from the checkpoint being resumed '
+                f'(checkpoint: {_ckpt_mix}, now: {_now_mix}). Resume with the '
+                f'same mixing configuration, or start a fresh run.')
         config = PolymerizationConfig(
             timestep_fs=config.timestep_fs,
             biased_steps=config.biased_steps,
@@ -330,6 +397,7 @@ def main() -> None:
             equil_steps=0,
             selection_policy=config.selection_policy,
             selection_temperature=config.selection_temperature,
+            mixing=config.mixing,
         )
         wf.config = config
 
@@ -344,7 +412,17 @@ def main() -> None:
         n_monomers=n_monomers,
         checkpoint_path=run_checkpoint_path,
         resume=resuming,
-        checkpoint_extra={'spin': getattr(calc, '_spin', None)},
+        checkpoint_extra={
+            'spin': getattr(calc, '_spin', None),
+            # Record the mixing setup so resume can detect a mode switch
+            # (the guard above compares this against the resume-time CLI args).
+            'mixing': ({'mix_ps': args.mix_ps,
+                        'mix_settle_steps': args.mix_settle_steps,
+                        'mix_timestep_fs': args.mix_timestep_fs,
+                        'mix_platform': args.mix_platform,
+                        'mix_charge_method': args.mix_charge_method}
+                       if args.mix else None),
+        },
     )
 
     n_form = len(tracker.confirmed_formations())
@@ -371,6 +449,12 @@ def main() -> None:
         'equil_steps': args.equil_steps,
         'selection_policy': args.selection_policy,
         'selection_temperature': args.selection_temperature,
+        'mixing_enabled': args.mix,
+        'mix_ps': args.mix_ps,
+        'mix_settle_steps': args.mix_settle_steps,
+        'mix_timestep_fs': args.mix_timestep_fs if args.mix else None,
+        'mix_platform': args.mix_platform if args.mix else None,
+        'mix_charge_method': args.mix_charge_method if args.mix else None,
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'propagation_events': n_form,
