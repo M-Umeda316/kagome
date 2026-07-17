@@ -360,6 +360,39 @@ def test_energy_evaluation_is_finite():
 
 
 @requires_openmm
+def test_small_box_cutoff_is_clamped_and_context_builds():
+    """A box smaller than 2× the Sage cutoff must not break Context creation.
+
+    Regression for the WM-P4 orb smoke: a dense/small mixing box (edge < 1.8 nm)
+    previously failed with 'cutoff distance cannot be greater than half the
+    periodic box size'. build_classical_mix now clamps the nonbonded cutoff to
+    fit the box, so the Context builds and evaluates a finite energy.
+    """
+    import openmm
+    from openmm import unit as ommunit
+
+    specs = [(_MONOMER_SMILES, 1)]
+    # box=12.5 Å -> half-box 0.625 nm < Sage's 0.9 nm default cutoff.
+    pos, species, _pmap, topo, cell = _copolymer_system(specs, 1, box=12.5)
+
+    cfg = MixTranslatorConfig(charge_method='gasteiger')
+    mix = build_classical_mix(topo, species, pos, cell, cfg)
+
+    nb = next(f for f in mix.system.getForces()
+              if isinstance(f, openmm.NonbondedForce))
+    cutoff_nm = nb.getCutoffDistance().value_in_unit(ommunit.nanometer)
+    assert cutoff_nm <= 0.49 * (12.5 * 0.1) + 1e-9
+
+    integrator = openmm.VerletIntegrator(1.0 * ommunit.femtosecond)
+    context = openmm.Context(
+        mix.system, integrator, openmm.Platform.getPlatformByName('Reference'),
+    )
+    context.setPositions((mix.positions_A * 0.1) * ommunit.nanometer)
+    energy = context.getState(getEnergy=True).getPotentialEnergy()
+    assert np.isfinite(energy.value_in_unit(ommunit.kilojoule_per_mole))
+
+
+@requires_openmm
 def test_element_verification_catches_reordering():
     """_verify_topology_elements: matching order passes, a species mismatch
     raises (D-4-style guard against silent atom scrambling; finding 8)."""
