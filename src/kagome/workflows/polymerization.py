@@ -30,6 +30,7 @@ from kagome.reactive.topology import (
 )
 from kagome.reactive.selection import (
     Candidate,
+    SelectionDecision,
     audited_selection,
     find_candidates,
     score_candidates,
@@ -218,6 +219,13 @@ class PolymerizationConfig:
     minimize_fmax: float = 1.0
     minimize_max_steps: int = 500
     equil_steps: int = 0
+    # WM-P5a (specs/decisions.md "2026-07-17: well-mixed 測定モード" item (iv)):
+    # optional stochastic candidate-selection policy for the biased-phase
+    # partner draw. 'deterministic' (default) is the paper-faithful
+    # best-score-first greedy and is bit-identical to the pre-WM-P5a behaviour.
+    # 'softmax' requires selection_temperature; see kagome.reactive.selection.
+    selection_policy: str = 'deterministic'
+    selection_temperature: float | None = None
 
 
 def masses_from_species(species: list[str]) -> NDArray[np.floating]:
@@ -1026,10 +1034,24 @@ class PolymerizationWorkflow:
             self._log_starvation_diag(cycle, state.positions, state.cell,
                                       len(candidates))
         if self._selection_log is not None:
-            selected, decisions = audited_selection(scored)
-            self._write_selection_audit(cycle, decisions)
+            selected, decisions = audited_selection(
+                scored,
+                policy=self.config.selection_policy,
+                softmax_temperature=self.config.selection_temperature,
+                rng=rng,
+            )
+            self._write_selection_audit(
+                cycle, decisions,
+                policy=self.config.selection_policy,
+                softmax_temperature=self.config.selection_temperature,
+            )
         else:
-            selected = select_non_overlapping(scored)
+            selected = select_non_overlapping(
+                scored,
+                policy=self.config.selection_policy,
+                softmax_temperature=self.config.selection_temperature,
+                rng=rng,
+            )
 
         pre_valence = set(id(c) for c in selected)
         selected = self._valence_filter(selected, state, cycle)
@@ -1315,28 +1337,37 @@ class PolymerizationWorkflow:
 
     def _write_selection_audit(
         self, cycle: int, decisions: list, phase: str = 'production',
+        policy: str = 'deterministic', softmax_temperature: float | None = None,
     ) -> None:
         """Append one JSON line recording the cycle's candidate ranking and the
         non-overlap selection/rejection decisions (RF18).
 
         ``phase`` distinguishes the activation selection (S1) from the production
-        cycles. It is only emitted when non-default so existing production records
-        stay byte-identical; readers treat a missing ``phase`` as 'production'.
+        cycles. ``policy``/``softmax_temperature`` record the WM-P5a
+        candidate-selection policy. All four are only emitted when non-default
+        so existing production/deterministic records stay byte-identical;
+        readers treat a missing field as its default ('production',
+        'deterministic', None).
         """
         if self._selection_log is None:
             return
         selected = [d for d in decisions if d.selected]
         rejected = [d for d in decisions if not d.selected]
         shown = rejected[:self._MAX_REJECTED_LOGGED]
+
+        def _selected_item(d: SelectionDecision) -> dict:
+            item = {'atoms': list(d.atom_indices), 'score': d.score}
+            if d.pool_size is not None:
+                item['pool_size'] = d.pool_size
+            return item
+
         record = {
             'cycle': cycle,
             'n_candidates': len(decisions),
             'n_selected': len(selected),
             'n_rejected': len(rejected),
             'rejected_truncated': len(rejected) - len(shown),
-            'selected': [
-                {'atoms': list(d.atom_indices), 'score': d.score} for d in selected
-            ],
+            'selected': [_selected_item(d) for d in selected],
             'rejected': [
                 {'atoms': list(d.atom_indices), 'score': d.score, 'reason': d.reason}
                 for d in shown
@@ -1344,6 +1375,10 @@ class PolymerizationWorkflow:
         }
         if phase != 'production':
             record['phase'] = phase
+        if policy != 'deterministic':
+            record['policy'] = policy
+            if softmax_temperature is not None:
+                record['softmax_temperature'] = softmax_temperature
         with open(self._selection_log, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record) + '\n')
         if record['rejected_truncated']:
