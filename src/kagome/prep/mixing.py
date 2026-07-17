@@ -41,6 +41,7 @@ imports cleanly in ML-only environments.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -50,6 +51,8 @@ from kagome.analysis.carothers import monomer_sets_from_bonds
 from kagome.prep.charges import CHARGE_METHODS, assign_charges
 from kagome.reactive.topology import BondTopology
 from kagome.units import NM_PER_ANGSTROM
+
+logger = logging.getLogger(__name__)
 
 # Neutral (uncharged, closed-shell) valence per element: the summed bond order a
 # saturated atom carries. A heavy atom whose summed order falls below this is an
@@ -425,6 +428,41 @@ def _reference_h_vdw(cfg: MixTranslatorConfig) -> tuple[float, float]:
     return vdw
 
 
+def _clamp_nonbonded_cutoff(system, box_nm) -> None:
+    """Shrink the nonbonded cutoff so it never exceeds half the periodic box.
+
+    Sage's default cutoff is 0.9 nm; a reactive run's box can be smaller than
+    1.8 nm (dense / small systems), and OpenMM refuses to create a Context when
+    the cutoff exceeds half the box edge ('cutoff distance cannot be greater
+    than half the periodic box size'). The mixing translator, unlike the prep
+    stage, has no control over the caller's box, so clamp the cutoff (and keep
+    the switching distance just inside it) to the box actually handed in. A
+    no-op for the usual case where the box is comfortably larger than 2×cutoff.
+    """
+    import openmm
+    from openmm import unit as ommunit
+
+    min_edge_nm = float(np.min(np.diag(np.asarray(box_nm, dtype=np.float64))))
+    # Safety margin below the hard half-box limit (OpenMM uses the in-plane
+    # box size for triclinic; our boxes are cubic, so 0.49 is a clean guard).
+    max_cutoff_nm = 0.49 * min_edge_nm
+    for force in system.getForces():
+        if not isinstance(force, openmm.NonbondedForce):
+            continue
+        cutoff_nm = force.getCutoffDistance().value_in_unit(ommunit.nanometer)
+        if cutoff_nm <= max_cutoff_nm:
+            continue
+        force.setCutoffDistance(max_cutoff_nm * ommunit.nanometer)
+        if force.getUseSwitchingFunction():
+            # Keep the switch a little inside the new cutoff (mirror Sage's
+            # ~0.1 nm switch width, but never let it go non-positive).
+            switch_nm = max(max_cutoff_nm - 0.1, 0.5 * max_cutoff_nm)
+            force.setSwitchingDistance(switch_nm * ommunit.nanometer)
+        logger.warning(
+            'Mixing box edge %.2f nm is small; clamped nonbonded cutoff '
+            '%.3f -> %.3f nm to satisfy the half-box limit.',
+            min_edge_nm, cutoff_nm, max_cutoff_nm,
+        )
 
 
 # ── public entry point ───────────────────────────────────────────────────────
@@ -581,6 +619,7 @@ def build_classical_mix(
         openmm.Vec3(*box_nm[1]) * ommunit.nanometer,
         openmm.Vec3(*box_nm[2]) * ommunit.nanometer,
     )
+    _clamp_nonbonded_cutoff(system, box_nm)
 
     positions_out = (
         np.asarray(positions_list, dtype=np.float64)
