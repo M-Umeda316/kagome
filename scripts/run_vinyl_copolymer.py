@@ -42,6 +42,7 @@ from scripts._systems import (
     _MONOMER_SMILES,
     box_from_density,
     build_vinyl_copolymer_system,
+    copolymer_initial_bonds,
 )
 from kagome.backends.base import Calculator
 from kagome.boost.tdbb import TDBBParams
@@ -273,10 +274,15 @@ def main() -> None:
         cell=cell, masses=masses,
     )
 
-    # Trajectory bond-topology output is skipped for the copolymer layout: the
-    # single-stride helpers (vinyl_initial_bonds) assume one monomer species and
-    # would misalign with the heterogeneous layout. Viewers fall back to distance
-    # inference; conversion / reaction events are unaffected (decisions.md 2026-07-16).
+    # Trajectory bond-topology tracking: copolymer_initial_bonds builds the full
+    # initial bond list with the SAME running-offset convention as the builder
+    # (initiators first, then each monomer_specs entry in placement order), so
+    # topology.jsonl is now emitted for the heterogeneous copolymer layout too
+    # (specs/decisions.md 2026-07-17 "well-mixed 測定モード" 前提工事; previously
+    # skipped here — 2026-07-16 known limitation). Retroactive reconstruction
+    # (scripts/reconstruct_topology.py) is unrelated and remains single-monomer-
+    # only; it is not needed for new runs since tracking is on from the start.
+    initial_bonds = copolymer_initial_bonds(monomer_specs, args.n_initiators)
     wf = PolymerizationWorkflow(
         config, calc, template, groups,
         integrator=integrator,
@@ -285,7 +291,7 @@ def main() -> None:
         propagation_map=propagation_map,
         propagation_target_group='radical_C',
         chain_c_map=chain_c_map,
-        initial_bonds=None,
+        initial_bonds=initial_bonds,
     )
 
     if resuming:

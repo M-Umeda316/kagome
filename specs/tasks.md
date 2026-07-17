@@ -98,3 +98,10 @@ Remaining scope S1-S6 (single-chain propagation -> melt sampling -> multi-radica
 - [x] S4: AIBN activation + chain polymerization — DONE. V^d bias C-N homolysis (f2=0.3, f1_max=250), activation_dissociations=2, confirmed_formations=1. See figure-comparison.md / decisions.md.
 - [~] S5: figures — partially done. Energy, conversion, temperature plots generated for S2-S4. Depth-resolved density (界面/硬化系用) と Carothers DPn (ステップ成長用) は vinyl 系では非適用。
 - [ ] S6: hardware for full 200+10 (>=24 GB GPU) or stay at 100+5. See specs/s6-environment-setup.md.
+
+## Well-mixed 測定モード (decisions.md 2026-07-17)
+- [ ] WM-P1: copolymer_initial_bonds — 共重合トポロジー有効化 + テスト(混合と独立に価値)
+- [ ] WM-P2: グラフ→OpenFF/OpenMM トランスレータ (prep/mixing.py、キャップH、成分キャッシュ) + テスト
+- [ ] WM-P3: _run_mixing_phase 統合 (MixConfig、速度再抽選、mix_settle、CLI、図フィルタ)
+- [ ] WM-P4: 検証キャンペーン 20+20×20cyc、4腕 (baseline/混合/確率選択/両方) + 混合時間 sweep → 既定値を decisions.md に記録
+- [ ] WM-P5: 確率的候補選択 (別PR、ソフトマックス選択) / 多シード生産測定 / HT重み付け解析
