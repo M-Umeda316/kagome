@@ -1635,3 +1635,22 @@ Use this template for each decision.
 - Scientific risk: 中。古典 PES と MLIP PES の局所構造差がハンドバック後の候補分布に残る可能性(整定セグメントで部分吸収、指標(vi)で監視)。NAGL/OpenFF が扱えない成分(想定外の価数等)は Gasteiger フォールバック+警告ログ。
 - Licensing/commercial impact: 新規依存なし(OpenMM MIT/LGPL、openff-toolkit/interchange/nagl MIT、Sage・NAGL weights CC-BY-4.0 帰属要 — matrix 記載済み・検証済み 2026-06-14)。
 - Follow-up(実装フェーズ): P1 共重合トポロジー有効化 → P2 グラフ→古典系トランスレータ(src/kagome/prep/mixing.py、成分キャッシュ)→ P3 ワークフロー統合(MixConfig、phase='mixing'/'mix_settle')→ P4 検証キャンペーン(4腕+sweep、既定値決定)→ P5 多シード生産測定+条件付き確率・選択確率補正(Horvitz-Thompson)解析。
+
+### 追補 2026-07-17: WM-P2 トランスレータの実装仕様(論文外の実装決定)
+`src/kagome/prep/mixing.py` 実装で確定した、上記(iii)を具体化する実装決定。いずれも古典混合ステージ内部のみに影響し、TDBB/反応選択/MLIP PES・論文再現ランには不変(混合モードは明示フラグでのみ有効)。
+- (a) **成長末端(ラジカル)検出は配位数でなく結合次数の不足で判定**: 各重原子について `deficit = round(neutral_valence[el] - Σ(bond_order))`(neutral_valence C=4/N=3/O=2/H=1/F=1/S=2/Cl=1)。deficit>0 ならラジカル中心。配位数3でも C=O カルボニル炭素や sp2 炭素は次数和4で deficit=0 となり誤ってキャップされない(decisions.md(iii)「配位3の炭素」を次数ベースに精密化)。BondTopology の bond order を唯一の権威とする。
+- (b) **キャップ H は deficit 個・結合次数1で注入**(通常の成長末端 C は1個)。古典世界のみに存在し書き戻しで破棄。H は決してキャップしない(H+H=H2 を避けるため)。キャップ H の初期座標は親ラジカルから 1.09 Å(汎用 C–H)を既存隣接の反対方向に置く近似(P3 の古典最小化で緩和)。
+- (c) **placeholder H(脱離した開始剤 H、グラフから孤立=配位0の H)は OpenFF に渡せない**: 素の `[H]` は `RadicalsNotSupportedError` で拒否される(WSL 実測)。よって古典系(OpenMM System)に**末尾追加する非結合項のみ・電荷0・質量1.008 の粒子**として実現し(decisions.md(iii)「非結合項のみの中性粒子」の具体化)、書き戻しで元 index へそのまま戻す。LJ サイズは**ハードコードせず Sage 自身(メタンの H)から導出**して FF に追従(engineering 定数の無根拠導入を回避)。
+- (d) **原子順序の不変条件を差し替え**: 鎖成長後は1分子が非連続なグローバル index にまたがる(初期の連続レイアウト前提が崩れる)ため、prep の「連続レイアウトで順序一致」不変条件は使えず、明示的な `omm_to_mlip`/`mlip_to_omm` 写像を保持して書き戻す。判定指標(vi)の結合グラフ往復保存は「トランスレータはグラフを不変入力として扱い、座標のみ往復。全 MLIP 原子が一意に写像され write_back で原座標を完全再現」で担保(unit テスト test_write_back_roundtrip_preserves_positions_and_graph)。
+- (e) **成分キャッシュのキー = キャップ後フラグメントの RDKit 標準 SMILES**(`Chem.MolToSmiles`)。値は電荷付与済み OpenFF Molecule テンプレート。interchange が同型コピーへ電荷をグラフ同型で写像するため、インスタンスごとの原子順序差は無害。キャッシュは per-cycle の支配的コスト(NAGL 電荷推論)を同型フラグメント単位で1回に削減(自由モノマー多数でも1回)。valence(bond/angle/torsion)の SMIRKS ラベリングは現状 call ごと(P3 で拡張余地)。
+- 電荷: 既存 prep と同一(NAGL 既定、失敗時 Gasteiger フォールバック+警告)。テストは Gasteiger(オフライン・決定的)で電荷手法非依存に。
+- スコープ: P2 はトランスレータ+テストのみ。公開 API(`build_classical_mix`/`ClassicalMix`/`FragmentParamCache`/`MixTranslatorConfig`、型ヒント必須、MD 不要でテスト可能)を P3 統合の seam として設計。
+- レビュー反映(同日、マルチエージェント・コードレビュー high の指摘 10 件):
+  - **combine_nonbonded_forces=False は非対応として即時 ValueError**(config 構築時に検証): placeholder H を結合済み NonbondedForce にのみ追加する設計のため、vdW 分離構成では粒子数不整合で Context 生成が壊れる。フィールドは制約の文書化と将来拡張の予約として残す。
+  - **複数キャップの決定的幾何**: deficit≥2 の中心(カルベン様/全結合喪失原子)ではキャップ H を空価数軸から 54.7356°(四面体半角)傾け方位角 2π/count で分散(rng 不要の純幾何)。一点重なり(H-C-H 角 0 → NaN 角度力)を排除。
+  - **キャッシュキー拡張**: `charge_method|nagl_model|forcefield|標準SMILES`(`fragment_cache_key`)。異設定間のテンプレート汚染を構造的に排除。キャッシュ値は `(テンプレート, 実際に使われた手法)` 対とし、NAGL→Gasteiger フォールバック時は metadata に実手法(`charge_method`=実際/'mixed'、`charge_method_requested`、`charge_methods_used`、`nagl_fallback`)を正直に記録。
+  - **未知元素ガード**: NEUTRAL_VALENCE 外の元素が価数不足(RDKit 既定価数比)の場合は黙殺せず ValueError(RDKit 既定価数が未定義の元素も拒否)。飽和した未知元素は通過。加えて RDKit 原子は全て SetNoImplicit(True)(暗黙 H の湧きによる写像ずれを根絶)+ from_rdkit 後の原子数一致検証。
+  - **元素検証(D-4 相当)**: 組み上げた OpenFF トポロジーの全粒子について元素 = species[omm_to_mlip[k]](キャップは 'H')を全数検証、不一致は ValueError。placeholder H も追加前に species=='H' を検証。
+  - **write_back 入力検証**: 非有限座標(MD 発散 NaN)は写像前に検出し「入力が非有限(混合ランの発散)」として別メッセージで報告(写像バグと誤診しない)。
+  - **最小化必須の契約**: positions_A は初期推定(キャップ H は理想方向、placeholder H は旧親と LJ 激突位置 ~1 Å)。P3 は動力学前に必ず古典最小化を実行 — `metadata['requires_minimization']=True` と ClassicalMix docstring に明記。座標の事前ずらしは行わない(エネルギー有限をテストで確認済み、最小化が標準手順であり、ずらしは PBC 越しの新たな重なりリスクを生むだけ)。
+  - **共通化**: NAGL→Gasteiger 電荷付与を `kagome/prep/charges.py` に一本化し openmm_equilibrate と mixing の二重実装・挙動差(import 検査、Gasteiger 実装差)を解消。成分分解は carothers の既存 component finder を self-edge 規約(network.py 前例)で再利用し union-find 再実装を削除。
