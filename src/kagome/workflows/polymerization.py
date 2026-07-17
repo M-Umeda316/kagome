@@ -36,7 +36,9 @@ from kagome.reactive.selection import (
     score_candidates,
     select_non_overlapping,
 )
-from kagome.integrators.init_velocities import instant_temperature_K
+from kagome.integrators.init_velocities import (
+    instant_temperature_K, maxwell_boltzmann_velocities,
+)
 from kagome.analysis.conversion import monomer_site_count
 from kagome.workflows.manifest import RunManifest, _normalize_value
 
@@ -201,6 +203,45 @@ class CycleLog:
 
 
 @dataclass
+class MixConfig:
+    """WM-P3 classical mixing stage (specs/decisions.md 2026-07-17 (i), 追補
+    2026-07-18).
+
+    ``mix_time_ps`` / ``settle_steps`` / ``temperature_K`` carry NO defaults:
+    the mixing duration and MLIP settle length must be chosen explicitly until
+    the P4 sweep establishes measured defaults (decisions.md (v)); the
+    temperature must match the production thermostat setpoint. The remaining
+    defaults mirror the classical prep precedent (``ClassicalPrepConfig``).
+    """
+
+    mix_time_ps: float                  # classical NVT mixing duration
+    settle_steps: int                   # MLIP settle segment after write-back
+    temperature_K: float                # thermostat + MB re-draw target
+    timestep_fs: float = 0.5
+    friction_per_ps: float = 1.0
+    platform: str = 'CPU'               # OpenMM platform for the mixing MD
+    charge_method: str = 'nagl'         # 'nagl' | 'gasteiger'
+    forcefield: str = 'openff-2.2.0.offxml'
+    nagl_model: str = 'openff-gnn-am1bcc-0.1.0-rc.3.pt'
+
+    def __post_init__(self) -> None:
+        if self.mix_time_ps <= 0:
+            raise ValueError(
+                f'mix_time_ps must be positive; got {self.mix_time_ps}')
+        if self.settle_steps < 0:
+            raise ValueError(
+                f'settle_steps must be >= 0; got {self.settle_steps}')
+        if self.temperature_K <= 0:
+            raise ValueError(
+                f'temperature_K must be positive; got {self.temperature_K}')
+
+    @property
+    def n_mix_steps(self) -> int:
+        """Classical MD steps for one mixing segment (>= 1)."""
+        return max(1, round(self.mix_time_ps * 1000.0 / self.timestep_fs))
+
+
+@dataclass
 class PolymerizationConfig:
     """重合ワークフローの全パラメータ。
 
@@ -226,6 +267,11 @@ class PolymerizationConfig:
     # 'softmax' requires selection_temperature; see kagome.reactive.selection.
     selection_policy: str = 'deterministic'
     selection_temperature: float | None = None
+    # WM-P3 (specs/decisions.md "2026-07-17: well-mixed 測定モード" item (i),
+    # 追補 2026-07-18): optional per-cycle classical mixing stage. None (default)
+    # = off — the paper-faithful loop is unchanged. Requires bond-topology
+    # tracking (initial_bonds) and a periodic cell.
+    mixing: MixConfig | None = None
 
 
 def masses_from_species(species: list[str]) -> NDArray[np.floating]:
@@ -540,6 +586,12 @@ class PolymerizationWorkflow:
         self._topo_processed_dissociations = 0
         self._topology_log: Path | None = None
 
+        # WM-P3 mixing stage: per-cycle audit log (mixing.jsonl) and the
+        # workflow-lifetime fragment-template cache (NAGL cost once per
+        # isomorphic fragment; rebuilt on resume — not checkpointed).
+        self._mixing_log: Path | None = None
+        self._mix_cache = None  # kagome.prep.mixing.FragmentParamCache (lazy)
+
         if updater is not None:
             self._updater = updater
         elif propagation_map:
@@ -575,6 +627,22 @@ class PolymerizationWorkflow:
         サイクルの次から継続する（trajectory/selection は追記）。checkpoint_extra
         は checkpoint に保存する追加情報（例: production spin）。
         """
+        if self.config.mixing is not None:
+            # Fail fast, not at the end of the first cycle: mixing translates
+            # the live bond graph into a periodic classical system, so both
+            # are hard requirements (specs/decisions.md 2026-07-17 (i)).
+            if self._topology is None:
+                raise ValueError(
+                    'config.mixing requires bond-topology tracking — construct '
+                    'the workflow with initial_bonds.')
+            if state.cell is None:
+                raise ValueError(
+                    'config.mixing requires a periodic cell (state.cell).')
+            if state.masses is None:
+                raise ValueError(
+                    'config.mixing requires state.masses (the post-mixing '
+                    'Maxwell-Boltzmann velocity re-draw needs them).')
+
         if n_monomers is not None:
             n_reactive_sites = n_monomers
         else:
@@ -697,6 +765,14 @@ class PolymerizationWorkflow:
                     self._topology_log.write_text('', encoding='utf-8')
                     self._write_topology_snapshot(state, cycle=-1)  # initial
 
+            # WM-P3 mixing audit: one JSON line per mixing segment (classical
+            # diagnostics stay out of trajectory.jsonl — decisions.md 追補
+            # 2026-07-18 (h)).
+            if self.config.mixing is not None:
+                self._mixing_log = output_dir / 'mixing.jsonl'
+                if not resuming:
+                    self._mixing_log.write_text('', encoding='utf-8')
+
             if resuming and _ckpt is not None:
                 ckpt_step = int(_ckpt['step'])
                 _truncate_jsonl_after(
@@ -709,6 +785,12 @@ class PolymerizationWorkflow:
                     field='cycle')
                 if self._topology_log is not None:
                     _truncate_jsonl_after(self._topology_log, ckpt_step)
+                if self._mixing_log is not None:
+                    # mixing.jsonl records carry 'cycle' (no step), like
+                    # selection.jsonl: drop mid-crash duplicates.
+                    _truncate_jsonl_after(
+                        self._mixing_log, int(_ckpt['next_cycle']) - 1,
+                        field='cycle')
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
@@ -769,6 +851,15 @@ class PolymerizationWorkflow:
                 logger.info('Cycle %d unbiased: %d steps', cycle, log_unbiased.steps)
 
                 self._update_groups_after_cycle(state, cycle)
+
+                # WM-P3: classical mixing AFTER the topology update (the mixing
+                # system must include bonds formed this cycle) and BEFORE the
+                # checkpoint (so resume restarts from post-mixing state).
+                if self.config.mixing is not None:
+                    for log_mix in self._run_mixing_phase(state, cycle, rng, writer):
+                        self.logs.append(log_mix)
+                        logger.info('Cycle %d %s: %d steps',
+                                    cycle, log_mix.phase, log_mix.steps)
 
                 if checkpoint_path is not None:
                     # Save AFTER the group update so resume starts cleanly at the
@@ -928,13 +1019,30 @@ class PolymerizationWorkflow:
         MD were then carried out".  No bias and no bond tracking; frames are
         labelled phase='equilibration', cycle=-1.
         """
+        self._run_plain_md(
+            state, self.config.equil_steps, rng, writer,
+            phase='equilibration', cycle=-1,
+        )
+        logger.info('Equilibration: %d steps complete', self.config.equil_steps)
+
+    def _run_plain_md(
+        self,
+        state: SimulationState,
+        n_steps: int,
+        rng: np.random.Generator,
+        writer: TrajectoryWriter | None,
+        *,
+        phase: str,
+        cycle: int,
+    ) -> None:
+        """Bias-free MLIP MD segment (shared by equilibration and mix_settle)."""
         dt = self.config.timestep_fs
         energy, forces = self.calculator.compute(
             state.positions, state.species, state.cell,
         )
         current_forces = forces
 
-        for step_in_phase in range(self.config.equil_steps):
+        for step_in_phase in range(n_steps):
             energy, _, current_forces, _ = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
             )
@@ -943,8 +1051,8 @@ class PolymerizationWorkflow:
                 writer.write_frame(TrajectoryFrame(
                     step=state.step,
                     time_fs=state.step * dt,
-                    phase='equilibration',
-                    cycle=-1,
+                    phase=phase,
+                    cycle=cycle,
                     energy_base=energy,
                     energy_bias=0.0,
                     energy_total=energy,
@@ -953,7 +1061,107 @@ class PolymerizationWorkflow:
                     cell=None if state.cell is None else state.cell.tolist(),
                 ))
 
-        logger.info('Equilibration: %d steps complete', self.config.equil_steps)
+    def _run_mixing_phase(
+        self,
+        state: SimulationState,
+        cycle: int,
+        rng: np.random.Generator,
+        writer: TrajectoryWriter | None,
+    ) -> list[CycleLog]:
+        """WM-P3 classical mixing stage (specs/decisions.md 2026-07-17 (i), 追補
+        2026-07-18).
+
+        Translate the live bond graph into an OpenFF/OpenMM system (WM-P2
+        translator), minimize + Langevin-NVT-mix it for ``mix_time_ps``, write
+        the diffused coordinates back onto the MLIP order, re-draw
+        Maxwell-Boltzmann velocities from the workflow rng, then run a short
+        MLIP ``mix_settle`` segment to absorb the classical<->MLIP PES
+        transient. Classical diagnostics go to mixing.jsonl; only the MLIP
+        settle frames enter trajectory.jsonl.
+        """
+        from kagome.prep.mix_md import MixMDConfig, run_mix_md
+        from kagome.prep.mixing import (
+            FragmentParamCache, MixTranslatorConfig, build_classical_mix,
+        )
+
+        mcfg = self.config.mixing
+        if self._mix_cache is None:
+            self._mix_cache = FragmentParamCache()
+
+        mix = build_classical_mix(
+            self._topology, state.species, state.positions, state.cell,
+            cfg=MixTranslatorConfig(
+                charge_method=mcfg.charge_method,
+                forcefield=mcfg.forcefield,
+                nagl_model=mcfg.nagl_model,
+            ),
+            cache=self._mix_cache,
+        )
+
+        # Both OpenMM seeds derive from the workflow rng so the mixing stage is
+        # reproducible from the run's single seed (decisions.md 追補 2026-07-18
+        # (i)). Bit-exactness additionally requires a deterministic OpenMM
+        # platform (Reference, or single-threaded) — CPU/CUDA reduce forces in a
+        # thread-order-dependent way. Draw from [1, 2**31-1): OpenMM's
+        # setRandomNumberSeed(0) means "pick a fresh random seed", which would
+        # silently break determinism ~1-in-2e9 draws.
+        mix_seed = int(rng.integers(1, 2 ** 31 - 1))
+        result = run_mix_md(
+            mix,
+            MixMDConfig(
+                temperature_K=mcfg.temperature_K,
+                n_steps=mcfg.n_mix_steps,
+                timestep_fs=mcfg.timestep_fs,
+                friction_per_ps=mcfg.friction_per_ps,
+                platform=mcfg.platform,
+            ),
+            seed=mix_seed,
+        )
+
+        new_positions = mix.write_back(result.positions_A)
+        # Diffusion metric (vi): OpenMM does not wrap coordinates, so the
+        # direct displacement is the unwrapped travel distance (追補 (j)).
+        rms_disp_A = float(np.sqrt(np.mean(
+            np.sum((new_positions - state.positions) ** 2, axis=1))))
+        state.positions = new_positions
+        state.velocities = maxwell_boltzmann_velocities(
+            state.masses, mcfg.temperature_K, rng)
+
+        if self._mixing_log is not None:
+            record = {
+                'cycle': cycle,
+                'mix_time_ps': mcfg.mix_time_ps,
+                'n_steps_classical': result.n_steps,
+                'seed': mix_seed,
+                'rms_displacement_A': rms_disp_A,
+                'minimized_energy_kj_mol': result.minimized_energy_kj_mol,
+                'final_energy_kj_mol': result.final_energy_kj_mol,
+                'charge_method': mix.metadata.get('charge_method'),
+                'nagl_fallback': mix.metadata.get('nagl_fallback'),
+                'n_cap_h': mix.metadata.get('n_cap_h'),
+                'n_placeholder_h': mix.metadata.get('n_placeholder_h'),
+                'cache_hits': mix.metadata.get('cache_hits'),
+                'cache_misses': mix.metadata.get('cache_misses'),
+            }
+            with open(self._mixing_log, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record) + '\n')
+        logger.info(
+            'Cycle %d mixing: %.1f ps classical (%d steps), rms disp %.2f A, '
+            'cap H %s, cache %s/%s',
+            cycle, mcfg.mix_time_ps, result.n_steps, rms_disp_A,
+            mix.metadata.get('n_cap_h'),
+            mix.metadata.get('cache_hits'), mix.metadata.get('cache_misses'),
+        )
+
+        logs = [CycleLog(cycle=cycle, phase='mixing', steps=result.n_steps)]
+        if mcfg.settle_steps > 0:
+            self._run_plain_md(
+                state, mcfg.settle_steps, rng, writer,
+                phase='mix_settle', cycle=cycle,
+            )
+            logs.append(CycleLog(
+                cycle=cycle, phase='mix_settle', steps=mcfg.settle_steps))
+        return logs
 
     def _log_starvation_diag(self, cycle, positions, cell, n_qualified) -> None:
         """Decompose the formation criterion on the LIVE groups (authoritative).

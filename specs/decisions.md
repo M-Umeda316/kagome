@@ -1654,3 +1654,19 @@ Use this template for each decision.
   - **write_back 入力検証**: 非有限座標(MD 発散 NaN)は写像前に検出し「入力が非有限(混合ランの発散)」として別メッセージで報告(写像バグと誤診しない)。
   - **最小化必須の契約**: positions_A は初期推定(キャップ H は理想方向、placeholder H は旧親と LJ 激突位置 ~1 Å)。P3 は動力学前に必ず古典最小化を実行 — `metadata['requires_minimization']=True` と ClassicalMix docstring に明記。座標の事前ずらしは行わない(エネルギー有限をテストで確認済み、最小化が標準手順であり、ずらしは PBC 越しの新たな重なりリスクを生むだけ)。
   - **共通化**: NAGL→Gasteiger 電荷付与を `kagome/prep/charges.py` に一本化し openmm_equilibrate と mixing の二重実装・挙動差(import 検査、Gasteiger 実装差)を解消。成分分解は carothers の既存 component finder を self-edge 規約(network.py 前例)で再利用し union-find 再実装を削除。
+
+### 追補 2026-07-18: WM-P3 ワークフロー統合の実装仕様(論文外の実装決定)
+`_run_mixing_phase` 統合で確定した実装決定。混合モードは明示フラグ(`--mix`)でのみ有効であり、TDBB 方程式・反応選択・論文再現ランには不変。
+- (f) **挿入位置**: 各サイクルの `_update_groups_after_cycle` 直後・`save_checkpoint` 直前(decisions.md (i) の「トポロジー更新後・checkpoint 前」を実装)。checkpoint は混合後の positions/velocities/rng_state を保存するため、resume 意味論は追加フィールドなしで正しい(CHECKPOINT_VERSION 据え置き)。
+- (g) **混合時間・整定ステップ数に既定値なし**: `MixConfig.mix_time_ps` / `settle_steps` は必須引数(CLI では `--mix` 指定時に `--mix-ps` / `--mix-settle-steps` を要求)。無根拠デフォルト禁止則(v)の適用 — 既定値は P4 の sweep で測ってから導入する。timestep 0.5 fs / friction 1.0 /ps / platform CPU / Sage 2.2 + NAGL は既存 `ClassicalPrepConfig` の前例を踏襲(新規定数の導入なし)。
+- (h) **古典フレームは trajectory.jsonl に書かない**: trajectory.jsonl は MLIP PES の単位系・エネルギースケールで一貫させる。古典混合の診断(段階エネルギー、rms 変位、キャッシュ統計、実電荷手法、シード)は `mixing.jsonl` に per-cycle 1 行で記録(auditability 規則)。`mix_settle`(MLIP)フレームのみ trajectory.jsonl に phase='mix_settle' で記録。MLIP step カウンタは古典 MD では進めない(mix_settle でのみ進む)→ resume 時の step ベース truncation と整合。
+- (i) **決定性**: OpenMM 積分器と MB シードは workflow rng から `rng.integers(2**31-1)` で導出。書き戻し後の MLIP 速度は `maxwell_boltzmann_velocities(masses, T, rng)` で再抽選(decisions.md (i))。同一プラットフォーム・同一スレッド条件下でビット再現(CPU platform はスレッド数依存の丸め差があり得るため、決定性テストは Reference platform で行う)。
+- (j) **混合 MSD 指標は非イメージング rms 変位**: OpenMM の getPositions は座標を wrap しないため、書き戻し前後の直接差の rms(Å)を拡散指標として mixing.jsonl に記録(判定指標 (vi) の「混合中モノマー MSD」の実装。全 MLIP 原子対象 — モノマー限定はP4解析側で topology.jsonl から分離可能)。
+- (k) **図フィルタ**: reproduce_figures の energy プロットは unbiased マスクを「biased 以外」から「biased 以外かつ mixing/mix_settle 以外」に修正(古典スケール混入と整定過渡の混入を防止)。既存ラン(mixing 無し)の図はビット不変。temperature プロットは MLIP 運動温度のみが対象になるため無修正。
+- (l) **古典 MD カーネルは `prep/mix_md.py` に分離**(数値カーネルとオーケストレーションの分離規則): `run_mix_md(mix, cfg, seed)` は build 済み `ClassicalMix` を受け、LangevinMiddleIntegrator NVT を最小化(requires_minimization 契約の履行)→ MB 初期化 → チャンク実行+非有限エネルギー早期検出(equilibrate と同パターン)で実行し、最終座標(OpenMM 順・Å)とエネルギー系列を返す。ワークフロー側は OpenMM を import しない(遅延 import、OpenMM 無し環境でも import 可能)。
+- (m) **FragmentParamCache はワークフロー寿命で永続**(サイクル横断で NAGL 費用を同型フラグメント1回に)、checkpoint には保存しない(性能最適化であり resume 時は再構築)。
+- レビュー反映(2026-07-18、マルチエージェント high レビュー実質5件):
+  - **混合シードは 0 を除外して抽選**(`rng.integers(1, 2**31-1)`): OpenMM `setRandomNumberSeed(0)` は「毎回新規シード」を意味し、~1/2e9 の確率で決定性が黙って崩れる。決定性のビット再現には加えて OpenMM プラットフォームが決定的(Reference か単一スレッド)である必要があり CPU/CUDA は力の縮約順がスレッド依存 — この caveat を workflow コメントに明記(既定 CPU は性能優先で維持、determinism テストは Reference)。
+  - **resume 時の測定モード切替ガード**: checkpoint extra に mixing 設定(mix_ps/settle/timestep/platform/charge_method)を記録し、resume 時の CLI 引数と不一致なら hard error。--mix の付け忘れ等でサイクル途中から paper-faithful ループに黙って切り替わり測定を汚染するのを防止(古い checkpoint は mixing キー無し=混合オフ扱い)。
+  - **base_energy 図も mix_settle フレーム除外**: energy scatter だけでなく `plot_energy_vs_step` 第2図(base energy)も unbiased_mask を適用し、サイクル境界の整定過渡スパイクを排除。
+  - 見送り: 古典 NVT チャンクループの openmm_equilibrate との共通化(cleanup)は prep テスト済みコードの改変リスクを避け WM-P3 スコープ外(将来のリファクタ課題)。

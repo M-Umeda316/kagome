@@ -62,7 +62,11 @@ def plot_energy_vs_step(
     phases = [f.phase for f in frames]
 
     biased_mask = np.array([p == 'biased' for p in phases])
-    unbiased_mask = ~biased_mask
+    # WM-P3 (decisions.md 追補 2026-07-18 (k)): keep the mixing-mode settle
+    # transient (and any classical-stage frames) out of the "unbiased" series.
+    # Runs without mixing carry neither phase, so their figures are unchanged.
+    unbiased_mask = ~biased_mask & np.array(
+        [p not in ('mixing', 'mix_settle') for p in phases])
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,8 +94,13 @@ def plot_energy_vs_step(
     plt.close(fig)
     print(f'Saved energy_vs_step.png/.pdf to {output_dir}')
 
+    # WM-P3 (decisions.md 追補 2026-07-18 (k)): the base-energy series is the
+    # MLIP unbiased potential; exclude the classical->MLIP settle transient so
+    # it does not show a spurious spike at each cycle boundary. Unchanged for
+    # runs without mixing (no such frames).
     fig2, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(steps, e_base, linewidth=0.5, color='tab:green')
+    ax.plot(steps[unbiased_mask], e_base[unbiased_mask],
+            linewidth=0.5, color='tab:green')
     ax.set_xlabel('Step')
     ax.set_ylabel('Base energy (kcal/mol)')
     ax.set_title('Base (unbiased) potential energy')

@@ -103,6 +103,6 @@ Remaining scope S1-S6 (single-chain propagation -> melt sampling -> multi-radica
 - [ ] WM-P1: copolymer_initial_bonds — 共重合トポロジー有効化 + テスト(混合と独立に価値)
 - [x] WM-P2: グラフ→OpenFF/OpenMM トランスレータ (prep/mixing.py、キャップH、成分キャッシュ) + テスト
       → `src/kagome/prep/mixing.py`(公開 API: `build_classical_mix`/`ClassicalMix`/`FragmentParamCache`/`MixTranslatorConfig`)。BondTopology+species+座標+セル→Sage 2.2+NAGL(Gasteiger fallback)古典系。ラジカルは結合次数不足で検出しキャップH注入(書き戻しで破棄)、placeholder H は非結合項のみの中性粒子として末尾追加。成分キャッシュはキャップ後フラグメントの標準SMILESキーで電荷付与を同型フラグメント1回に削減。往復写像 omm↔mlip で write_back。`tests/unit/test_mixing.py`(9 passed、WSL pfpoly-gpu)。実装決定は decisions.md 2026-07-17「追補: WM-P2」。P3 未実装(_run_mixing_phase/MixConfig/mix_settle)。
-- [ ] WM-P3: _run_mixing_phase 統合 (MixConfig、速度再抽選、mix_settle、CLI、図フィルタ)
+- [x] WM-P3: _run_mixing_phase 統合 (MixConfig、速度再抽選、mix_settle、CLI、図フィルタ)。prep/mix_md.py 古典カーネル + workflow 統合 + --mix CLI + resume ガード + reproduce_figures フィルタ。unit 18 passed (WSL)。high レビュー(実質5件)対処済み。
 - [ ] WM-P4: 検証キャンペーン 20+20×20cyc、4腕 (baseline/混合/確率選択/両方) + 混合時間 sweep → 既定値を decisions.md に記録
 - [ ] WM-P5: 確率的候補選択 (別PR、ソフトマックス選択) / 多シード生産測定 / HT重み付け解析
