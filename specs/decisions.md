@@ -1645,3 +1645,12 @@ Use this template for each decision.
 - (e) **成分キャッシュのキー = キャップ後フラグメントの RDKit 標準 SMILES**(`Chem.MolToSmiles`)。値は電荷付与済み OpenFF Molecule テンプレート。interchange が同型コピーへ電荷をグラフ同型で写像するため、インスタンスごとの原子順序差は無害。キャッシュは per-cycle の支配的コスト(NAGL 電荷推論)を同型フラグメント単位で1回に削減(自由モノマー多数でも1回)。valence(bond/angle/torsion)の SMIRKS ラベリングは現状 call ごと(P3 で拡張余地)。
 - 電荷: 既存 prep と同一(NAGL 既定、失敗時 Gasteiger フォールバック+警告)。テストは Gasteiger(オフライン・決定的)で電荷手法非依存に。
 - スコープ: P2 はトランスレータ+テストのみ。公開 API(`build_classical_mix`/`ClassicalMix`/`FragmentParamCache`/`MixTranslatorConfig`、型ヒント必須、MD 不要でテスト可能)を P3 統合の seam として設計。
+- レビュー反映(同日、マルチエージェント・コードレビュー high の指摘 10 件):
+  - **combine_nonbonded_forces=False は非対応として即時 ValueError**(config 構築時に検証): placeholder H を結合済み NonbondedForce にのみ追加する設計のため、vdW 分離構成では粒子数不整合で Context 生成が壊れる。フィールドは制約の文書化と将来拡張の予約として残す。
+  - **複数キャップの決定的幾何**: deficit≥2 の中心(カルベン様/全結合喪失原子)ではキャップ H を空価数軸から 54.7356°(四面体半角)傾け方位角 2π/count で分散(rng 不要の純幾何)。一点重なり(H-C-H 角 0 → NaN 角度力)を排除。
+  - **キャッシュキー拡張**: `charge_method|nagl_model|forcefield|標準SMILES`(`fragment_cache_key`)。異設定間のテンプレート汚染を構造的に排除。キャッシュ値は `(テンプレート, 実際に使われた手法)` 対とし、NAGL→Gasteiger フォールバック時は metadata に実手法(`charge_method`=実際/'mixed'、`charge_method_requested`、`charge_methods_used`、`nagl_fallback`)を正直に記録。
+  - **未知元素ガード**: NEUTRAL_VALENCE 外の元素が価数不足(RDKit 既定価数比)の場合は黙殺せず ValueError(RDKit 既定価数が未定義の元素も拒否)。飽和した未知元素は通過。加えて RDKit 原子は全て SetNoImplicit(True)(暗黙 H の湧きによる写像ずれを根絶)+ from_rdkit 後の原子数一致検証。
+  - **元素検証(D-4 相当)**: 組み上げた OpenFF トポロジーの全粒子について元素 = species[omm_to_mlip[k]](キャップは 'H')を全数検証、不一致は ValueError。placeholder H も追加前に species=='H' を検証。
+  - **write_back 入力検証**: 非有限座標(MD 発散 NaN)は写像前に検出し「入力が非有限(混合ランの発散)」として別メッセージで報告(写像バグと誤診しない)。
+  - **最小化必須の契約**: positions_A は初期推定(キャップ H は理想方向、placeholder H は旧親と LJ 激突位置 ~1 Å)。P3 は動力学前に必ず古典最小化を実行 — `metadata['requires_minimization']=True` と ClassicalMix docstring に明記。座標の事前ずらしは行わない(エネルギー有限をテストで確認済み、最小化が標準手順であり、ずらしは PBC 越しの新たな重なりリスクを生むだけ)。
+  - **共通化**: NAGL→Gasteiger 電荷付与を `kagome/prep/charges.py` に一本化し openmm_equilibrate と mixing の二重実装・挙動差(import 検査、Gasteiger 実装差)を解消。成分分解は carothers の既存 component finder を self-edge 規約(network.py 前例)で再利用し union-find 再実装を削除。
