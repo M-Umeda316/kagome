@@ -168,6 +168,89 @@ class TestCopolymerAtomSpecies:
         assert atom_map[n_init_atoms] == ACRYLATE
 
 
+class TestCopolymerInitialBonds:
+    """copolymer_initial_bonds (WM-P1, specs/decisions.md 2026-07-17 前提工事)
+    must line up 1:1 with build_vinyl_copolymer_system's running-offset layout,
+    cover every fragment with no cross-fragment bonds, carry the alpha=beta
+    C=C double bonds, be valence-clean, and support apply_vinyl_addition for
+    BOTH monomer species (including the initiator's placeholder-H shed)."""
+
+    _SPECS = [(ACRYLATE, 3), (METHACRYLATE, 2)]
+
+    def test_bond_count_and_fragment_coverage(self):
+        """Returned bonds equal the union of per-fragment RDKit bonds shifted
+        by the same offsets as copolymer_atom_species: every bond's endpoints
+        map to the SAME fragment, and no cross-fragment bonds exist."""
+        from scripts._systems import (
+            _rdkit_local_bonds,
+            copolymer_atom_species,
+            copolymer_initial_bonds,
+        )
+        atom_map = copolymer_atom_species(self._SPECS, n_initiators=1)
+        bonds = copolymer_initial_bonds(self._SPECS, n_initiators=1)
+        assert bonds
+
+        n_init_bonds = len(_rdkit_local_bonds('CC(C)C#N'))
+        n_acr_bonds = len(_rdkit_local_bonds(ACRYLATE))
+        n_mac_bonds = len(_rdkit_local_bonds(METHACRYLATE))
+        expected_count = 1 * n_init_bonds + 3 * n_acr_bonds + 2 * n_mac_bonds
+        assert len(bonds) == expected_count
+
+        for i, j, order in bonds:
+            assert atom_map[i] == atom_map[j]  # no cross-fragment bond
+            assert order > 0.0
+
+    def test_alpha_beta_double_bond_present_for_every_monomer(self):
+        from kagome.reactive.topology import BondTopology
+        from scripts._systems import copolymer_initial_bonds
+
+        _, _, _, _, pmap, _ = _build(3, 2, 1)
+        bonds = copolymer_initial_bonds(self._SPECS, n_initiators=1)
+        topo = BondTopology.from_bonds(bonds)
+        for alpha, beta in pmap.items():
+            assert topo.has_bond(alpha, beta)
+            assert topo.order(alpha, beta) == 2.0
+
+    def test_no_over_coordinated_atoms_in_initial_topology(self):
+        from kagome.reactive.topology import BondTopology, over_coordinated_atoms
+        from scripts._systems import copolymer_initial_bonds
+
+        _, species, _, _, _, _ = _build(3, 2, 1)
+        bonds = copolymer_initial_bonds(self._SPECS, n_initiators=1)
+        topo = BondTopology.from_bonds(bonds)
+        assert over_coordinated_atoms(topo, species) == []
+
+    def test_reaction_round_trip_for_both_species(self):
+        """apply_vinyl_addition for one initiator radical + one ACRYLATE alpha,
+        and separately one METHACRYLATE alpha: new sigma bond, C=C order drops
+        to 1.0, no over-coordination — including the initiator placeholder-H
+        shed (the radical C is 4-coordinate closed-shell before addition)."""
+        from kagome.reactive.topology import (
+            BondTopology,
+            apply_vinyl_addition,
+            over_coordinated_atoms,
+        )
+        from scripts._systems import copolymer_alpha_species, copolymer_initial_bonds
+
+        _, species, _, groups, pmap, _ = _build(3, 2, 1)
+        bonds = copolymer_initial_bonds(self._SPECS, n_initiators=1)
+        alpha_species = copolymer_alpha_species(self._SPECS, n_initiators=1)
+        radical_c = groups['radical_C'].atom_indices[0]
+
+        acr_alpha = next(i for i, s in alpha_species.items() if s == ACRYLATE)
+        mac_alpha = next(i for i, s in alpha_species.items() if s == METHACRYLATE)
+
+        for alpha in (acr_alpha, mac_alpha):
+            topo = BondTopology.from_bonds(bonds)
+            beta = pmap[alpha]
+            assert topo.coordination_number(radical_c) == 4  # closed-shell + placeholder H
+            apply_vinyl_addition(topo, radical_c, alpha, pmap, species)
+            assert topo.has_bond(radical_c, alpha)            # new sigma bond
+            assert topo.order(alpha, beta) == 1.0              # C=C -> C-C
+            assert topo.coordination_number(radical_c) == 4    # placeholder H shed, not 5
+            assert over_coordinated_atoms(topo, species) == []
+
+
 class TestCrossPropagationAnalysis:
     """analyze() classifies each confirmed formation as
     (terminal species -> incorporated species) from the radical endpoint."""

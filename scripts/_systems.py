@@ -762,6 +762,29 @@ def copolymer_atom_species(
     return atom_species
 
 
+def copolymer_initial_bonds(
+    monomer_specs: list[tuple[str, int]],
+    n_initiators: int,
+    initiator_smiles: str = _INITIATOR_SMILES,
+) -> list[tuple[int, int, float]]:
+    """Full initial intramolecular bond topology for
+    :func:`build_vinyl_copolymer_system`.
+
+    Same deterministic running-offset convention as :func:`copolymer_alpha_species`
+    / :func:`copolymer_atom_species`: initiators first (``n_initiators`` copies),
+    then each ``monomer_specs`` entry in placement order, each repeated ``count``
+    times. Delegates the per-fragment RDKit bond extraction to :func:`layout_bonds`
+    (already running-offset-correct across heterogeneous specs) rather than
+    duplicating it. The seed passed to ``layout_bonds`` only affects the discarded
+    3-D conformer, not atom indexing/connectivity (see ``_rdkit_mol``), so a fixed
+    seed reproduces the same bonds. Enables trajectory topology tracking for the
+    copolymer driver (specs/decisions.md 2026-07-17 "well-mixed 測定モード" 前提工事).
+    """
+    specs = [(initiator_smiles, n_initiators, 42)]
+    specs += [(smiles, count, 42) for smiles, count in monomer_specs]
+    return layout_bonds(specs)
+
+
 # ── nylon-6,6 step-growth system ────────────────────────────────────────────
 
 def _find_terminal_amine_n(smiles: str) -> list[int]:
