@@ -1132,6 +1132,9 @@ class PolymerizationWorkflow:
                 'cycle': cycle,
                 'mix_time_ps': mcfg.mix_time_ps,
                 'n_steps_classical': result.n_steps,
+                # Soft-start warm-up steps (WM-P4 robustness): counted apart from
+                # the reported mixing steps so the mixing measurement is clean.
+                'n_warmup_steps': result.n_warmup_steps,
                 'seed': mix_seed,
                 'rms_displacement_A': rms_disp_A,
                 'minimized_energy_kj_mol': result.minimized_energy_kj_mol,

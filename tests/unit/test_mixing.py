@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from kagome.reactive.topology import BondTopology, apply_vinyl_addition
+from kagome.prep.mix_md import MixMDConfig, run_mix_md
 from kagome.prep.mixing import (
     ClassicalMix,
     FragmentParamCache,
@@ -428,3 +429,79 @@ def test_cache_reuse_across_two_calls():
     # second call adds no new misses, only hits for each fragment
     assert cache.misses == misses_first
     assert cache.hits > hits_before
+
+
+# ── WM-P4: classical mixing MD survives post-reaction injected hot contacts ────
+
+def _dense_reacted_mix(box_A=12.0, place_box_A=30.0, seed=7):
+    """Build a dense, *reacted* ClassicalMix (cap H + placeholder H injected).
+
+    A confirmed vinyl addition (``apply_vinyl_addition``) caps the new growth-end
+    radical and sheds a placeholder H that lands ~1 Å from its former parent — the
+    exact injected-hot-contact geometry that crashed the WM-P4 campaign's mixing
+    phase. The monomers are packed by placing them in a roomy box and then
+    isotropically compressing coordinates + cell to ``box_A`` (~0.4 g/mL): the
+    random placer cannot reach that density directly (min-separation), and the
+    dense box is what makes the injected contacts bite under dynamics.
+    """
+    specs = [(_MONOMER_SMILES, 2), (_METHACRYLATE_SMILES, 2)]
+    pos, species, pmap, topo, _cell = _copolymer_system(
+        specs, 1, box=place_box_A, seed=seed)
+    radical_c = _radical_c_of_initiator(species, topo, 1, _INITIATOR_SMILES)
+    apply_vinyl_addition(topo, radical_c, min(pmap), pmap, species)
+
+    pos = (pos % place_box_A) * (box_A / place_box_A)   # isotropic compression
+    cell = np.diag([box_A, box_A, box_A]).astype(float)
+    mix = build_classical_mix(
+        topo, species, pos, cell, MixTranslatorConfig(charge_method='gasteiger'))
+    # sanity: this fixture must actually exercise the injected-atom path
+    assert mix.metadata['n_cap_h'] == 1
+    assert mix.metadata['n_placeholder_h'] == 1
+    return mix
+
+
+@requires_openmm
+def test_mixing_md_survives_injected_hot_contacts_after_reaction():
+    """Regression for the WM-P4 mixing NaN (specs/decisions.md 追補 2026-07-18).
+
+    A freshly translated post-reaction system carries injected hot contacts (a
+    placeholder H overlapping its former parent, a rigid cap C-H). At production
+    scale (~500+ atoms, 0.5 g/mL) the ``LocalEnergyMinimizer`` meets its
+    RMS-force tolerance globally while such a contact stays hot — its force is
+    diluted across all atoms — so stepping 0.5 fs Langevin straight away diverges
+    to ``Particle coordinate is NaN`` inside ``run_mix_md``.
+
+    We reproduce that *un-cleared hot start* deterministically at unit scale by
+    running the minimizer with a deliberately loose tolerance (a stand-in for the
+    scale-dependent RMS dilution — at unit scale a 10 kJ/mol/nm minimize would
+    clear the contact that production could not). Single-precision 'CPU' platform,
+    matching the campaign's single-precision GPU arithmetic where the overflow
+    actually turns into NaN.
+
+    Without the soft-start warm-up (``warmup_steps=0`` — the pre-fix code path)
+    the run diverges; with it (default) the run completes with finite positions.
+    """
+    import openmm
+
+    mix = _dense_reacted_mix()
+    common = dict(
+        temperature_K=333.0, n_steps=400, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e6,   # emulate an un-cleared hot start
+    )
+
+    # (1) pre-fix behaviour: no warm-up -> the injected hot contact makes 0.5 fs
+    # Langevin diverge to NaN (the exact production failure).
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix, MixMDConfig(warmup_steps=0, **common), seed=12345)
+
+    # (2) with the soft-start warm-up (default) the same system survives: finite
+    # positions, a healthy (finite) mixing energy, and the warm-up counted apart
+    # from the reported mixing steps.
+    result = run_mix_md(mix, MixMDConfig(**common), seed=12345)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    assert result.n_steps == 400                 # reported mixing steps unchanged
+    assert result.n_warmup_steps > 0             # warm-up ran, tracked separately
+    # write-back maps cleanly (no NaN leaked into the MLIP coordinates)
+    restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
