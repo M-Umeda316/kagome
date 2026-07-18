@@ -202,6 +202,14 @@ class CycleLog:
     min_pair_distance: float = float('inf')
 
 
+# Allowed values for MixConfig fail-fast validation. Kept in one place so they
+# stay in sync with the CLI `choices=` in scripts/run_vinyl_copolymer.py and
+# with MixTranslatorConfig / kagome.prep.charges.CHARGE_METHODS.
+_MIX_ALLOWED_PLATFORMS: frozenset[str] = frozenset(
+    {'CUDA', 'OpenCL', 'CPU', 'Reference'})
+_MIX_ALLOWED_CHARGE_METHODS: frozenset[str] = frozenset({'nagl', 'gasteiger'})
+
+
 @dataclass
 class MixConfig:
     """WM-P3 classical mixing stage (specs/decisions.md 2026-07-17 (i), 追補
@@ -234,6 +242,23 @@ class MixConfig:
         if self.temperature_K <= 0:
             raise ValueError(
                 f'temperature_K must be positive; got {self.temperature_K}')
+        # Fail fast on the remaining knobs so a bad value is rejected here rather
+        # than clamping n_mix_steps to 1 / failing deep in the first mixing cycle
+        # (review: MixConfig had no timestep/friction/platform/charge validation).
+        if self.timestep_fs <= 0:
+            raise ValueError(
+                f'timestep_fs must be positive; got {self.timestep_fs}')
+        if self.friction_per_ps <= 0:
+            raise ValueError(
+                f'friction_per_ps must be positive; got {self.friction_per_ps}')
+        if self.platform not in _MIX_ALLOWED_PLATFORMS:
+            raise ValueError(
+                f'platform must be one of {sorted(_MIX_ALLOWED_PLATFORMS)}; '
+                f'got {self.platform!r}')
+        if self.charge_method not in _MIX_ALLOWED_CHARGE_METHODS:
+            raise ValueError(
+                f'charge_method must be one of '
+                f'{sorted(_MIX_ALLOWED_CHARGE_METHODS)}; got {self.charge_method!r}')
 
     @property
     def n_mix_steps(self) -> int:
@@ -1157,6 +1182,7 @@ class PolymerizationWorkflow:
             )
             if self._mixing_log is not None:
                 record = {
+                    'schema_version': 1,
                     'cycle': cycle,
                     'skipped': True,
                     'skip_reason': skip_reason,
@@ -1180,6 +1206,7 @@ class PolymerizationWorkflow:
 
         if self._mixing_log is not None:
             record = {
+                'schema_version': 1,
                 'cycle': cycle,
                 'skipped': False,
                 'mix_time_ps': mcfg.mix_time_ps,

@@ -87,6 +87,43 @@ class TestMixConfigValidation:
         cfg = MixConfig(mix_time_ps=1e-6, settle_steps=0, temperature_K=300.0)
         assert cfg.n_mix_steps == 1
 
+    # fail-fast validation of the remaining knobs (review: a bad timestep_fs
+    # silently clamped n_mix_steps to 1 and only failed deep in the first cycle).
+    def test_nonpositive_timestep_rejected(self):
+        with pytest.raises(ValueError, match='timestep_fs'):
+            MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                      timestep_fs=-1.0)
+        with pytest.raises(ValueError, match='timestep_fs'):
+            MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                      timestep_fs=0.0)
+
+    def test_nonpositive_friction_rejected(self):
+        with pytest.raises(ValueError, match='friction_per_ps'):
+            MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                      friction_per_ps=0.0)
+        with pytest.raises(ValueError, match='friction_per_ps'):
+            MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                      friction_per_ps=-2.0)
+
+    def test_bad_platform_rejected(self):
+        with pytest.raises(ValueError, match='platform'):
+            MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                      platform='GPU')
+
+    def test_bad_charge_method_rejected(self):
+        with pytest.raises(ValueError, match='charge_method'):
+            MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                      charge_method='am1bcc')
+
+    def test_valid_optional_fields_construct(self):
+        cfg = MixConfig(mix_time_ps=1.0, settle_steps=0, temperature_K=300.0,
+                        timestep_fs=0.25, friction_per_ps=2.0,
+                        platform='Reference', charge_method='gasteiger')
+        assert cfg.platform == 'Reference'
+        assert cfg.charge_method == 'gasteiger'
+        assert cfg.timestep_fs == 0.25
+        assert cfg.friction_per_ps == 2.0
+
 
 # ── MixMDConfig validation (pure; module imports without openmm) ──────────────
 
@@ -179,6 +216,41 @@ class TestMixingGating:
         )
         logs = wf.run(state)
         assert [l.phase for l in logs] == ['biased', 'unbiased']
+
+    def test_no_mixing_is_bit_stable(self, tmp_path):
+        """The non-mixing path is bit-stable: two runs on a fixed seed give
+        numerically identical final positions AND velocities, write no
+        mixing.jsonl, and never enter a 'mixing'/'mix_settle' phase.
+
+        Pins that the mixing feature is truly inert when off (mixing=None) —
+        stronger than the phase-name check above. Uses only the ToyCalculator +
+        VelocityVerlet toy fixture; no orb/GPU/openmm.
+        """
+        def run_once(out_dir):
+            wf = _tiny_workflow(None)
+            state = SimulationState(
+                positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+                velocities=np.zeros((2, 3)),
+                species=['C', 'C'],
+                masses=masses_from_species(['C', 'C']),
+            )
+            logs = wf.run(state, output_dir=out_dir)
+            return state.positions.copy(), state.velocities.copy(), logs
+
+        pos1, vel1, logs1 = run_once(tmp_path / 'run1')
+        pos2, vel2, logs2 = run_once(tmp_path / 'run2')
+
+        # bit-stable dynamics
+        np.testing.assert_array_equal(pos1, pos2)
+        np.testing.assert_array_equal(vel1, vel2)
+
+        # no mixing artifacts, no mixing phases
+        assert not (tmp_path / 'run1' / 'mixing.jsonl').exists()
+        assert not (tmp_path / 'run2' / 'mixing.jsonl').exists()
+        phases1 = [l.phase for l in logs1]
+        phases2 = [l.phase for l in logs2]
+        assert phases1 == phases2 == ['biased', 'unbiased']
+        assert 'mixing' not in phases1 and 'mix_settle' not in phases1
 
 
 # ── asdict round trip (manifest provenance) ───────────────────────────────────
