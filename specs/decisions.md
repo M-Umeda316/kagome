@@ -1710,3 +1710,27 @@ Use this template for each decision.
 - **回帰テスト**(OpenMM ゲート・orb 不要、`test_mixing.py`):
   - `test_ungated_warmup_survives_noninjected_handed_over_contact`: 2 MA 未反応系、分子 B を剛体並進で最近接 ~0.9 Å(注入原子ゼロ)。第1最小化を無効化する巨大 tol(1e12、本番 564 原子 RMS 希釈の単体規模スタンドイン)で、修正前経路(`warmup_steps=0`)は発散・非ゲート既定は有限完走 + クリーン write-back。本番 cycle 2 の再現。
   - `test_ungated_bridge_survives_constrained_hh_contact`: 上記の決め手(~0.7 Å、拘束 X–H)。橋渡し無しは発散・非ゲート橋渡しは完走を同一テストで検証。
+
+## 追補 2026-07-19 — WM-P4 混合実装 フラットレビューと対応
+2026-07-17〜18 の WM-P2(トランスレータ、`src/kagome/prep/mixing.py`)/ WM-P3(ワークフロー統合)/ WM-P4(ソフトスタート・de-clash・ungated bridge)一式に対し、3体の独立レビュー(フラット構成: 正しさ・簿記・再現性・可観測性の複数観点を1パスで横断)を実施した結果の記録。混合モードは引き続き `--mix` 明示フラグでのみ有効・TDBB 方程式/反応選択/論文再現ランには不変という前提は変わらない。
+
+1. **レビュー総括**: 3体とも中核ロジック — write-back(決定 (d) の `omm_to_mlip`/`mlip_to_omm` 写像往復)、index マップ、placeholder-H の往復(決定 (b)/(iii) およびその 2026-07-18 de-clash 改訂)、単位換算、graceful-skip の決定性(WM-P4 de-clash 追補の rng 消費規約)、mixing OFF 時のビット不変(決定 (k) の図フィルタ、決定 (f) の挿入位置)、および decisions.md (f)–(m)・(v)/(vi) への忠実度 — に「バグなし」と結論。指摘は全て周辺(ガード欠落・検証の遅延・テスト網羅・再現性の言明・図の分母)に限定され、コア数値カーネル(`prep/mix_md.py`)・トランスレータ(`prep/mixing.py`)本体の再設計は不要と判断。
+
+2. **決定性の注記(クレーム修正・重要)**: 決定 (i)/2026-07-18 レビュー反映で「同一 seed ⇒ 決定的」と記していたが、これは **rng ドロー列**(mix_seed・MB 速度・settle Langevin の抽選順序)についてのみ成立することを明確化する。本番プラットフォーム(CPU/CUDA)では力の縮約がスレッド順に依存するため、混合後の**幾何**(座標)はビット再現しない。ビット安定は Reference プラットフォームに限られ、既存の `test_mixing_run_is_deterministic`(`tests/unit/test_workflow_mixing.py:324`)が `platform='Reference'` を明示指定している事実と整合する。これはコードのバグではなくバックエンド特性(浮動小数の非結合性 × 並列力計算)であり、修正の余地はない。
+   - 方針: 再現性がクリティカルなラン(unit test、回帰確認)は `platform='Reference'`(低速)で固定する。本番 CUDA/CPU ランは「同一 seed ⇒ 同一 rng 消費」は成立するが「同一 seed ⇒ 同一混合幾何」は成立しない旨を manifest に注記する。決定 (i) の文言は本追補で補強するものであり、既存記述の削除・書き換えは行わない。
+
+3. **密度図の分母修正(オーナー承認済み・適用済み)**: `scripts/reproduce_figures.py` の `plot_density_profile` が ρ_rxn(z)=N_rxn/(A·Δz·N_frames) の N_frames に mixing/mix_settle フレームを算入していた不整合を修正し、決定 (k) のエネルギー図除外(`_analysis_frames` によるマスク)と揃えた。mix_settle 中は反応が発火しないため、これを分母に含めると混合ランの ρ_rxn(z) が系統的に過小評価され、非混合ラン(baseline)と比較不能になる。Eq.12 の「解析窓の全サンプルフレーム」は MLIP 動力学窓(古典 mix_settle 緩和を除く)と解釈する。既存の非混合ランの図はビット不変(mixing フェーズを持たないランでは `_analysis_frames` が no-op になるため)。
+
+4. **歩留低下の解釈(オーナー承認・力学は変更せず記録のみ)**: WM-P4 の暫定 3 腕比較で確定生成数が A1(baseline)=5 / A3=4 / A4(mix 系)=1 と、混合腕が最少だった。これは**バグでなく、well-mixed 測定が捉えている実在の物理的特性が最有力**と判断する。
+   - 主要因: 混合が「同一ペアを連続サイクルで再選択して cook し続ける」baseline の経路(2026-07-17 決定の Context に記録された再選択率 46-53%)を破壊するため。決定的根拠: BoostState は毎サイクル新規生成でありバイアス持ち越しは無い(paper-faithful)、かつ確定済み結合トポロジーは混合フェーズの**前**(決定 (f) の挿入位置)に永続化済みで混合は `state.positions`/`state.velocities` のみを更新する(グラフは不変入力 — 決定 (d))。
+   - 副次要因: 決定 (i) の毎サイクル MB 速度再抽選が反応相関運動量を消去すること、および WM-P4 ungated bridge 追補の非ゲート warm-up(短 `mix_time_ps` 時は総線量の最大 ~20% を占めうる、friction 50/ps)が測定アンサンブルを撹乱しうる。ただしいずれも NVT 整合を保つ意図的設計(決定 (g)/(l))であり、歩留低下対策として取り除かない。
+   - 混合時間の既定値確定は先送り: A2_mix50 の複数シード化 + `mix_time_ps` sweep で歩留を再検証してから判断する。現データは単桁カウント(1〜5)でノイズ支配であり統計的結論を出せない。決定 (v)(無根拠デフォルト禁止則)を維持し、混合時間の既定値は本追補時点でも decisions.md に確定記載しない。
+
+5. **対応した補強(実装はサブエージェント委譲・並行実施)**:
+   - (a) resume モード切替ガード(2026-07-18 レビュー反映)に `friction_per_ps`・`temperature_K` を追加。旧 checkpoint はこれらのキーが欠落するため非比較(値なし=ガード対象外)として後方互換を維持。
+   - (b) `MixConfig.__post_init__` に `timestep_fs`/`friction_per_ps`/`platform`/`charge_method` の fail-fast 検証を追加し、不正値がサイクル途中の `run_mix_md` 呼び出しまで検出されずに伝播することを防止。
+   - (c) CLI の `--mix` 無しで混合系フラグ(`--mix-ps` 等)のみ指定した場合を、既存の逆方向(決定 (g) の「`--mix` 指定時に必須」)と対称的に error 化。
+   - (d) `mixing.jsonl` の各行に `schema_version` を付与し、WM-P3/P4/P4 de-clash/P4 bridge の各追補で加算的に増えたフィールド(`n_warmup_steps`、`n_declashed`、`skipped`/`skip_reason` 等)のログ消費側でのバージョン判別を可能にした。
+   - (e) テスト補強: resume ガードの新規2フィールド、CLI 検証の対称性、`MixConfig` の fail-fast 検証、mixing OFF ランの数値ビット不変回帰、openmm ゲートテストのスキップ理由の可視化(skip でなく明示メッセージ)。
+   - (f) `scripts/analyze_wm_p4.py` の `ARM_CYCLE_CAP`(58行目付近のハードコード辞書)をデータ由来(実行された cycle 数から導出)に変更し、腕ごとの系説明を manifest 由来の値に統一。手打ち値と実データの乖離リスクを解消。
+   - 各対応の根拠は個々のレビュー指摘(major: resume ガード欠落フィールド/回帰テスト皆無/密度図分母; minor: `MixConfig` 検証の遅延/CLI フラグの非対称)に対応する。いずれも API 非破壊・既存挙動への影響なし(mixing OFF ランはビット不変のまま)。
