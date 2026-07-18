@@ -656,3 +656,117 @@ def test_declash_rescues_hard_injected_overlap_end_to_end():
     assert np.isfinite(result.final_energy_kj_mol)
     restored = mix_on.write_back(result.positions_A)
     assert np.isfinite(restored).all()
+
+
+# ── WM-P4 bridge: ungated warm-up survives orb->Sage handed-over close contacts ─
+
+def _two_molecule_clash(gap_A, box=24.0, seed=5):
+    """Two free MA monomers (UNREACTED: no injected atoms), with molecule B
+    rigidly translated so its nearest atom to molecule A sits ``gap_A`` apart.
+
+    Rigid translation keeps every intramolecular bond length — hence every Sage
+    X-H constraint — intact, so this reproduces the production failure faithfully:
+    orb hands over a geometry with a pair closer than the classical Sage LJ wall
+    tolerates (orb's learned repulsion is softer), and the clashing atoms include
+    Sage-constrained H that a geometric push-apart cannot separate. Returns
+    ``(topology, species, positions_A, cell_A)``.
+    """
+    specs = [(_MONOMER_SMILES, 2)]
+    pos, species, _pmap, topo, cell = _copolymer_system(specs, 0, box=box, seed=seed)
+    comps = connected_components(topo, len(species))
+    assert len(comps) == 2, 'fixture expects two disjoint monomers'
+    mol_a, mol_b = comps[0], comps[1]
+
+    pa = pos[mol_a]
+    pb = pos[mol_b]
+    # nearest inter-molecular pair (roomy box: ignore PBC for the setup)
+    diff = pa[:, None, :] - pb[None, :, :]
+    d = np.linalg.norm(diff, axis=2)
+    ia, ib = np.unravel_index(int(np.argmin(d)), d.shape)
+    a_glob, b_glob = mol_a[ia], mol_b[ib]
+    d0 = float(d[ia, ib])
+    u = (pos[b_glob] - pos[a_glob]) / d0
+    # translate ALL of molecule B (rigid) so the nearest pair sits gap_A apart
+    delta = (gap_A - d0) * u
+    pos = pos.copy()
+    for g in mol_b:
+        pos[g] = pos[g] + delta
+    return topo, species, pos, cell
+
+
+@requires_openmm
+def test_ungated_warmup_survives_noninjected_handed_over_contact():
+    """Reproduces production cycle-2: a NON-injected mixing cycle whose handed-over
+    coordinates contain a Sage-intolerable close contact.
+
+    Pre-fix the warm-up + tighter 2nd-minimize were gated on ``has_injected`` so
+    for a cycle with no cap/placeholder H (cycle 2 selected but confirmed nothing)
+    NEITHER ran — only the loose first minimize, then 0.5 fs, which diverged. With
+    the ungated bridge (default) the same system survives. The loose minimize
+    tolerance stands in for production's 564-atom RMS-force dilution (the device
+    used by the WM-P4 warm-up regression) so the contact reaches the dynamics.
+    """
+    import openmm
+
+    topo, species, pos, cell = _two_molecule_clash(gap_A=0.9)
+    mix = build_classical_mix(
+        topo, species, pos, cell, MixTranslatorConfig(charge_method='gasteiger'))
+    assert mix.metadata['n_cap_h'] == 0
+    assert mix.metadata['n_placeholder_h'] == 0        # genuinely non-injected
+    common = dict(
+        temperature_K=333.0, n_steps=200, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e12,
+    )
+
+    # pre-fix behaviour (warm-up disabled, as the has_injected gate did here)
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix, MixMDConfig(warmup_steps=0, **common), seed=3)
+
+    # ungated bridge (default warm-up now runs every cycle) -> survives
+    result = run_mix_md(mix, MixMDConfig(**common), seed=3)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
+
+
+@requires_openmm
+def test_ungated_bridge_survives_constrained_hh_contact():
+    """The soft-core DECIDER: two molecules pushed to ~0.7 A closest approach with
+    Sage's rigid X-H constraints intact — the case a geometric push-apart cannot
+    fix (a displaced constrained H snaps back), so only bounded overdamped
+    dynamics moving whole rigid groups can separate them.
+
+    If the ungated tighter-minimize + soft-start warm-up survive this, the
+    orb<->Sage wall mismatch is bridged WITHOUT a soft-core pre-relaxation and the
+    graceful skip stays the only remaining net. If it diverges, a soft-core /
+    force-capped pre-relaxation is required.
+
+    EVIDENCE (this test, 2026-07-18): the bridge SURVIVES the constrained-H clash,
+    so no soft-core was implemented — see specs/decisions.md 追補 2026-07-18
+    (WM-P4 bridge).
+    """
+    import openmm
+
+    topo, species, pos, cell = _two_molecule_clash(gap_A=0.7)
+    mix = build_classical_mix(
+        topo, species, pos, cell, MixTranslatorConfig(charge_method='gasteiger'))
+    assert mix.metadata['n_cap_h'] == 0
+    assert mix.metadata['n_placeholder_h'] == 0
+    common = dict(
+        temperature_K=333.0, n_steps=200, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e12,
+    )
+    # Without the bridge (warm-up + tighter minimize disabled) the constrained-H
+    # clash is genuinely unrecoverable — proves the contact is hard and the
+    # 'survives' assertion below is not vacuous.
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix, MixMDConfig(warmup_steps=0, **common), seed=3)
+
+    # The ungated bridge (default) rescues it: bounded overdamped dynamics move
+    # the whole rigid molecules apart where a geometric push-apart could not.
+    result = run_mix_md(mix, MixMDConfig(**common), seed=3)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()

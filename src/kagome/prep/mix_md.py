@@ -42,28 +42,32 @@ class MixMDConfig:
     :class:`kagome.prep.openmm_equilibrate.ClassicalPrepConfig` precedent.
 
     Soft-start warm-up (WM-P4 robustness, specs/decisions.md 追補 2026-07-18):
-    a freshly translated post-reaction system carries injected hot contacts —
-    a placeholder H realized ~1 Å from its former parent (severe LJ overlap)
-    and a rigid (constrained) cap C-H that can point into a neighbour. At
+    the classical mixing PES (Sage LJ) has a much harder repulsive wall than the
+    MLIP (orb) that produced the handed-over coordinates, so the translated
+    system intermittently carries a close contact — an orb-equilibrated atom pair
+    (or an injected cap/placeholder H) closer than Sage's LJ core tolerates. At
     production scale (~500+ atoms, 0.5 g/mL) the ``LocalEnergyMinimizer``'s
-    RMS-force tolerance is met globally while such a contact stays hot
-    (its force is diluted across all atoms), and stepping the configured
-    ``timestep_fs`` Langevin straight away diverges to NaN. Before the main
-    mixing we therefore run a short warm-up MD segment at a much smaller
-    timestep with high friction, ramping up to ``timestep_fs``, which bleeds
-    off the residual hot contacts. The warm-up steps are counted and logged
-    SEPARATELY from the reported mixing ``n_steps`` (they are not part of the
-    mixing measurement). These are numerical-stability knobs, so — unlike the
-    mixing *duration* (decisions.md (v)) — they carry documented engineering
-    defaults. The warm-up only runs when the translated system actually has
-    injected atoms (``metadata`` cap/placeholder H counts), so unreacted
-    cycles are unaffected. Set ``warmup_steps=0`` to disable it.
+    RMS-force tolerance is met globally while such a contact stays hot (its force
+    is diluted across all atoms), and stepping the configured ``timestep_fs``
+    Langevin straight away diverges to NaN. Before the main mixing we therefore
+    run a short warm-up MD segment at a much smaller timestep with high friction,
+    ramping up to ``timestep_fs``, which bleeds off the residual hot contacts —
+    including contacts between Sage-*constrained* X–H atoms, which a geometric
+    push-apart cannot fix (the constraint snaps a displaced H back) but bounded,
+    overdamped dynamics can (it moves whole rigid groups apart). The warm-up steps
+    are counted and logged SEPARATELY from the reported mixing ``n_steps`` (they
+    are not part of the mixing measurement). These are numerical-stability knobs,
+    so — unlike the mixing *duration* (decisions.md (v)) — they carry documented
+    engineering defaults. The bridge is needed EVERY mixing cycle (the wall
+    mismatch is reaction-independent, specs/decisions.md 追補 2026-07-18 (WM-P4
+    bridge)), not only reacted ones, so it runs whenever ``warmup_steps > 0``.
+    Set ``warmup_steps=0`` to disable it.
 
     ``minimize_tolerance_kj_mol_nm`` is the RMS-force tolerance for the
     pre-dynamics ``LocalEnergyMinimizer`` (the ``requires_minimization``
-    contract); ``warmup_minimize_tolerance_kj_mol_nm`` (< the above) drives an
-    optional tighter second minimization pass done only when injected atoms
-    are present, squeezing the worst contacts before the warm-up dynamics.
+    contract); ``warmup_minimize_tolerance_kj_mol_nm`` (< the above) drives a
+    tighter second minimization pass — run every cycle (when ``warmup_steps > 0``)
+    — squeezing the worst contacts before the warm-up dynamics.
     """
 
     temperature_K: float
@@ -74,9 +78,12 @@ class MixMDConfig:
     minimize_tolerance_kj_mol_nm: float = 10.0
     # ── soft-start warm-up (see class docstring) ──
     warmup_steps: int = 2000                  # 0 disables the warm-up
-    warmup_timestep_fs: float = 0.1           # starting (smallest) ramp timestep
+    # Start the ramp very gently (0.05 fs): the close contact can be between ANY
+    # handed-over pair (not just a moderate injected one), so the first stage must
+    # be a near-steepest-descent crawl to survive a hard orb->Sage contact.
+    warmup_timestep_fs: float = 0.05          # starting (smallest) ramp timestep
     warmup_friction_per_ps: float = 50.0      # overdamp the hot contacts
-    warmup_stages: int = 5                    # timestep-ramp stages -> timestep_fs
+    warmup_stages: int = 6                    # timestep-ramp stages -> timestep_fs
     warmup_minimize_tolerance_kj_mol_nm: float = 1.0  # tighter 2nd-pass min tol
 
     def __post_init__(self) -> None:
@@ -161,24 +168,20 @@ def run_mix_md(
     context.setPositions(
         (mix.positions_A * NM_PER_ANGSTROM) * ommunit.nanometer)
 
-    # A freshly translated post-reaction system carries injected hot contacts
-    # (cap H / placeholder H — see MixMDConfig docstring). Warm-up + tighter
-    # minimization only matter then; skip both for an unreacted system so those
-    # cycles behave exactly as before.
-    meta = mix.metadata or {}
-    has_injected = (meta.get('n_cap_h', 0) or 0) > 0 \
-        or (meta.get('n_placeholder_h', 0) or 0) > 0
-
     # requires_minimization contract (ClassicalMix.metadata): cap H sit at ideal
     # guesses and placeholder H may clash with their former parent — always
     # minimize before dynamics.
     openmm.LocalEnergyMinimizer.minimize(
         context, cfg.minimize_tolerance_kj_mol_nm, 0,
     )
-    # Optional tighter second pass when injected atoms are present: squeezes the
-    # worst residual contacts the first (looser) pass may leave. Cheap (the
-    # first pass already did the bulk) and never loosens the tolerance.
-    if (has_injected and cfg.warmup_steps > 0
+    # Tighter second pass — run EVERY mixing cycle, not only reacted ones. The
+    # orb<->Sage repulsive-wall mismatch that produces a Sage-intolerable close
+    # contact is reaction-independent (specs/decisions.md 追補 2026-07-18 (WM-P4
+    # bridge)): a cycle with NO injected atoms (production cycle 2) can still hand
+    # over a hard contact, so the classical<->MLIP bridge (tighter minimize +
+    # warm-up) is needed regardless of injection. Cheap (the first pass already
+    # did the bulk) and never loosens the tolerance.
+    if (cfg.warmup_steps > 0
             and cfg.warmup_minimize_tolerance_kj_mol_nm
             < cfg.minimize_tolerance_kj_mol_nm):
         openmm.LocalEnergyMinimizer.minimize(
@@ -195,10 +198,12 @@ def run_mix_md(
     context.setVelocitiesToTemperature(
         cfg.temperature_K * ommunit.kelvin, int(seed))
 
-    # ── soft-start warm-up (bleed off residual injected hot contacts) ──
+    # ── soft-start warm-up (classical<->MLIP bridge; every cycle) ──
+    # Bleeds off any residual hot contact left after minimization, whether from an
+    # injected atom or an orb-handed-over pair inside Sage's repulsive wall.
     n_warmup = 0
     warmup_energies: list[float] = []
-    if has_injected and cfg.warmup_steps > 0:
+    if cfg.warmup_steps > 0:
         n_warmup, warmup_energies = _run_warmup(
             context, integrator, cfg, ommunit, np,
         )
@@ -283,7 +288,8 @@ def _run_warmup(context, integrator, cfg, ommunit, np) -> tuple[int, list[float]
                 raise RuntimeError(
                     'Classical mixing: soft-start warm-up became non-finite '
                     f'after {done} warm-up steps (dt {dt:.3f} fs) — the '
-                    'translated system is too hot even for the warm-up (check '
-                    'the injected cap/placeholder H geometry).'
+                    'translated system is too hot even for the warm-up (a '
+                    'handed-over pair or injected H is inside Sage\'s repulsive '
+                    'wall and could not be bridged).'
                 )
     return done, energies

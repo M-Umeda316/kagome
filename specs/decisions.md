@@ -1697,3 +1697,16 @@ Use this template for each decision.
 - **回帰テスト**(OpenMM ゲート・orb 不要):
   - `test_mixing.py`: cap 方向のクリアランス最大化(障害物を空価数軸上に置くと反対を向く)、legacy 配置の不変性、`_declash_injected` の単体(注入原子のみ移動 / ノーオペ)、および **end-to-end**: dense reacted 系で placeholder を実原子に**強制一致**(真の特異点)→ 同一 MD config(warmup ON)で `declash_injected=False` は発散・`True` は有限完走 + クリーン write-back。既存 warmup テストは `declash_injected=False` で従来のホットコンタクトを保持し不変。
   - `test_workflow_mixing.py`: graceful-skip — `run_mix_md` を monkeypatch で raise → `wf.run` は例外を出さず継続、logs=[biased,unbiased,mixing(steps=0)]・`mix_settle` 無し・mixing.jsonl `skipped:true`・state 有限。
+
+### 追補 2026-07-18 (WM-P4 bridge): orb↔Sage 反発ウォール不整合が真の反応非依存根因 — ウォームアップ非ゲート化(soft-core は不要と実証)
+デクラッシュ修正(cf7b9db)投入後の本番再ラン(A2)で判明した、より深い第3の根因。cycle 0,1 は正常混合、**cycle 2 の混合が OpenMMException NaN で graceful スキップ**された。その cycle の mixing.jsonl は `declashed=0, n_cap_h=0, n_placeholder_h=0` = **注入原子ゼロ**(cycle 2 は候補選択したが結合確定せず、トポロジー/フラグメントは正常混合した cycle 1 と不変)。すなわち発散は注入原子の幾何ではなく、**ハンドオーバされた MLIP 座標**そのものに由来する。
+- **真の根因(反応非依存)**: orb(MLIP)の学習された反発は古典 Sage FF の LJ コアより**柔らかい**。orb 平衡化幾何は時折、Sage の反発ウォールが許容するより近い原子対を含む(cycle 2 の post-unbiased 座標がそれ、cycle 1 は含まず)。確率的・反応非依存で毎キャンペーン再発しうる。デクラッシュ(cf7b9db)は正しいが支配的失敗ではなかった。
+- **ゲートのギャップ**: `run_mix_md` でウォームアップと第2段(厳しめ)最小化が共に `has_injected` でゲートされていた(ウォームアップ commit の「未反応サイクルはビット不変」意図)。注入原子ゼロの cycle 2 ではどちらも走らず、緩い tol=10 の第1最小化のみ → RMS 力希釈で 1 個の悪コンタクトが生き残り → 0.5 fs 初回チャンクで即発散。**未反応サイクルも古典↔MLIP 橋渡しが必要**。
+- **対策1(非ゲート化)**: ウォームアップ + 第2段最小化を `has_injected` から切り離し、**毎混合サイクル**実行(`warmup_steps>0` でのみゲート、デクラッシュは注入ゲートのまま)。コストは ~1 ps/サイクルで軽微。未反応サイクルの「ビット不変」特性は放棄(橋渡しは毎サイクル必要 = 意図的)。
+- **対策2(より優しいウォームアップ既定)**: コンタクトは任意のハンドオーバ対でありうる(中程度の注入コンタクトに限らない)ため、ランプ初段 timestep を **0.1→0.05 fs**、段数 **5→6** に。準最急降下的な初段クロールで硬い orb→Sage コンタクトも生存。数値安定化の engineering 既定として文書化。
+- **soft-core は「不要」と単体テストで実証(自律判断)**: 制約付き X–H(Sage は X–H 結合を剛体拘束)同士のコンタクトは幾何的押し離しでは分離不能(変位 H が拘束で戻る)であり、当初は soft-core/力キャップ前緩和が必要かと想定。**決め手テスト** `test_ungated_bridge_survives_constrained_hh_contact`(2分子を剛体並進で最近接 ~0.7 Å、拘束 X–H 温存)で検証: 橋渡し無し(`warmup_steps=0`)では発散(真に硬い)、非ゲート橋渡し(第2段最小化 tol 1.0 + 0.05 fs ウォームアップ)では**有限完走**。境界付き過減衰動力学が剛体分子群を丸ごと押し離すため、拘束原子コンタクトも soft-core 無しで橋渡しできる。よって **CustomNonbondedForce soft-core は実装しない**(複雑さ・力場再構築・context 再初期化のリスクを回避。証拠が不要と示した)。将来もし橋渡しが取りこぼす硬コンタクトが再発すれば soft-core を再検討(設計は proposal に記録済み)。
+- **graceful スキップは最終安全網として維持**(不変)。層構成: **デクラッシュ(注入特異点除去)→ 第1最小化 → 第2最小化(毎サイクル)→ ウォームアップ(毎サイクル、0.05 fs 起点)→ mix → graceful-skip(それでも発散時のみ)**。
+- **決定性/API**: ウォームアップは既存 integrator の seed/stream を共有(新規乱数なし)。非ゲート化で未反応サイクルもウォームアップ乱数ステップを消費するが seed 決定的。`MixMDConfig` の既定変更(`warmup_timestep_fs` 0.05、`warmup_stages` 6)のみ、シグネチャ不変。
+- **回帰テスト**(OpenMM ゲート・orb 不要、`test_mixing.py`):
+  - `test_ungated_warmup_survives_noninjected_handed_over_contact`: 2 MA 未反応系、分子 B を剛体並進で最近接 ~0.9 Å(注入原子ゼロ)。第1最小化を無効化する巨大 tol(1e12、本番 564 原子 RMS 希釈の単体規模スタンドイン)で、修正前経路(`warmup_steps=0`)は発散・非ゲート既定は有限完走 + クリーン write-back。本番 cycle 2 の再現。
+  - `test_ungated_bridge_survives_constrained_hh_contact`: 上記の決め手(~0.7 Å、拘束 X–H)。橋渡し無しは発散・非ゲート橋渡しは完走を同一テストで検証。
