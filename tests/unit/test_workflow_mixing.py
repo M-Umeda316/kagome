@@ -348,6 +348,47 @@ def test_mixing_run_is_deterministic(tmp_path):
 
 
 @requires_openmm
+def test_mixing_phase_skips_gracefully_on_divergence(tmp_path, monkeypatch):
+    """Layer 2 (graceful degradation, specs/decisions.md 追補 2026-07-18 (WM-P4
+    de-clash)): if the classical mixing MD diverges even after de-clash + minimize
+    + warm-up, the workflow SKIPS that cycle instead of crashing the whole run.
+
+    We force an unrecoverable mix by monkeypatching ``run_mix_md`` to raise (the
+    real build runs, so this exercises the actual ``_run_mixing_phase`` skip path
+    including the mixing.jsonl record). The run must complete, mark mixing skipped,
+    run no ``mix_settle``, and leave a finite, usable state.
+    """
+    import kagome.prep.mix_md as mix_md_mod
+
+    def _boom(mix, cfg, seed):
+        raise RuntimeError('forced mixing divergence (test)')
+
+    monkeypatch.setattr(mix_md_mod, 'run_mix_md', _boom)
+
+    wf, state = _mix_workflow(settle_steps=3)
+    logs = wf.run(state, output_dir=tmp_path)          # must NOT raise
+
+    # (a) mixing is present but recorded as a zero-step skip; NO mix_settle
+    assert [l.phase for l in logs] == ['biased', 'unbiased', 'mixing']
+    assert logs[-1].steps == 0
+    phases = _trajectory_phases(tmp_path / 'trajectory.jsonl')
+    assert 'mix_settle' not in phases
+
+    # (b) mixing.jsonl records the skip with a reason
+    records = [json.loads(l) for l in
+               (tmp_path / 'mixing.jsonl').read_text(encoding='utf-8')
+               .splitlines() if l.strip()]
+    assert len(records) == 1
+    assert records[0]['cycle'] == 0
+    assert records[0]['skipped'] is True
+    assert 'skip_reason' in records[0] and records[0]['skip_reason']
+
+    # (c) the state stayed finite and usable (pre-mixing MLIP state kept)
+    assert np.isfinite(state.positions).all()
+    assert np.isfinite(state.velocities).all()
+
+
+@requires_openmm
 def test_settle_steps_zero_skips_settle_segment(tmp_path):
     """settle_steps=0: mixing runs, but no mix_settle log or frames appear."""
     from scripts._systems import _MONOMER_SMILES

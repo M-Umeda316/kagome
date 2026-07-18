@@ -429,6 +429,31 @@ def main() -> None:
     n_dissoc = len(tracker.confirmed_dissociations())
     logger.info('Confirmed formations: %d, dissociations: %d', n_form, n_dissoc)
 
+    # Surface graceful mixing skips (WM-P4 de-clash safety net, specs/decisions.md
+    # 追補 2026-07-18): a cycle whose classical mixing diverged even after
+    # de-clash + minimize + warm-up is skipped (pre-mixing MLIP state kept) rather
+    # than crashing the run. De-clash should make this near-zero; a non-trivial
+    # tally (say > 2 of n_cycles) is a RED FLAG that the measurement is
+    # compromised, so it is recorded here for the analysis to check.
+    mixing_skipped_cycles: list[int] = []
+    mixing_log = args.output_dir / 'mixing.jsonl'
+    if args.mix and mixing_log.exists():
+        for raw in mixing_log.read_text(encoding='utf-8').splitlines():
+            if not raw.strip():
+                continue
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if rec.get('skipped'):
+                mixing_skipped_cycles.append(rec.get('cycle'))
+    if mixing_skipped_cycles:
+        logger.warning(
+            'Mixing was SKIPPED on %d/%d cycle(s): %s. De-clash should make this '
+            'near-zero — investigate the packing/geometry if this is non-trivial.',
+            len(mixing_skipped_cycles), args.n_cycles, mixing_skipped_cycles,
+        )
+
     summary = {
         'total_steps': state.step,
         'n_acrylate': args.n_acrylate,
@@ -455,6 +480,11 @@ def main() -> None:
         'mix_timestep_fs': args.mix_timestep_fs if args.mix else None,
         'mix_platform': args.mix_platform if args.mix else None,
         'mix_charge_method': args.mix_charge_method if args.mix else None,
+        # Graceful mixing-skip tally (WM-P4 de-clash safety net): cycle indices
+        # whose classical mixing diverged and was skipped. Empty is the healthy
+        # case; a non-trivial count flags a compromised measurement.
+        'mixing_skipped_cycles': mixing_skipped_cycles,
+        'n_mixing_skipped': len(mixing_skipped_cycles),
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'propagation_events': n_form,

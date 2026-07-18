@@ -25,10 +25,15 @@ Radical / placeholder handling (specs/decisions.md 2026-07-17, decision (iii)):
   valence unit that exists only in the classical world and is dropped on
   write-back.
 * A placeholder H shed from an initiator radical (``apply_vinyl_addition``) is
-  left disconnected from the graph (coordination 0). OpenFF rejects a bare
-  ``[H]`` (RadicalsNotSupportedError), so such atoms are appended to the OpenMM
-  ``System`` as nonbonded-only, charge-neutral particles carrying a Sage-derived
-  aliphatic-H Lennard-Jones size (no bonded terms), then mapped back unchanged.
+  left disconnected from the graph (coordination 0) but is still a *real* MLIP
+  atom. OpenFF rejects a bare ``[H]`` (RadicalsNotSupportedError), so such atoms
+  are appended to the OpenMM ``System`` as nonbonded-only, charge-neutral
+  particles carrying a Sage-derived aliphatic-H Lennard-Jones size (no bonded
+  terms). They keep that LJ size — they interact during mixing, and their MIXED
+  coordinate is written back onto their MLIP index (NOT discarded; only cap H are
+  dropped). Because their mixing position re-enters the MLIP state, a placeholder
+  that starts on top of an atom is relocated by the de-clash pass rather than left
+  as a ghost overlap (specs/decisions.md 追補 2026-07-18 (WM-P4 de-clash)).
 
 Scope (P2): translator + tests only. Workflow integration (the mixing phase,
 ``MixConfig``, velocity re-draw, ``mix_settle``) is Phase P3 and lives elsewhere;
@@ -83,6 +88,146 @@ _MULTI_CAP_TILT_DEG = 54.7356
 _REF_H_VDW: dict[str, tuple[float, float]] = {}
 
 
+# ── injected-atom de-clash geometry (WM-P4 robustness) ────────────────────────
+# A freshly translated post-reaction system injects a cap H (1.09 Å from its
+# radical parent) and re-realizes a shed placeholder H at its former MLIP
+# coordinate. At production density either can start in a hard, near-singular LJ
+# overlap with a neighbouring atom (cap pointing straight into a neighbour, or a
+# placeholder on top of an atom); RMS-force minimization + soft-start warm-up
+# cannot escape a near-zero LJ separation (production cycle-4 crash, decisions.md
+# 追補 2026-07-18 (WM-P4 de-clash)). We therefore (a) place cap H along the
+# direction of MAXIMUM clearance and (b) relocate any injected atom still inside a
+# hard-clash radius, BEFORE the classical minimizer runs. Only injected atoms ever
+# move; original atoms are never touched. Fully deterministic — NO rng below.
+
+# Fixed candidate directions probed for every clearance search: a Fibonacci
+# (golden-angle) sphere of N=64 unit vectors, computed once from a pure formula.
+# Hardcoded and deterministic so the de-clash is bit-reproducible.
+_N_CLEARANCE_DIRS = 64
+
+# Below this nearest-image separation (Å) an injected atom is a hard clash and is
+# relocated. Above it the minimizer + warm-up handle the residual (a shed
+# placeholder sits ~1 Å from its former parent — hot but recoverable).
+_HARD_CLASH_A = 0.8
+# Clearance radius (Å) a relocated placeholder H is placed at from the atom it
+# clashed with. A de-clashed cap H is instead re-placed at the C–H bond length.
+_DECLASH_TARGET_A = 1.3
+
+
+def _fibonacci_sphere(n: int) -> NDArray[np.floating]:
+    """``n`` deterministic ~uniform unit vectors (golden-angle spiral). No rng."""
+    k = np.arange(n, dtype=np.float64)
+    z = 1.0 - 2.0 * (k + 0.5) / n
+    r = np.sqrt(np.clip(1.0 - z * z, 0.0, 1.0))
+    phi = np.pi * (1.0 + 5.0 ** 0.5) * k          # golden angle
+    return np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=1)
+
+
+_CLEARANCE_DIRS = _fibonacci_sphere(_N_CLEARANCE_DIRS)
+
+
+def _box_diag(cell_A: NDArray[np.floating] | None):
+    """Orthorhombic box edge lengths (Å) from a (3,3) cell, or ``None``.
+
+    The mixing boxes are cubic/orthorhombic (``np.diag([L, L, L])``); the diagonal
+    is the periodic length used for nearest-image de-clash distances.
+    """
+    if cell_A is None:
+        return None
+    return np.diag(np.asarray(cell_A, dtype=np.float64)).astype(np.float64)
+
+
+def _min_image(delta: NDArray[np.floating], box_diag) -> NDArray[np.floating]:
+    """Nearest-image wrap of displacement vector(s) under an orthorhombic box."""
+    if box_diag is None:
+        return np.asarray(delta, dtype=np.float64)
+    out = np.array(delta, dtype=np.float64, copy=True)
+    for a in range(3):
+        length = float(box_diag[a])
+        if length > 0.0:
+            out[..., a] -= length * np.round(out[..., a] / length)
+    return out
+
+
+def _clearance(point, obstacles, box_diag) -> float:
+    """Min nearest-image distance (Å) from ``point`` to any obstacle (inf if none)."""
+    obstacles = np.asarray(obstacles, dtype=np.float64)
+    if obstacles.shape[0] == 0:
+        return float('inf')
+    d = _min_image(obstacles - np.asarray(point, dtype=np.float64), box_diag)
+    return float(np.min(np.linalg.norm(d, axis=1)))
+
+
+def _min_clearance(points, obstacles, box_diag) -> float:
+    """Min over ``points`` of :func:`_clearance` (inf if no obstacles)."""
+    if np.asarray(obstacles).shape[0] == 0:
+        return float('inf')
+    return min(_clearance(p, obstacles, box_diag) for p in points)
+
+
+def _best_clearance_position(anchor, radius, obstacles, box_diag):
+    """Point at ``radius`` from ``anchor`` maximizing min-clearance to obstacles.
+
+    Probes the fixed :data:`_CLEARANCE_DIRS` set; the first candidate wins ties so
+    the result is deterministic. The injected atom's own bonded partner must
+    already be excluded from ``obstacles``.
+    """
+    anchor = np.asarray(anchor, dtype=np.float64)
+    best_pos = anchor + radius * _CLEARANCE_DIRS[0]
+    best_clr = _clearance(best_pos, obstacles, box_diag)
+    for direction in _CLEARANCE_DIRS[1:]:
+        cand = anchor + radius * direction
+        clr = _clearance(cand, obstacles, box_diag)
+        if clr > best_clr + 1e-12:
+            best_clr, best_pos = clr, cand
+    return best_pos
+
+
+def _declash_injected(
+    positions_omm: NDArray[np.floating],
+    cap_parent_omm: dict[int, int],
+    placeholder_omm: list[int],
+    box_diag,
+) -> tuple[NDArray[np.floating], int]:
+    """Relocate injected atoms that START in a hard clash. Returns (positions, n).
+
+    For every injected OpenMM particle whose nearest-image distance (excluding its
+    own bonded partner) to any other particle is below :data:`_HARD_CLASH_A`, move
+    it — and only it — to a clear spot: a cap H is re-placed at the C–H bond length
+    about its parent (max clearance); a placeholder H (coordination 0, no bonded
+    partner) is placed at :data:`_DECLASH_TARGET_A` from the atom it clashed with,
+    along the direction of maximum clearance. Original atoms never move. Atoms are
+    processed in ascending index order and ``positions`` is updated in place so
+    later injected atoms see earlier moves — fully deterministic (no rng).
+    """
+    pos = np.array(positions_omm, dtype=np.float64, copy=True)
+    n = len(pos)
+    moved = 0
+    for k in sorted(cap_parent_omm):
+        parent = cap_parent_omm[k]
+        obs = np.array([pos[j] for j in range(n) if j not in (k, parent)],
+                       dtype=np.float64)
+        if _clearance(pos[k], obs, box_diag) >= _HARD_CLASH_A:
+            continue
+        # Re-place at the C–H bond length so the Sage constraint is not grossly
+        # violated; the parent is its only bonded partner and is excluded above.
+        pos[k] = _best_clearance_position(pos[parent], _CAP_H_BOND_A, obs, box_diag)
+        moved += 1
+    for k in sorted(placeholder_omm):
+        obs = np.array([pos[j] for j in range(n) if j != k], dtype=np.float64)
+        if obs.shape[0] == 0:
+            continue
+        delta = _min_image(obs - pos[k], box_diag)
+        dist = np.linalg.norm(delta, axis=1)
+        nearest = int(np.argmin(dist))
+        if dist[nearest] >= _HARD_CLASH_A:
+            continue
+        anchor = pos[k] + delta[nearest]      # nearest-image coord of nearest atom
+        pos[k] = _best_clearance_position(anchor, _DECLASH_TARGET_A, obs, box_diag)
+        moved += 1
+    return pos, moved
+
+
 @dataclass
 class MixTranslatorConfig:
     """Force-field / charge options for the bond-graph -> OpenMM translation.
@@ -103,6 +248,14 @@ class MixTranslatorConfig:
     forcefield: str = 'openff-2.2.0.offxml'         # Sage 2.2
     nagl_model: str = 'openff-gnn-am1bcc-0.1.0-rc.3.pt'
     combine_nonbonded_forces: bool = True           # must remain True (see above)
+    # Geometric de-clash of injected atoms (WM-P4, specs/decisions.md 追補
+    # 2026-07-18 (WM-P4 de-clash)). True (default): place cap H along the
+    # direction of maximum clearance and relocate any injected atom (cap H or
+    # placeholder H) that still STARTS in a hard (<0.8 Å) overlap, before the
+    # classical minimizer runs. Only injected atoms ever move. False restores
+    # the legacy placement (cap opposite bonded neighbours, no relocation) — kept
+    # for the WM-P4 warm-up regression which needs the original hot contacts.
+    declash_injected: bool = True
 
     def __post_init__(self) -> None:
         if self.charge_method not in CHARGE_METHODS:
@@ -178,10 +331,12 @@ class ClassicalMix:
 
     .. warning::
         ``positions_A`` are a *starting guess*, not an equilibrated state: cap H
-        sit at idealized directions and a shed placeholder H still sits ~1 Å
-        from its former parent (severe LJ overlap; energy is finite but huge).
-        The consumer (P3) MUST energy-minimize before any dynamics —
-        ``metadata['requires_minimization']`` records this contract.
+        sit at idealized (max-clearance) directions and a shed placeholder H still
+        sits ~1 Å from its former parent (a hot but recoverable LJ overlap; energy
+        is finite but large). The de-clash pass (``declash_injected``) only removes
+        *hard* (<0.8 Å) near-singular overlaps; the consumer (P3) MUST still
+        energy-minimize before any dynamics — ``metadata['requires_minimization']``
+        records this contract.
 
     Attributes
     ----------
@@ -528,6 +683,11 @@ def build_classical_mix(
     placeholder_atoms: list[int] = []    # lone H global indices
     charge_methods_used: set[str] = set()
     n_cap_h = 0
+    # Injected-atom bookkeeping for the de-clash pass: cap OpenMM idx -> its
+    # parent's OpenMM idx (the cap's only bonded partner), and the OpenMM indices
+    # of the appended placeholder H (coordination 0, no bonded partner).
+    cap_parent_omm: dict[int, int] = {}
+    placeholder_omm: list[int] = []
 
     for atoms in components:
         # A lone hydrogen with no bonds is a shed placeholder -> nonbonded ghost.
@@ -563,10 +723,19 @@ def build_classical_mix(
             unique_templates.append(template)
 
         instance_offmols.append(offmol)
+        # Record each cap's OpenMM index and its parent's OpenMM index BEFORE the
+        # extend shifts the base. Real atoms of this fragment occupy OpenMM
+        # indices base + (their position in `atoms`); cap slots are the None
+        # entries of local_to_global (in cap_parents order).
+        base = len(omm_to_mlip)
+        cap_slots = [i for i, g in enumerate(local_to_global) if g is None]
+        for slot, parent_g in zip(cap_slots, cap_parents):
+            cap_parent_omm[base + slot] = base + atoms.index(parent_g)
         omm_to_mlip.extend(local_to_global)
         frag_positions.append(
             _fragment_positions(
                 local_to_global, cap_parents, positions_A, topology, n_atoms,
+                cell_A, cfg.declash_injected,
             )
         )
 
@@ -610,6 +779,7 @@ def build_classical_mix(
             assert sys_idx == nb_idx == system.getNumParticles() - 1
             omm_to_mlip.append(g)
             positions_list.append(positions_A[g])
+            placeholder_omm.append(len(omm_to_mlip) - 1)
 
     # Ensure the system box matches (interchange sets it from off_top, but keep
     # System and returned box explicitly consistent for P3's context setup).
@@ -625,6 +795,16 @@ def build_classical_mix(
         np.asarray(positions_list, dtype=np.float64)
         if positions_list else np.zeros((0, 3), dtype=np.float64)
     )
+
+    # Geometric de-clash of injected atoms (Layer 1, specs/decisions.md 追補
+    # 2026-07-18 (WM-P4 de-clash)): move any cap H / placeholder H that STARTS in
+    # a hard (<0.8 Å) overlap out to a clear spot before P3's classical minimizer
+    # runs. Only injected atoms move; every original atom keeps its coordinate.
+    n_declashed = 0
+    if cfg.declash_injected and (cap_parent_omm or placeholder_omm):
+        positions_out, n_declashed = _declash_injected(
+            positions_out, cap_parent_omm, placeholder_omm, _box_diag(cell_A),
+        )
 
     mlip_to_omm = {
         mlip_idx: omm_idx
@@ -660,6 +840,11 @@ def build_classical_mix(
         'n_fragments': len(instance_offmols),
         'n_cap_h': n_cap_h,
         'n_placeholder_h': len(placeholder_atoms),
+        # Injected-atom de-clash (Layer 1): whether it was active and how many
+        # injected atoms started in a hard clash and were relocated (0 in the
+        # healthy case — a nonzero count means the packing was tight).
+        'declash_injected': cfg.declash_injected,
+        'n_declashed': n_declashed,
         'n_omm_particles': system.getNumParticles(),
         'cache_hits': cache.hits,
         'cache_misses': cache.misses,
@@ -712,36 +897,41 @@ def _verify_topology_elements(
             )
 
 
-def _cap_positions(
+def _vacant_axis(
     parent: int,
-    count: int,
     positions_A: NDArray[np.floating],
     topology: BondTopology,
     n_atoms: int,
 ) -> NDArray[np.floating]:
-    """Deterministic starting coordinates for ``count`` cap H on one centre.
+    """Unit vector opposite the parent's bonded neighbours (the vacant valence).
 
-    All caps sit ``_CAP_H_BOND_A`` (Å) from the parent. The vacant-valence axis
-    is the negated sum of unit vectors to the parent's existing real neighbours
-    (``[0, 0, 1]`` for an isolated heavy atom). One cap goes straight along the
-    axis; two or more are tilted ``_MULTI_CAP_TILT_DEG`` off it and spread
-    azimuthally (``2*pi/count`` apart) so no two caps coincide — coincident caps
-    would give zero cap-parent-cap angles and NaN angle forces (review
-    2026-07-17). Pure geometry, no rng: bitwise reproducible.
-
-    Returns a ``(count, 3)`` array in Å.
+    The negated sum of unit vectors to the parent's existing real neighbours;
+    ``[0, 0, 1]`` for a heavy atom with no real neighbours. Deterministic.
     """
     p = positions_A[parent]
-    dirs = np.zeros(3, dtype=np.float64)
+    acc = np.zeros(3, dtype=np.float64)
     for nbr in topology.neighbors(parent):
         if nbr < n_atoms:
             d = positions_A[nbr] - p
             norm = np.linalg.norm(d)
             if norm > 1e-9:
-                dirs += d / norm
-    norm = np.linalg.norm(dirs)
-    axis = -dirs / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
+                acc += d / norm
+    norm = np.linalg.norm(acc)
+    return -acc / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
 
+
+def _caps_from_axis(
+    p: NDArray[np.floating], axis: NDArray[np.floating], count: int,
+) -> NDArray[np.floating]:
+    """``count`` cap coordinates at ``_CAP_H_BOND_A`` from ``p`` about ``axis``.
+
+    One cap sits on the axis; two or more tilt ``_MULTI_CAP_TILT_DEG`` off it and
+    spread azimuthally (``2*pi/count`` apart) so no two coincide — coincident caps
+    would give zero cap-parent-cap angles and NaN angle forces (review
+    2026-07-17). ``|cap - p| == _CAP_H_BOND_A`` exactly for every cap.
+    """
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
     if count == 1:
         return (p + _CAP_H_BOND_A * axis)[None, :]
 
@@ -765,18 +955,71 @@ def _cap_positions(
     return out
 
 
+def _cap_positions(
+    parent: int,
+    count: int,
+    positions_A: NDArray[np.floating],
+    topology: BondTopology,
+    n_atoms: int,
+    cell_A: NDArray[np.floating] | None = None,
+    maximize_clearance: bool = True,
+) -> NDArray[np.floating]:
+    """Deterministic starting coordinates for ``count`` cap H on one centre.
+
+    Legacy placement (``maximize_clearance=False``) puts the cap(s) about the
+    vacant-valence axis — opposite the parent's bonded neighbours. The default
+    de-clash placement (WM-P4, specs/decisions.md 追補 2026-07-18 (WM-P4
+    de-clash)) instead picks the axis — from the vacant axis plus the fixed
+    :data:`_CLEARANCE_DIRS` Fibonacci-sphere set — that MAXIMISES the minimum
+    nearest-image distance from every cap to all other atoms (bonded + nonbonded),
+    so a cap never points straight into a neighbour. The parent (the cap's own
+    bonded partner) is excluded from the clearance obstacles. The C–H bond length
+    is preserved in every case. Pure geometry, no rng: bitwise reproducible.
+
+    Returns a ``(count, 3)`` array in Å.
+    """
+    p = positions_A[parent]
+    analytic = _vacant_axis(parent, positions_A, topology, n_atoms)
+    if not maximize_clearance:
+        return _caps_from_axis(p, analytic, count)
+
+    # Obstacles = every other real atom (its own bonded partner, the parent, is
+    # excluded so the max-clearance search does not try to flee its own bond).
+    obstacles = (
+        np.array([positions_A[j] for j in range(n_atoms) if j != parent],
+                 dtype=np.float64)
+        if n_atoms > 1 else np.zeros((0, 3), dtype=np.float64)
+    )
+    if obstacles.shape[0] == 0:
+        return _caps_from_axis(p, analytic, count)
+
+    box_diag = _box_diag(cell_A)
+    # Vacant axis is candidate #0 (deterministic tie-break; exact no-obstacle
+    # parity with the legacy geometry).
+    best = _caps_from_axis(p, analytic, count)
+    best_score = _min_clearance(best, obstacles, box_diag)
+    for axis in _CLEARANCE_DIRS:
+        caps = _caps_from_axis(p, axis, count)
+        score = _min_clearance(caps, obstacles, box_diag)
+        if score > best_score + 1e-12:
+            best_score, best = score, caps
+    return best
+
+
 def _fragment_positions(
     local_to_global: list[int | None],
     cap_parents: list[int],
     positions_A: NDArray[np.floating],
     topology: BondTopology,
     n_atoms: int,
+    cell_A: NDArray[np.floating] | None = None,
+    maximize_clearance: bool = True,
 ) -> NDArray[np.floating]:
     """Coordinates (Å) for a fragment's OpenMM atoms, cap H included.
 
     Real atoms take their MLIP coordinate; cap H are placed near their radical
-    parent (see :func:`_cap_positions` — a centre's caps are spread so they
-    never coincide).
+    parent (see :func:`_cap_positions` — max-clearance direction by default, and
+    a centre's caps are spread so they never coincide).
     """
     out = np.zeros((len(local_to_global), 3), dtype=np.float64)
 
@@ -794,6 +1037,7 @@ def _fragment_positions(
     for parent, slots in per_parent.items():
         coords = _cap_positions(
             parent, len(slots), positions_A, topology, n_atoms,
+            cell_A, maximize_clearance,
         )
         for slot, coord in zip(slots, coords):
             out[slot] = coord

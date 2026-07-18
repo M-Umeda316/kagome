@@ -433,7 +433,7 @@ def test_cache_reuse_across_two_calls():
 
 # ── WM-P4: classical mixing MD survives post-reaction injected hot contacts ────
 
-def _dense_reacted_mix(box_A=12.0, place_box_A=30.0, seed=7):
+def _dense_reacted_mix(box_A=12.0, place_box_A=30.0, seed=7, declash_injected=False):
     """Build a dense, *reacted* ClassicalMix (cap H + placeholder H injected).
 
     A confirmed vinyl addition (``apply_vinyl_addition``) caps the new growth-end
@@ -443,6 +443,10 @@ def _dense_reacted_mix(box_A=12.0, place_box_A=30.0, seed=7):
     isotropically compressing coordinates + cell to ``box_A`` (~0.4 g/mL): the
     random placer cannot reach that density directly (min-separation), and the
     dense box is what makes the injected contacts bite under dynamics.
+
+    ``declash_injected`` defaults to ``False`` so the warm-up regression below
+    sees the ORIGINAL injected hot contacts (the geometric de-clash is exactly
+    what removes them); the de-clash tests build with it True.
     """
     specs = [(_MONOMER_SMILES, 2), (_METHACRYLATE_SMILES, 2)]
     pos, species, pmap, topo, _cell = _copolymer_system(
@@ -453,7 +457,9 @@ def _dense_reacted_mix(box_A=12.0, place_box_A=30.0, seed=7):
     pos = (pos % place_box_A) * (box_A / place_box_A)   # isotropic compression
     cell = np.diag([box_A, box_A, box_A]).astype(float)
     mix = build_classical_mix(
-        topo, species, pos, cell, MixTranslatorConfig(charge_method='gasteiger'))
+        topo, species, pos, cell,
+        MixTranslatorConfig(
+            charge_method='gasteiger', declash_injected=declash_injected))
     # sanity: this fixture must actually exercise the injected-atom path
     assert mix.metadata['n_cap_h'] == 1
     assert mix.metadata['n_placeholder_h'] == 1
@@ -504,4 +510,149 @@ def test_mixing_md_survives_injected_hot_contacts_after_reaction():
     assert result.n_warmup_steps > 0             # warm-up ran, tracked separately
     # write-back maps cleanly (no NaN leaked into the MLIP coordinates)
     restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
+
+
+# ── WM-P4 Layer 1: geometric de-clash of injected atoms ───────────────────────
+
+def test_cap_direction_maximises_clearance_away_from_a_neighbour():
+    """Cap-H best-direction (pure geometry, no MD): with a real atom sitting on
+    the naive vacant-valence axis, the max-clearance placement points the cap the
+    OTHER way, so it never lands on the blocking neighbour."""
+    from kagome.prep.mixing import _cap_positions, _vacant_axis
+
+    # radical C at origin bonded to one neighbour at +x -> vacant axis is -x.
+    species = ['C', 'C']
+    topo = BondTopology.from_bonds([(0, 1, 1.0)])
+    pos = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+    axis = _vacant_axis(0, pos, topo, 2)
+    np.testing.assert_allclose(axis, [-1.0, 0.0, 0.0], atol=1e-9)
+
+    # Put a blocker exactly where the naive cap (p + 1.09*axis) would go.
+    blocker = pos[0] + 1.09 * axis
+    pos2 = np.vstack([pos, blocker[None, :]])            # atoms: C, C, blocker
+    topo2 = BondTopology.from_bonds([(0, 1, 1.0)])       # blocker unbonded
+    cap = _cap_positions(0, 1, pos2, topo2, 3)[0]
+
+    # naive placement would collide with the blocker; the de-clash placement
+    # keeps well clear of it while preserving the C-H bond length.
+    assert np.linalg.norm(cap - blocker) > 1.0
+    np.testing.assert_allclose(np.linalg.norm(cap - pos2[0]), 1.09, atol=1e-9)
+
+
+def test_legacy_cap_placement_ignores_clearance():
+    """maximize_clearance=False reproduces the legacy 'opposite the bond' cap."""
+    from kagome.prep.mixing import _cap_positions
+
+    species = ['C', 'C']
+    topo = BondTopology.from_bonds([(0, 1, 1.0)])
+    pos = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+    cap = _cap_positions(0, 1, pos, topo, 2, maximize_clearance=False)[0]
+    np.testing.assert_allclose(cap, [-1.09, 0.0, 0.0], atol=1e-9)
+
+
+def test_declash_moves_only_the_injected_atom_out_of_a_hard_overlap():
+    """_declash_injected relocates a coincident placeholder off its victim to a
+    safe clearance, and leaves every original atom exactly where it was."""
+    from kagome.prep.mixing import _box_diag, _declash_injected, _HARD_CLASH_A
+
+    # 4 real atoms + one placeholder (index 4) placed on top of atom 0.
+    pos = np.array([
+        [0.0, 0.0, 0.0],
+        [5.0, 0.0, 0.0],
+        [0.0, 5.0, 0.0],
+        [0.0, 0.0, 5.0],
+        [0.0, 0.0, 0.0],        # placeholder coincident with atom 0
+    ])
+    box = np.diag([20.0, 20.0, 20.0]).astype(float)
+    out, moved = _declash_injected(
+        pos, cap_parent_omm={}, placeholder_omm=[4], box_diag=_box_diag(box))
+    assert moved == 1
+    # originals untouched
+    np.testing.assert_array_equal(out[:4], pos[:4])
+    # placeholder pushed to a real clearance from every other atom
+    dists = np.linalg.norm(out[:4] - out[4], axis=1)
+    assert dists.min() >= _HARD_CLASH_A
+
+
+def test_declash_noop_when_no_hard_overlap():
+    """An injected atom already clear of everything is left in place."""
+    from kagome.prep.mixing import _box_diag, _declash_injected
+
+    pos = np.array([
+        [0.0, 0.0, 0.0],
+        [5.0, 0.0, 0.0],
+        [2.5, 2.5, 2.5],        # placeholder, far from both reals
+    ])
+    box = np.diag([20.0, 20.0, 20.0]).astype(float)
+    out, moved = _declash_injected(
+        pos, cap_parent_omm={}, placeholder_omm=[2], box_diag=_box_diag(box))
+    assert moved == 0
+    np.testing.assert_array_equal(out, pos)
+
+
+@requires_openmm
+def test_declash_rescues_hard_injected_overlap_end_to_end():
+    """Layer 1 rescues a hard, near-singular injected overlap under real MD.
+
+    Build a dense *reacted* copolymer (cap H + placeholder H injected) and force
+    the shed placeholder H to COINCIDE with a real atom — a true LJ singularity
+    that minimize + warm-up cannot escape. Only the build-time ``declash_injected``
+    flag differs between the two runs; the MD config (warm-up ON) is identical, so
+    the geometric de-clash is the sole cause of survival:
+
+    * OFF -> the coincident injected atom diverges (NaN / RuntimeError);
+    * ON  -> the placeholder is relocated before minimization and the run
+      completes with finite positions that write back cleanly.
+    """
+    import openmm
+
+    specs = [(_MONOMER_SMILES, 2), (_METHACRYLATE_SMILES, 2)]
+    place_box, box_A = 30.0, 12.0
+    pos, species, pmap, topo, _cell = _copolymer_system(
+        specs, 1, box=place_box, seed=7)
+    radical_c = _radical_c_of_initiator(species, topo, 1, _INITIATOR_SMILES)
+    apply_vinyl_addition(topo, radical_c, min(pmap), pmap, species)
+    pos = (pos % place_box) * (box_A / place_box)        # isotropic compression
+    cell = np.diag([box_A, box_A, box_A]).astype(float)
+
+    placeholder = [a for a in range(len(species))
+                   if is_placeholder_h(topo, species, a)]
+    assert len(placeholder) == 1
+    g = placeholder[0]
+    victim = next(a for a in range(len(species))
+                  if species[a] != 'H' and a != g)
+    pos[g] = pos[victim].copy()                          # force a hard overlap
+
+    # Deliberately WEAK minimization: at unit scale the minimizer is otherwise
+    # strong enough to relieve the overlap that production's 564-atom RMS-force
+    # dilution could not — so we stand that dilution in with a loose tolerance
+    # (same device as the WM-P4 warm-up regression) AND disable the tighter
+    # second-pass minimize (warmup tol == main tol, so it is skipped) so the hard
+    # overlap survives into the dynamics exactly as it did in production. The
+    # soft-start warm-up stays ON — identical for both runs — so the ONLY
+    # difference is the build-time de-clash.
+    common = dict(
+        temperature_K=333.0, n_steps=200, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e6,
+        warmup_minimize_tolerance_kj_mol_nm=1.0e6,
+    )
+
+    # Layer 1 OFF: coincident injected atom -> singular -> diverges.
+    mix_off = build_classical_mix(
+        topo, species, pos, cell,
+        MixTranslatorConfig(charge_method='gasteiger', declash_injected=False))
+    assert mix_off.metadata['n_declashed'] == 0
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix_off, MixMDConfig(**common), seed=1)
+
+    # Layer 1 ON (default): de-clash relocates the injected atom -> finite run.
+    mix_on = build_classical_mix(
+        topo, species, pos, cell,
+        MixTranslatorConfig(charge_method='gasteiger', declash_injected=True))
+    assert mix_on.metadata['n_declashed'] >= 1
+    result = run_mix_md(mix_on, MixMDConfig(**common), seed=1)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    restored = mix_on.write_back(result.positions_A)
     assert np.isfinite(restored).all()
