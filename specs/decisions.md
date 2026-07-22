@@ -1864,3 +1864,19 @@ Use this template for each decision.
 - **radius 削減は密度上で精度崩壊が加速**: 希薄スモーク(252原子)では 5.5Å の F-RMSE は 0.03 だったが、本番密度では 0.20(最大誤差 ~4 kcal/mol/Å)。TDBB は結合形成の障壁形状に敏感であり、この規模の力誤差は反応動力学を歪める。メモリ削減(6.0→5.5 で −19%)の対価として受容不能。
 - **結論**: エッジ数経由のメモリ天井押上げは**封鎖**。paper-scale 以上のメモリ対策として残るのは (d) upstream の gradient checkpointing(高コスト・当面見送り)と、adapter の `half_supercell` オプション(**グラフを変えずに** 5k+ 原子でグラフ構築のメモリ/スループットを改善と upstream 文書に記載 — ただし活性化メモリ本体でなくグラフ構築段の話なので効果は限定的の見込み、nylon66 4400原子で要実測)。
 - 計測スクリプトは adapter 差し替えのみで upstream 無改造・本番既定値無変更。採否判断は不要(何も採用しない)。
+
+## 追補 2026-07-23 — スケールアップ検証 (c) 実測: --compile は paper-scale で 1.24×、メモリも −8%(このカードでは 1.7× に届かず)
+
+検証タスク (c)「`--compile`(dynamic)の実 1.7× を本番スケールで実測」の結果。`profile_vram.py` に `--compile`/`--warmup-steps` を追加(commit 4cc0859)。**罠の修正込み**: profile_vram はモジュール先頭で `TORCHDYNAMO_DISABLE=1` を setdefault しており、素朴に `--compile` を足すと黙って eager 実行になる(2026-07-14 記載の既知の罠)— sys.argv ゲートで回避。paper-scale MA 2520原子・MD 300 step・warmup 30 step・`--no-empty-cache`・RTX 4060 Ti 16GB×WSL(`runs/scaleup_c/`)。
+
+| 腕(実行順) | sec/step | device peak | md alloc |
+|---|---|---|---|
+| eager① | 0.841 | 9.76 GB | 7.23 GB |
+| compile | **0.669** | **9.23 GB** | **6.63 GB(−8%)** |
+| eager②(挟み込み) | 0.820 | 9.76 GB | 7.23 GB |
+
+- **速度: compile = 1.24×**(eager 平均 0.83 → 0.669)。eager①≈eager② で同日内ドリフトなし=ペア比は有効。upstream 主張の 1.7× には届かないが、**このカード(4060 Ti)は SM 不足で inductor が `max_autotune_gemm` を無効化している**(ログ明記)ため、SM の多い RTX 5000 Ada 32GB 機では上振れの余地あり(要再計測)。
+- **メモリ: −8%**(alloc 7.23→6.63 GB、device peak −0.53 GB)。カーネル融合で中間活性化が減るためで、メモリ天井が本丸という文脈では速度と同じく有意義な副収穫。
+- **安定性**: 再コンパイル暴発なし(300 step 中 Recompiling 0 件)、reserved クリープ ~0-0.2 MB/step(有界)、警告どおり dynamic shapes で shape 変動(MD の隣接数変動)を吸収。コンパイル初期コストは minimize/warmup 段に吸収され、warmup 30 step 後の定常は安定。
+- **インフラ観測(別件)**: 同一条件の eager が昨日 0.558 → 今日 0.83 と**日間 ±50% 変動**(GPU 温度・残留プロセス・WSL 劣化は除外済み。CPU ディスパッチ律速ゆえホスト側負荷が疑わしい)。**絶対値の日跨ぎ比較は無効、速度比較は必ず同日ペア(挟み込み)で行うこと**。
+- **含意**: (a) empty_cache off(1.41×)と (c) compile(1.24×)は独立機構で積算見込み ~1.7×。ただし積算の同日ペア実測は未実施(次に 4条件マトリクスを回すか、32GB 機での再計測時に併せて確認)。**本番既定値は未変更**(`--compile` は run スクリプトに既存フラグあり、opt-in のまま)。
