@@ -72,10 +72,13 @@ def create_orb_calculator(
     charge: total molecular charge.
     spin: spin multiplicity (2S+1).
     empty_cache: call torch.cuda.empty_cache() after every compute (cuda
-        only). Required on 16 GB GPUs where per-step neighbour-graph size
-        changes fragment the caching allocator (decisions.md 2026-06-15);
-        safe to disable on >=32 GB GPUs, where it costs ~9% of CPU time
-        (py-spy, decisions.md 2026-07-14).
+        only). Required on Windows-native CUDA, where expandable_segments is
+        a no-op and per-step neighbour-graph size changes fragment the
+        caching allocator (decisions.md 2026-06-15). On Linux/WSL,
+        expandable_segments absorbs the fragmentation alone: measured flat
+        reserved VRAM over 1000 paper-scale steps even on 16 GB, while
+        empty_cache's implicit sync costs ~29% of wall-clock (decisions.md
+        追補 2026-07-22/23) — pass --no-empty-cache there.
     """
     _configure_torch_env(compile)
 
@@ -237,13 +240,14 @@ class OrbCalculatorAdapter(Calculator):
         forces = forces_ev * EV_TO_KCAL_MOL
 
         # Release the per-call autograd workspace back to the allocator. The
-        # neighbour-graph size varies per step, so without this the CUDA caching
-        # allocator fragments and reserved VRAM creeps up until a long paper-scale
-        # run exhausts memory and hangs (observed at 2520 atoms on 16 GB). batch/
-        # result are dropped first so their tensors are freeable. See specs/
-        # decisions.md 2026-06-15 VRAM record. empty_cache() synchronizes and
-        # cost ~9% of CPU time at paper scale (py-spy, decisions.md 2026-07-14),
-        # so it is gated for GPUs with headroom (>=32 GB).
+        # neighbour-graph size varies per step; on Windows-native CUDA (where
+        # expandable_segments is a no-op) the caching allocator fragments and
+        # reserved VRAM creeps up until a long paper-scale run exhausts memory
+        # and hangs (observed at 2520 atoms on 16 GB, decisions.md 2026-06-15).
+        # On Linux/WSL, expandable_segments absorbs this alone (reserved flat
+        # over 1000 paper-scale steps, decisions.md 追補 2026-07-22/23), and
+        # empty_cache()'s implicit sync costs ~29% wall-clock — hence the gate.
+        # batch/result are dropped first so their tensors are freeable.
         if self._device == 'cuda':
             del batch, result
             if self._empty_cache:

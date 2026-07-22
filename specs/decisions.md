@@ -1896,3 +1896,4 @@ empty_cache × compile の4条件+挟み込みを同日連続5本で実測(条�
 - メモリは compile 由来の −8.8% が併用でも維持。m4 の reserved クリープ 0.2 MB/step は単独 compile 計測と同値で有界(300 step で +60 MB、天井には遠い)。
 - 基準絶対値は昨日比でまた変動(ec-on eager: 昨日 0.785 → 本日 1.10)。**同日挟み込みルールの必要性を再確認**。
 - **運用推奨(このカード・WSL)**: 長尺 GPU ランは `--no-empty-cache --compile` 併用で ~1.65×。既定値は据え置き(opt-in)。本番ワークロード(バロスタット+結合生成+resume)での compile 長時間 soak が既定値昇格の残条件。
+- **compile の数値等価性(2026-07-23 確認)**: 同一座標(MA 624原子)で eager vs compile の力を比較: クロス RMSE 0.00394 kcal/mol/Å は eager 同士の再計算ノイズ床 0.00408(TF32/atomics 非決定性)と同一、最大差も同水準。**compile は力をノイズ床を超えて変えない** — 併用推奨の数値的裏付け。
