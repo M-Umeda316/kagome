@@ -202,6 +202,14 @@ class CycleLog:
     min_pair_distance: float = float('inf')
 
 
+# Allowed values for MixConfig fail-fast validation. Kept in one place so they
+# stay in sync with the CLI `choices=` in scripts/run_vinyl_copolymer.py and
+# with MixTranslatorConfig / kagome.prep.charges.CHARGE_METHODS.
+_MIX_ALLOWED_PLATFORMS: frozenset[str] = frozenset(
+    {'CUDA', 'OpenCL', 'CPU', 'Reference'})
+_MIX_ALLOWED_CHARGE_METHODS: frozenset[str] = frozenset({'nagl', 'gasteiger'})
+
+
 @dataclass
 class MixConfig:
     """WM-P3 classical mixing stage (specs/decisions.md 2026-07-17 (i), 追補
@@ -234,6 +242,23 @@ class MixConfig:
         if self.temperature_K <= 0:
             raise ValueError(
                 f'temperature_K must be positive; got {self.temperature_K}')
+        # Fail fast on the remaining knobs so a bad value is rejected here rather
+        # than clamping n_mix_steps to 1 / failing deep in the first mixing cycle
+        # (review: MixConfig had no timestep/friction/platform/charge validation).
+        if self.timestep_fs <= 0:
+            raise ValueError(
+                f'timestep_fs must be positive; got {self.timestep_fs}')
+        if self.friction_per_ps <= 0:
+            raise ValueError(
+                f'friction_per_ps must be positive; got {self.friction_per_ps}')
+        if self.platform not in _MIX_ALLOWED_PLATFORMS:
+            raise ValueError(
+                f'platform must be one of {sorted(_MIX_ALLOWED_PLATFORMS)}; '
+                f'got {self.platform!r}')
+        if self.charge_method not in _MIX_ALLOWED_CHARGE_METHODS:
+            raise ValueError(
+                f'charge_method must be one of '
+                f'{sorted(_MIX_ALLOWED_CHARGE_METHODS)}; got {self.charge_method!r}')
 
     @property
     def n_mix_steps(self) -> int:
@@ -1105,20 +1130,72 @@ class PolymerizationWorkflow:
         # thread-order-dependent way. Draw from [1, 2**31-1): OpenMM's
         # setRandomNumberSeed(0) means "pick a fresh random seed", which would
         # silently break determinism ~1-in-2e9 draws.
+        #
+        # Determinism across the graceful-skip safety net (追補 2026-07-18 (WM-P4
+        # de-clash)): draw mix_seed UNCONDITIONALLY, before the try, so the
+        # workflow rng advances by exactly this one draw whether or not the
+        # numeric mixing MD then diverges. A skipped cycle consumes ONLY this seed
+        # draw (no MB velocity re-draw, no settle MD); a successful cycle
+        # additionally consumes those. skip-vs-success is a deterministic function
+        # of (seed, geometry), so the rng trajectory stays reproducible and a
+        # mid-mix crash never loses a draw and desyncs a resume.
         mix_seed = int(rng.integers(1, 2 ** 31 - 1))
-        result = run_mix_md(
-            mix,
-            MixMDConfig(
-                temperature_K=mcfg.temperature_K,
-                n_steps=mcfg.n_mix_steps,
-                timestep_fs=mcfg.timestep_fs,
-                friction_per_ps=mcfg.friction_per_ps,
-                platform=mcfg.platform,
-            ),
-            seed=mix_seed,
-        )
 
-        new_positions = mix.write_back(result.positions_A)
+        # The divergence surfaces either as our RuntimeError or as openmm's
+        # OpenMMException ('Particle coordinate is NaN'); openmm is a hard
+        # requirement whenever mixing is active, so import it for the tuple.
+        try:
+            import openmm
+            mix_errors: tuple[type[BaseException], ...] = (
+                RuntimeError, openmm.OpenMMException)
+        except Exception:                    # pragma: no cover - openmm present
+            mix_errors = (RuntimeError,)
+
+        try:
+            result = run_mix_md(
+                mix,
+                MixMDConfig(
+                    temperature_K=mcfg.temperature_K,
+                    n_steps=mcfg.n_mix_steps,
+                    timestep_fs=mcfg.timestep_fs,
+                    friction_per_ps=mcfg.friction_per_ps,
+                    platform=mcfg.platform,
+                ),
+                seed=mix_seed,
+            )
+            new_positions = mix.write_back(result.positions_A)
+        except mix_errors as exc:
+            # Graceful degradation (Layer 2, 追補 2026-07-18 (WM-P4 de-clash)): if
+            # de-clash + minimize + warm-up STILL diverge, do not crash the whole
+            # run. Skip mixing (and its settle) for THIS cycle only: keep the
+            # pre-mixing MLIP state untouched (positions + velocities), record the
+            # skip, and let the loop continue. The unmixed checkpoint is still
+            # written normally by run(). De-clash should make skips near-zero — a
+            # non-trivial skip rate means the measurement is compromised, so the
+            # skip is SURFACED (WARNING + mixing.jsonl skipped=true, tallied into
+            # summary.json), never silently swallowed.
+            skip_reason = f'{type(exc).__name__}: {exc}'
+            logger.warning(
+                'Cycle %d mixing SKIPPED (%s): keeping pre-mixing MLIP state; '
+                'mix_settle also skipped. This should be RARE — investigate if it '
+                'recurs.', cycle, skip_reason,
+            )
+            if self._mixing_log is not None:
+                record = {
+                    'schema_version': 1,
+                    'cycle': cycle,
+                    'skipped': True,
+                    'skip_reason': skip_reason,
+                    'mix_time_ps': mcfg.mix_time_ps,
+                    'seed': mix_seed,
+                    'n_cap_h': mix.metadata.get('n_cap_h'),
+                    'n_placeholder_h': mix.metadata.get('n_placeholder_h'),
+                    'n_declashed': mix.metadata.get('n_declashed'),
+                }
+                with open(self._mixing_log, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(record) + '\n')
+            return [CycleLog(cycle=cycle, phase='mixing', steps=0)]
+
         # Diffusion metric (vi): OpenMM does not wrap coordinates, so the
         # direct displacement is the unwrapped travel distance (追補 (j)).
         rms_disp_A = float(np.sqrt(np.mean(
@@ -1129,9 +1206,14 @@ class PolymerizationWorkflow:
 
         if self._mixing_log is not None:
             record = {
+                'schema_version': 1,
                 'cycle': cycle,
+                'skipped': False,
                 'mix_time_ps': mcfg.mix_time_ps,
                 'n_steps_classical': result.n_steps,
+                # Soft-start warm-up steps (WM-P4 robustness): counted apart from
+                # the reported mixing steps so the mixing measurement is clean.
+                'n_warmup_steps': result.n_warmup_steps,
                 'seed': mix_seed,
                 'rms_displacement_A': rms_disp_A,
                 'minimized_energy_kj_mol': result.minimized_energy_kj_mol,
@@ -1140,6 +1222,9 @@ class PolymerizationWorkflow:
                 'nagl_fallback': mix.metadata.get('nagl_fallback'),
                 'n_cap_h': mix.metadata.get('n_cap_h'),
                 'n_placeholder_h': mix.metadata.get('n_placeholder_h'),
+                # Injected atoms relocated by the de-clash pass (0 in the healthy
+                # case; nonzero flags a tight local packing worth watching).
+                'n_declashed': mix.metadata.get('n_declashed'),
                 'cache_hits': mix.metadata.get('cache_hits'),
                 'cache_misses': mix.metadata.get('cache_misses'),
             }
@@ -1147,9 +1232,9 @@ class PolymerizationWorkflow:
                 f.write(json.dumps(record) + '\n')
         logger.info(
             'Cycle %d mixing: %.1f ps classical (%d steps), rms disp %.2f A, '
-            'cap H %s, cache %s/%s',
+            'cap H %s, declashed %s, cache %s/%s',
             cycle, mcfg.mix_time_ps, result.n_steps, rms_disp_A,
-            mix.metadata.get('n_cap_h'),
+            mix.metadata.get('n_cap_h'), mix.metadata.get('n_declashed'),
             mix.metadata.get('cache_hits'), mix.metadata.get('cache_misses'),
         )
 

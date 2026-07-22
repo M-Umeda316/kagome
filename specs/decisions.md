@@ -1670,3 +1670,80 @@ Use this template for each decision.
   - **resume 時の測定モード切替ガード**: checkpoint extra に mixing 設定(mix_ps/settle/timestep/platform/charge_method)を記録し、resume 時の CLI 引数と不一致なら hard error。--mix の付け忘れ等でサイクル途中から paper-faithful ループに黙って切り替わり測定を汚染するのを防止(古い checkpoint は mixing キー無し=混合オフ扱い)。
   - **base_energy 図も mix_settle フレーム除外**: energy scatter だけでなく `plot_energy_vs_step` 第2図(base energy)も unbiased_mask を適用し、サイクル境界の整定過渡スパイクを排除。
   - 見送り: 古典 NVT チャンクループの openmm_equilibrate との共通化(cleanup)は prep テスト済みコードの改変リスクを避け WM-P3 スコープ外(将来のリファクタ課題)。
+
+### 追補 2026-07-18 (WM-P4): 古典混合MDのソフトスタート・ウォームアップ(反応後の注入ホットコンタクト対策)
+本番キャンペーン(runs/wm_p4/、4腕)の混合腕 `A2_mix50` がサイクル0の混合フェーズで `openmm.OpenMMException: Particle coordinate is NaN`(`run_mix_md` の `integrator.step`)でクラッシュした実障害の根本対策。混合モードは `--mix` 明示フラグでのみ有効で、TDBB 方程式・反応選択・論文再現ランには不変(数値カーネル `prep/mix_md.py` のみ変更)。
+- **根本原因**: サイクル0で実結合(ビニルラジカル付加)が成立 → `apply_vinyl_addition` が成長末端に**キャップ H**(Sage が剛体拘束する C–H)を注入し、開始剤の**placeholder H** を脱離させる。`build_classical_mix` は placeholder H を旧親位置(~1 Å の激しい LJ 重なり)に、キャップ H を空価数方向 1.09 Å に置く(requires_minimization 契約)。本番規模(~564原子・0.5 g/mL・~23 Å)では `LocalEnergyMinimizer`(tol 10 kJ/mol/nm)の**RMS 力**判定が全原子で薄まり、単一の閉じ込められたホットコンタクトが未解消のまま基準を満たす → 続く 0.5 fs Langevin が初回チャンクで発散。単精度 GPU 演算でオーバーフローが NaN 化。
+- **なぜ従来テストで漏れたか**: orb スモークは 3+3+1 の極小系で確定結合ゼロ(キャップ/placeholder H 経路を動力学下で未励起)。ユニットテストは単点エネルギー有限のみ確認し反応後の古典 MD を走らせていなかった。
+- **採用対策(ソフトスタート・ウォームアップ)**: `run_mix_md` に、報告混合ステップの**外**でカウントするウォームアップ MD セグメントを追加。(1) 注入原子があるとき(metadata の cap/placeholder H 数>0)のみ、より厳しい第2段最小化(`warmup_minimize_tolerance_kj_mol_nm` 既定 1.0 < 主 tol)で最悪コンタクトを追加除去、(2) 高摩擦(`warmup_friction_per_ps` 既定 50/ps)で微小 timestep(`warmup_timestep_fs` 既定 0.1 fs)から設定 timestep へ幾何級数ランプ(`warmup_stages` 既定5)する `warmup_steps`(既定2000)の減衰的 MD で残留ホットコンタクトを吐き出す。混合 timestep・物理・測定は不変。非有限早期検出は維持(ウォームアップ自身も発散時は情報つきで raise)。
+- **決定 vs 代替**: decisions.md 追補 (b) の「placeholder H の事前ずらしはしない(最小化が標準手順、ずらしは PBC 越しの新重なりリスク)」を尊重し、**placeholder-H 配置は一切変更しない**。座標を動かさず動力学的にコンタクトを緩める warmup は同方針と整合し、かつ本番規模で最小化が原理的に取り切れない閉じ込めコンタクト(RMS 希釈)にも効く点で第2段最小化単独より頑健。
+- **既定値の根拠**: 混合*時間*は依然デフォルト禁止(decisions.md (v))だが、数値安定化ノブ(warmup 長・timestep・摩擦・第2最小化 tol)は正当に既定可能な engineering 定数として文書化。warmup は反応後サイクルのみ発火(未反応サイクルは従来とビット不変)。
+- **決定性**: warmup は既存 integrator の seed/stream を共有し `setStepSize`/`setFriction` で制御(新規乱数なし)。determinism テストは Reference で緑。API は加算的拡張のみ(`MixMDConfig` に warmup 系フィールド、`MixMDResult` に `n_warmup_steps`/`warmup_energies_kj_mol`、mixing.jsonl に `n_warmup_steps`)。既存公開 API(`run_mix_md`/`MixMDConfig`/`MixMDResult`/`build_classical_mix`/`ClassicalMix`)は非破壊。
+- **回帰テスト**(`tests/unit/test_mixing.py::test_mixing_md_survives_injected_hot_contacts_after_reaction`, OpenMM ゲート・orb 不要): 2 MA+2 MMA+1 開始剤を疎な箱で配置→反応→等方圧縮(~0.4 g/mL、placer は直接到達不可)で反応後の注入コンタクトを再現。ユニット規模では最小化が強力すぎて本番の閉じ込めを emergent に再現できないため、**わざと緩い最小化 tol(1e6)で「未解消ホットスタート」を決定論的に代理**(本番の 564原子 RMS 希釈と同じ終状態)、単精度 'CPU' で NaN 化を再現。`warmup_steps=0`(修正前経路)で NaN、既定 warmup で有限完走を同一テスト内で検証。
+
+### 追補 2026-07-18 (WM-P4 de-clash): 注入原子の幾何デクラッシュ + 混合スキップの安全網
+上記 warmup の後にも残った本番障害への第2の頑健化。本番ラン(20+20+2, 564原子, 0.5 g/mL)で cycle 0–3 は正常混合(rms ~14 Å)だったが **cycle 4 が `_run_warmup` の `RuntimeError: soft-start warm-up became non-finite after 100 warm-up steps (dt 0.100 fs)` でクラッシュ**。最小化 + 0.1 fs warmup でも脱出できない **near-singular(近特異)な重なり**を注入原子がまれに持つ = warmup 単独では取り切れないと実証された。混合モードは `--mix` 明示フラグでのみ有効・TDBB/反応選択/論文再現ランには不変。
+- **根本原因**: `apply_vinyl_addition` 後、cap H が空価数方向 1.09 Å に置かれ**近接原子へ真っ直ぐ向く**、または脱離 placeholder H が**他原子の上に着地**すると、LJ が near-singular(<0.5 Å)になる。RMS 力最小化は特異点近傍から脱出できず、続く動力学が発散する。
+- **write_back の再確認(設計を左右する事実)**: `write_back`(mixing.py)は `out[mlip_idx] = omm_positions_A[omm_idx]`。placeholder の `mlip_idx` は非 None(実 MLIP 原子)なので、その**混合後座標が MLIP index にそのまま書き戻される(破棄されるのは cap H=mlip_idx None のみ)**。`_run_mixing_phase` は `result.positions_A`(混合後座標)を渡すため、placeholder は混合中に動きその位置が次サイクルの MLIP 状態に入る。よって「非相互作用ゴースト(ε=0/排他)」案は**却下**: 混合中に力を受けず MLIP 世界へランダム位置が戻り新たなクラッシュ源になる。相互作用を保ったまま空きへ再配置する方が原理的に正しい。
+- **追補 (b)/2026-07-17 レビューの改訂(注入原子に限定)**: 「座標の事前ずらしはしない(最小化が標準手順)」は near-singular 重なりには原理的に無力(最小化は特異点から脱出できない)という本番証拠を得た。よって**注入原子(cap H, placeholder H)に限り、ハードクラッシュ時のみ**標的デクラッシュする。任意座標の一般的な事前変位ではなく、元原子は一切動かさない。
+- **Layer 1(ハード重なりの幾何除去、build 時・`MixTranslatorConfig.declash_injected` 既定 True)**:
+  - (1a) **cap 配置を最大クリアランス方向へ**: 「空価数軸の反対」ではなく、固定 Fibonacci 球(**N=64**、golden-angle、rng 無し)+空価数軸を候補とし、全原子(結合+非結合、最近接像)への最小距離を**最大化**する方向を選ぶ。C–H 結合長は維持。自身の結合相手(親)は障害物から除外(自分の結合から逃げないため)。
+  - (1b) **一般デクラッシュ**: 組み立て後の OMM 座標で、各注入原子の(自身の結合相手を除いた)最近接像距離が **<0.8 Å** なら押し出す。cap は親から C–H 長・最大クリアランス方向へ再配置、placeholder(配位0・結合相手なし)は衝突原子から **~1.3 Å** 離す。決定的(rng 無し・昇順逐次更新)。移動は注入原子のみ、元原子は不動。`n_declashed` を metadata / mixing.jsonl に記録。
+  - **soft-core(warmup 中に CustomNonbondedForce で LJ を軟化する案)は却下**: 並行する軟化力の構築・context 再初期化・排他管理が必要で決定性/テストが困難。幾何デクラッシュは最小・決定的で特異点を直接除去する。
+- **Layer 2(グレースフル・スキップ=完走保証、`_run_mixing_phase`)**: de-clash + 最小化 + warmup でも発散する場合、**そのサイクルの混合のみをスキップ**: pre-mixing の MLIP positions/velocities を維持、WARNING、mixing.jsonl に `skipped:true`+`skip_reason`、`mix_settle` も skip、checkpoint は未混合状態で通常書き込み。捕捉例外は `RuntimeError`(自前の非有限検出)と `openmm.OpenMMException`(`Particle coordinate is NaN`)。**スキップは稀であるべき**: de-clash がほぼゼロ化するはずで、非自明なスキップ率(例 15 中 >2)は測定汚染の**赤信号**として `summary.json` の `mixing_skipped_cycles`/`n_mixing_skipped` に集計・監視(黙って許容しない)。
+- **決定性(スキップ横断)**: `mix_seed = rng.integers(1, 2**31-1)` を try の**外**で無条件抽選 → 数値混合の成否に関わらず workflow rng はこの1回分だけ進む。スキップは seed 抽選のみ消費、成功はそれに加えて MB 速度再抽選 + settle の Langevin 抽選を消費(スキップは本質的に消費が少ない — これは正しい)。skip-vs-success は (seed, geometry) の決定関数なので rng 軌跡は再現可能で、混合中クラッシュが draw を失って resume を desync させることはない。
+- **既定値の根拠**: N=64・0.8 Å ハードクラッシュ閾値・1.3 Å クリアランスは数値安定化の engineering 定数として文書化(混合*時間*のデフォルト禁止則(v)とは別カテゴリ)。既存 warmup は defense-in-depth として維持。層構成: **de-clash(特異点除去)→ 最小化 → 第2最小化 → warmup(<0.8 Å 未満の回復可能ホット)→ mix → graceful-skip(それでも発散時のみ)**。
+- **API 非破壊**: `MixTranslatorConfig.declash_injected`(既定 True)、metadata に `declash_injected`/`n_declashed`、mixing.jsonl に `skipped`/`skip_reason`/`n_declashed`、summary.json に `mixing_skipped_cycles`/`n_mixing_skipped` を加算的に追加。`build_classical_mix`/`ClassicalMix`/`run_mix_md`/`MixMDConfig` の既存シグネチャは不変。
+- **回帰テスト**(OpenMM ゲート・orb 不要):
+  - `test_mixing.py`: cap 方向のクリアランス最大化(障害物を空価数軸上に置くと反対を向く)、legacy 配置の不変性、`_declash_injected` の単体(注入原子のみ移動 / ノーオペ)、および **end-to-end**: dense reacted 系で placeholder を実原子に**強制一致**(真の特異点)→ 同一 MD config(warmup ON)で `declash_injected=False` は発散・`True` は有限完走 + クリーン write-back。既存 warmup テストは `declash_injected=False` で従来のホットコンタクトを保持し不変。
+  - `test_workflow_mixing.py`: graceful-skip — `run_mix_md` を monkeypatch で raise → `wf.run` は例外を出さず継続、logs=[biased,unbiased,mixing(steps=0)]・`mix_settle` 無し・mixing.jsonl `skipped:true`・state 有限。
+
+### 追補 2026-07-18 (WM-P4 bridge): orb↔Sage 反発ウォール不整合が真の反応非依存根因 — ウォームアップ非ゲート化(soft-core は不要と実証)
+デクラッシュ修正(cf7b9db)投入後の本番再ラン(A2)で判明した、より深い第3の根因。cycle 0,1 は正常混合、**cycle 2 の混合が OpenMMException NaN で graceful スキップ**された。その cycle の mixing.jsonl は `declashed=0, n_cap_h=0, n_placeholder_h=0` = **注入原子ゼロ**(cycle 2 は候補選択したが結合確定せず、トポロジー/フラグメントは正常混合した cycle 1 と不変)。すなわち発散は注入原子の幾何ではなく、**ハンドオーバされた MLIP 座標**そのものに由来する。
+- **真の根因(反応非依存)**: orb(MLIP)の学習された反発は古典 Sage FF の LJ コアより**柔らかい**。orb 平衡化幾何は時折、Sage の反発ウォールが許容するより近い原子対を含む(cycle 2 の post-unbiased 座標がそれ、cycle 1 は含まず)。確率的・反応非依存で毎キャンペーン再発しうる。デクラッシュ(cf7b9db)は正しいが支配的失敗ではなかった。
+- **ゲートのギャップ**: `run_mix_md` でウォームアップと第2段(厳しめ)最小化が共に `has_injected` でゲートされていた(ウォームアップ commit の「未反応サイクルはビット不変」意図)。注入原子ゼロの cycle 2 ではどちらも走らず、緩い tol=10 の第1最小化のみ → RMS 力希釈で 1 個の悪コンタクトが生き残り → 0.5 fs 初回チャンクで即発散。**未反応サイクルも古典↔MLIP 橋渡しが必要**。
+- **対策1(非ゲート化)**: ウォームアップ + 第2段最小化を `has_injected` から切り離し、**毎混合サイクル**実行(`warmup_steps>0` でのみゲート、デクラッシュは注入ゲートのまま)。コストは ~1 ps/サイクルで軽微。未反応サイクルの「ビット不変」特性は放棄(橋渡しは毎サイクル必要 = 意図的)。
+- **対策2(より優しいウォームアップ既定)**: コンタクトは任意のハンドオーバ対でありうる(中程度の注入コンタクトに限らない)ため、ランプ初段 timestep を **0.1→0.05 fs**、段数 **5→6** に。準最急降下的な初段クロールで硬い orb→Sage コンタクトも生存。数値安定化の engineering 既定として文書化。
+- **soft-core は「不要」と単体テストで実証(自律判断)**: 制約付き X–H(Sage は X–H 結合を剛体拘束)同士のコンタクトは幾何的押し離しでは分離不能(変位 H が拘束で戻る)であり、当初は soft-core/力キャップ前緩和が必要かと想定。**決め手テスト** `test_ungated_bridge_survives_constrained_hh_contact`(2分子を剛体並進で最近接 ~0.7 Å、拘束 X–H 温存)で検証: 橋渡し無し(`warmup_steps=0`)では発散(真に硬い)、非ゲート橋渡し(第2段最小化 tol 1.0 + 0.05 fs ウォームアップ)では**有限完走**。境界付き過減衰動力学が剛体分子群を丸ごと押し離すため、拘束原子コンタクトも soft-core 無しで橋渡しできる。よって **CustomNonbondedForce soft-core は実装しない**(複雑さ・力場再構築・context 再初期化のリスクを回避。証拠が不要と示した)。将来もし橋渡しが取りこぼす硬コンタクトが再発すれば soft-core を再検討(設計は proposal に記録済み)。
+- **graceful スキップは最終安全網として維持**(不変)。層構成: **デクラッシュ(注入特異点除去)→ 第1最小化 → 第2最小化(毎サイクル)→ ウォームアップ(毎サイクル、0.05 fs 起点)→ mix → graceful-skip(それでも発散時のみ)**。
+- **決定性/API**: ウォームアップは既存 integrator の seed/stream を共有(新規乱数なし)。非ゲート化で未反応サイクルもウォームアップ乱数ステップを消費するが seed 決定的。`MixMDConfig` の既定変更(`warmup_timestep_fs` 0.05、`warmup_stages` 6)のみ、シグネチャ不変。
+- **回帰テスト**(OpenMM ゲート・orb 不要、`test_mixing.py`):
+  - `test_ungated_warmup_survives_noninjected_handed_over_contact`: 2 MA 未反応系、分子 B を剛体並進で最近接 ~0.9 Å(注入原子ゼロ)。第1最小化を無効化する巨大 tol(1e12、本番 564 原子 RMS 希釈の単体規模スタンドイン)で、修正前経路(`warmup_steps=0`)は発散・非ゲート既定は有限完走 + クリーン write-back。本番 cycle 2 の再現。
+  - `test_ungated_bridge_survives_constrained_hh_contact`: 上記の決め手(~0.7 Å、拘束 X–H)。橋渡し無しは発散・非ゲート橋渡しは完走を同一テストで検証。
+
+## 追補 2026-07-19 — WM-P4 混合実装 フラットレビューと対応
+2026-07-17〜18 の WM-P2(トランスレータ、`src/kagome/prep/mixing.py`)/ WM-P3(ワークフロー統合)/ WM-P4(ソフトスタート・de-clash・ungated bridge)一式に対し、3体の独立レビュー(フラット構成: 正しさ・簿記・再現性・可観測性の複数観点を1パスで横断)を実施した結果の記録。混合モードは引き続き `--mix` 明示フラグでのみ有効・TDBB 方程式/反応選択/論文再現ランには不変という前提は変わらない。
+
+1. **レビュー総括**: 3体とも中核ロジック — write-back(決定 (d) の `omm_to_mlip`/`mlip_to_omm` 写像往復)、index マップ、placeholder-H の往復(決定 (b)/(iii) およびその 2026-07-18 de-clash 改訂)、単位換算、graceful-skip の決定性(WM-P4 de-clash 追補の rng 消費規約)、mixing OFF 時のビット不変(決定 (k) の図フィルタ、決定 (f) の挿入位置)、および decisions.md (f)–(m)・(v)/(vi) への忠実度 — に「バグなし」と結論。指摘は全て周辺(ガード欠落・検証の遅延・テスト網羅・再現性の言明・図の分母)に限定され、コア数値カーネル(`prep/mix_md.py`)・トランスレータ(`prep/mixing.py`)本体の再設計は不要と判断。
+
+2. **決定性の注記(クレーム修正・重要)**: 決定 (i)/2026-07-18 レビュー反映で「同一 seed ⇒ 決定的」と記していたが、これは **rng ドロー列**(mix_seed・MB 速度・settle Langevin の抽選順序)についてのみ成立することを明確化する。本番プラットフォーム(CPU/CUDA)では力の縮約がスレッド順に依存するため、混合後の**幾何**(座標)はビット再現しない。ビット安定は Reference プラットフォームに限られ、既存の `test_mixing_run_is_deterministic`(`tests/unit/test_workflow_mixing.py:324`)が `platform='Reference'` を明示指定している事実と整合する。これはコードのバグではなくバックエンド特性(浮動小数の非結合性 × 並列力計算)であり、修正の余地はない。
+   - 方針: 再現性がクリティカルなラン(unit test、回帰確認)は `platform='Reference'`(低速)で固定する。本番 CUDA/CPU ランは「同一 seed ⇒ 同一 rng 消費」は成立するが「同一 seed ⇒ 同一混合幾何」は成立しない旨を manifest に注記する。決定 (i) の文言は本追補で補強するものであり、既存記述の削除・書き換えは行わない。
+
+3. **密度図の分母修正(オーナー承認済み・適用済み)**: `scripts/reproduce_figures.py` の `plot_density_profile` が ρ_rxn(z)=N_rxn/(A·Δz·N_frames) の N_frames に mixing/mix_settle フレームを算入していた不整合を修正し、決定 (k) のエネルギー図除外(`_analysis_frames` によるマスク)と揃えた。mix_settle 中は反応が発火しないため、これを分母に含めると混合ランの ρ_rxn(z) が系統的に過小評価され、非混合ラン(baseline)と比較不能になる。Eq.12 の「解析窓の全サンプルフレーム」は MLIP 動力学窓(古典 mix_settle 緩和を除く)と解釈する。既存の非混合ランの図はビット不変(mixing フェーズを持たないランでは `_analysis_frames` が no-op になるため)。
+
+4. **歩留低下の解釈(オーナー承認・力学は変更せず記録のみ)**: WM-P4 の暫定 3 腕比較で確定生成数が A1(baseline)=5 / A3=4 / A4(mix 系)=1 と、混合腕が最少だった。これは**バグでなく、well-mixed 測定が捉えている実在の物理的特性が最有力**と判断する。
+   - 主要因: 混合が「同一ペアを連続サイクルで再選択して cook し続ける」baseline の経路(2026-07-17 決定の Context に記録された再選択率 46-53%)を破壊するため。決定的根拠: BoostState は毎サイクル新規生成でありバイアス持ち越しは無い(paper-faithful)、かつ確定済み結合トポロジーは混合フェーズの**前**(決定 (f) の挿入位置)に永続化済みで混合は `state.positions`/`state.velocities` のみを更新する(グラフは不変入力 — 決定 (d))。
+   - 副次要因: 決定 (i) の毎サイクル MB 速度再抽選が反応相関運動量を消去すること、および WM-P4 ungated bridge 追補の非ゲート warm-up(短 `mix_time_ps` 時は総線量の最大 ~20% を占めうる、friction 50/ps)が測定アンサンブルを撹乱しうる。ただしいずれも NVT 整合を保つ意図的設計(決定 (g)/(l))であり、歩留低下対策として取り除かない。
+   - 混合時間の既定値確定は先送り: A2_mix50 の複数シード化 + `mix_time_ps` sweep で歩留を再検証してから判断する。現データは単桁カウント(1〜5)でノイズ支配であり統計的結論を出せない。決定 (v)(無根拠デフォルト禁止則)を維持し、混合時間の既定値は本追補時点でも decisions.md に確定記載しない。
+
+5. **対応した補強(実装はサブエージェント委譲・並行実施)**:
+   - (a) resume モード切替ガード(2026-07-18 レビュー反映)に `friction_per_ps`・`temperature_K` を追加。旧 checkpoint はこれらのキーが欠落するため非比較(値なし=ガード対象外)として後方互換を維持。
+   - (b) `MixConfig.__post_init__` に `timestep_fs`/`friction_per_ps`/`platform`/`charge_method` の fail-fast 検証を追加し、不正値がサイクル途中の `run_mix_md` 呼び出しまで検出されずに伝播することを防止。
+   - (c) CLI の `--mix` 無しで混合系フラグ(`--mix-ps` 等)のみ指定した場合を、既存の逆方向(決定 (g) の「`--mix` 指定時に必須」)と対称的に error 化。
+   - (d) `mixing.jsonl` の各行に `schema_version` を付与し、WM-P3/P4/P4 de-clash/P4 bridge の各追補で加算的に増えたフィールド(`n_warmup_steps`、`n_declashed`、`skipped`/`skip_reason` 等)のログ消費側でのバージョン判別を可能にした。
+   - (e) テスト補強: resume ガードの新規2フィールド、CLI 検証の対称性、`MixConfig` の fail-fast 検証、mixing OFF ランの数値ビット不変回帰、openmm ゲートテストのスキップ理由の可視化(skip でなく明示メッセージ)。
+   - (f) `scripts/analyze_wm_p4.py` の `ARM_CYCLE_CAP`(58行目付近のハードコード辞書)をデータ由来(実行された cycle 数から導出)に変更し、腕ごとの系説明を manifest 由来の値に統一。手打ち値と実データの乖離リスクを解消。
+   - 各対応の根拠は個々のレビュー指摘(major: resume ガード欠落フィールド/回帰テスト皆無/密度図分母; minor: `MixConfig` 検証の遅延/CLI フラグの非対称)に対応する。いずれも API 非破壊・既存挙動への影響なし(mixing OFF ランはビット不変のまま)。
+
+6. **4腕そろい踏み(2026-07-19、A2_mix50 完走で追記)**: WSL 再起動で startup CUDA 不安定が解消し、A2_mix50(決定的選択+50ps 混合)が修正済みコードで**15サイクル完走(クラッシュ0・スキップ0・declash0、rms 12〜13.9 Å)**。欠けていた A1 vs A2(決定的選択上の混合効果)が測定可能に。4腕確定値:
+
+   | 指標 | A1(det/無混合) | A2(det/混合) | A3(softmax/無混合) | A4(softmax/混合) |
+   |---|---|---|---|---|
+   | 再選択率 | 40.0% | **0.0%** | 33.3% | 7.1% |
+   | 固着連 | 3 | **1** | 5 | 2 |
+   | Jaccard | 0.432 | **0.034** | 0.604 | 0.101 |
+   | 確定生成 | 5 | **2** | 4 | 1 |
+
+   - **混合の候補リフレッシュ効果は決定的選択上で最も鮮烈**: A1→A2 で再選択率 40.0%→**0.0%**(同一ペア再選択が完全消失)、Jaccard 0.432→0.034(毎サイクルほぼ総入替)、固着連 3→1。凍結近傍病理を完全に解消。
+   - **歩留低下は 2 つの独立な選択方策で再現**(A1→A2: 5→2、A3→A4: 4→1)。項目4の解釈(混合が再選択cook経路を破壊=バグでなく実在特性)を**両方策で裏付け**、副次要因(MB 再抽選/warm-up)の設計も維持のまま。
+   - 依然として**単一シード**であり確定生成は単桁。混合時間の既定値確定は項目4のとおり多シード + `mix_time_ps` sweep 後まで先送り(決定 (v) 維持)。解析は `scripts/analyze_wm_p4.py`(cycle cap データ由来)で再現、図は `runs/wm_p4/analysis/`。

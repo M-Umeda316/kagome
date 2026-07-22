@@ -288,6 +288,22 @@ def plot_dpn_vs_conversion(
     print(f'Saved dpn_vs_conversion.png/.pdf to {output_dir}')
 
 
+def _analysis_frames(frames: list) -> list:
+    """Frames in the MLIP analysis window, excluding classical-mixing frames.
+
+    WM-P2 (decisions.md 追補 2026-07-18 (k) extension): mirrors the
+    energy-plot ``unbiased_mask`` exclusion (~line 68-69) so that N_frames in
+    the density-profile denominator does not count ``mix_settle`` frames (real
+    MLIP frames written by ``_run_plain_md`` during a classical-mixing run's
+    settle stage) or ``mixing`` frames (defensive; classical-stage frames, if
+    ever written to the trajectory). No reaction can fire during either phase,
+    so including them would systematically depress rho_rxn(z) for mixing runs.
+    Runs without mixing carry neither phase on any frame, so this is a no-op
+    (returns all frames unchanged) for non-mixing trajectories.
+    """
+    return [f for f in frames if f.phase not in ('mixing', 'mix_settle')]
+
+
 def plot_density_profile(
     bonds_path: Path,
     trajectory_path: Path,
@@ -299,6 +315,10 @@ def plot_density_profile(
 
     Positions at each bond-event step are extracted from the trajectory.
     Requires --bonds with confirmed_formation events and position data.
+
+    N_frames (below) counts only frames in the MLIP analysis window: it
+    excludes classical mix_settle (and mixing) frames from a mixing-mode run,
+    the same exclusion the energy plot applies (see ``_analysis_frames``).
     """
     events = read_bond_events(bonds_path)
     # A5: rho_rxn is the density of *reactions*. Exclude water-forming (and other
@@ -317,16 +337,24 @@ def plot_density_profile(
         print('No frames in trajectory --skipping density plot.')
         return
 
+    # WM-P2 (decisions.md 追補 2026-07-18 (k) extension): exclude classical
+    # mix_settle/mixing frames from the analysis window, mirroring the
+    # energy-plot's unbiased_mask (~line 68-69). Event steps only ever land in
+    # biased/unbiased segments, so positions_at_event/cells_at_event would be
+    # unaffected either way; analysis_frames is used everywhere for
+    # consistency, and N_frames below MUST use it (that is the actual bug fix).
+    analysis_frames = _analysis_frames(frames)
+
     event_steps = {e.step for e in formations}
     positions_at_event: dict[int, np.ndarray] = {
         f.step: np.array(f.positions)
-        for f in frames
+        for f in analysis_frames
         if f.step in event_steps and f.positions
     }
     # Per-event cell for the PBC midpoint correction (NPT: box varies per frame).
     cells_at_event: dict[int, np.ndarray] = {
         f.step: np.array(f.cell)
-        for f in frames
+        for f in analysis_frames
         if f.step in event_steps and f.cell is not None
     }
 
@@ -338,7 +366,7 @@ def plot_density_profile(
     # for the default cross-sectional area and z-bin range so the profile follows
     # the paper definition rho_rxn(z) = N_rxn(z)/(A*dz*N_frames) instead of the
     # data min/max span. See specs/decisions.md 2026-07-06 (A1/A2/A3).
-    frame_cells = [np.array(f.cell) for f in frames if f.cell is not None]
+    frame_cells = [np.array(f.cell) for f in analysis_frames if f.cell is not None]
 
     if cell_xy_area is not None:
         area_xy = cell_xy_area
@@ -362,10 +390,13 @@ def plot_density_profile(
         z_bins = np.linspace(float(all_z.min()), float(all_z.max()), n_z_bins + 1)
 
     # N_frames is every sampled trajectory frame in the analysis window (paper
-    # definition), NOT the number of event steps (A2).
+    # definition), NOT the number of event steps (A2) -- and NOT including
+    # classical mix_settle/mixing frames from a mixing-mode run (WM-P2), since
+    # no reaction can fire during those and counting them would depress the
+    # density.
     density = reaction_density_profile(
         formations, positions_at_event, z_bins, area_xy,
-        n_frames=len(frames),
+        n_frames=len(analysis_frames),
         cells_at_event=cells_at_event or None,
     )
 

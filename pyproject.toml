@@ -40,6 +40,13 @@ include = ["kagome*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+# -ra prints a short summary of all non-passing outcomes (including 's' skipped)
+# at the END of every run, so the openmm-gated tests that skip in an ML-only
+# environment are VISIBLE (~15/47 silently skipped without this — false-green
+# coverage) instead of hiding behind a bare dot. The openmm gate is an inline
+# pytest.mark.skipif(...) (a built-in marker), not a custom marker, so there is
+# no custom marker to register here.
+addopts = ["-ra"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

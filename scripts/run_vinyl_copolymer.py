@@ -82,6 +82,47 @@ def _create_backend(backend: str, device: str, model: str, spin: int = 1,
     return create_mace_calculator(model=model, device=device)
 
 
+def _mixing_setup_from_args(args) -> dict | None:
+    """The mixing setup persisted in the checkpoint and compared on resume.
+
+    Returns ``None`` when ``--mix`` is off. Every field here is part of the
+    measured mixing diffusion, so a change across resume must be rejected. Single
+    source of truth so ``checkpoint_extra['mixing']`` and the resume-time
+    comparison dict can never drift apart. ``args.mix_*`` sentinels must already
+    be resolved to their real defaults (see the ``--mix`` block in ``main``).
+    """
+    if not args.mix:
+        return None
+    return {
+        'mix_ps': args.mix_ps,
+        'mix_settle_steps': args.mix_settle_steps,
+        'mix_timestep_fs': args.mix_timestep_fs,
+        'mix_platform': args.mix_platform,
+        'mix_charge_method': args.mix_charge_method,
+        # friction_per_ps and temperature_K both change the measured mixing
+        # diffusion, so they belong to the guarded setup too.
+        'friction_per_ps': args.mix_friction_per_ps,
+        'temperature_K': args.temperature,
+    }
+
+
+def _mixing_setup_mismatch(ckpt_mix: dict | None, now_mix: dict | None) -> bool:
+    """True if the resumed run's mixing setup differs from the checkpoint's.
+
+    Turning mixing on/off (exactly one side ``None``) is always a mismatch. When
+    both are dicts, compare only keys present in BOTH: an OLD checkpoint predates
+    ``friction_per_ps``/``temperature_K``, and a field that predates the
+    checkpoint cannot be verified — skip it rather than flag a spurious mismatch.
+    New checkpoints carry every key.
+    """
+    if (ckpt_mix is None) != (now_mix is None):
+        return True
+    if ckpt_mix is None:                     # both None: mixing off both runs
+        return False
+    shared = set(ckpt_mix) & set(now_mix)
+    return any(ckpt_mix[k] != now_mix[k] for k in shared)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description='Vinyl copolymerization (acrylate + methacrylate) via TDBB.',
@@ -151,18 +192,27 @@ def main() -> None:
     parser.add_argument('--mix-settle-steps', type=int, default=None,
                         help='MLIP settle steps after coordinate write-back; '
                              'required with --mix.')
-    parser.add_argument('--mix-timestep-fs', type=float, default=0.5,
-                        help='classical mixing timestep (ClassicalPrepConfig '
-                             'precedent).')
-    parser.add_argument('--mix-friction-per-ps', type=float, default=1.0)
+    # These four have a sentinel default of None so we can tell "not given" from
+    # "given" and (a) error if any is passed WITHOUT --mix (symmetric with
+    # --mix-ps/--mix-settle-steps) and (b) resolve None to the documented default
+    # only when --mix is present. Real defaults: 0.5 fs / 1.0 per ps / 'CPU' /
+    # 'nagl'.
+    parser.add_argument('--mix-timestep-fs', type=float, default=None,
+                        help='classical mixing timestep in fs (default 0.5, '
+                             'ClassicalPrepConfig precedent); requires --mix.')
+    parser.add_argument('--mix-friction-per-ps', type=float, default=None,
+                        help='Langevin friction for the mixing MD in ps^-1 '
+                             '(default 1.0); requires --mix.')
     parser.add_argument('--mix-platform',
                         choices=['CUDA', 'OpenCL', 'CPU', 'Reference'],
-                        default='CPU',
-                        help='OpenMM platform for the mixing MD.')
+                        default=None,
+                        help='OpenMM platform for the mixing MD (default CPU); '
+                             'requires --mix.')
     parser.add_argument('--mix-charge-method', choices=['nagl', 'gasteiger'],
-                        default='nagl',
-                        help='partial-charge method for the mixing force '
-                             'field (NAGL falls back to Gasteiger).')
+                        default=None,
+                        help='partial-charge method for the mixing force field '
+                             '(default nagl; NAGL falls back to Gasteiger); '
+                             'requires --mix.')
     # backend
     parser.add_argument('--backend', choices=['toy', 'orb', 'mace', 'aimnet'],
                         default='orb')
@@ -184,18 +234,46 @@ def main() -> None:
     if args.selection_policy == 'deterministic' and args.selection_temperature is not None:
         parser.error('--selection-temperature was given without '
                       '--selection-policy softmax.')
+    # Documented defaults for the optional mixing knobs (sentinel None until
+    # resolved here). Mirrors MixConfig's defaults and the help text above.
+    _MIX_KNOB_DEFAULTS = {
+        'mix_timestep_fs': 0.5,
+        'mix_friction_per_ps': 1.0,
+        'mix_platform': 'CPU',
+        'mix_charge_method': 'nagl',
+    }
     if args.mix:
         if args.mix_ps is None or args.mix_settle_steps is None:
             parser.error('--mix requires both --mix-ps and --mix-settle-steps '
                          '(no defaults until the P4 sweep — decisions.md (v)).')
+        # Resolve each sentinel to its documented default now so every downstream
+        # consumer (MixConfig, the resume guard, checkpoint_extra, summary.json)
+        # sees the real value rather than None.
+        for _knob, _default in _MIX_KNOB_DEFAULTS.items():
+            if getattr(args, _knob) is None:
+                setattr(args, _knob, _default)
         try:
             import openff.toolkit  # noqa: F401
             import openmm  # noqa: F401
         except ImportError as exc:
             parser.error(f'--mix needs OpenMM + OpenFF in this environment '
                          f'(prep extras): {exc}')
-    elif args.mix_ps is not None or args.mix_settle_steps is not None:
-        parser.error('--mix-ps/--mix-settle-steps were given without --mix.')
+    else:
+        # Symmetric guard: ANY mixing knob given without --mix is a usage error.
+        # Previously only --mix-ps/--mix-settle-steps errored; the four knobs
+        # below were silently ignored because they carried real defaults.
+        _stray = [
+            flag for flag, val in (
+                ('--mix-ps', args.mix_ps),
+                ('--mix-settle-steps', args.mix_settle_steps),
+                ('--mix-timestep-fs', args.mix_timestep_fs),
+                ('--mix-friction-per-ps', args.mix_friction_per_ps),
+                ('--mix-platform', args.mix_platform),
+                ('--mix-charge-method', args.mix_charge_method),
+            ) if val is not None
+        ]
+        if _stray:
+            parser.error(f'{"/".join(_stray)} given without --mix.')
 
     ckpt_file = args.output_dir / 'checkpoint.pkl'
     resuming = bool(args.resume and ckpt_file.exists())
@@ -373,13 +451,8 @@ def main() -> None:
         # mixing setup; a mismatch with the current CLI args is a hard error.
         # (Older checkpoints predate this key: absent => the run had mixing off.)
         _ckpt_mix = _extra.get('mixing')
-        _now_mix = ({'mix_ps': args.mix_ps,
-                     'mix_settle_steps': args.mix_settle_steps,
-                     'mix_timestep_fs': args.mix_timestep_fs,
-                     'mix_platform': args.mix_platform,
-                     'mix_charge_method': args.mix_charge_method}
-                    if args.mix else None)
-        if _ckpt_mix != _now_mix:
+        _now_mix = _mixing_setup_from_args(args)
+        if _mixing_setup_mismatch(_ckpt_mix, _now_mix):
             parser.error(
                 f'--mix settings differ from the checkpoint being resumed '
                 f'(checkpoint: {_ckpt_mix}, now: {_now_mix}). Resume with the '
@@ -416,18 +489,40 @@ def main() -> None:
             'spin': getattr(calc, '_spin', None),
             # Record the mixing setup so resume can detect a mode switch
             # (the guard above compares this against the resume-time CLI args).
-            'mixing': ({'mix_ps': args.mix_ps,
-                        'mix_settle_steps': args.mix_settle_steps,
-                        'mix_timestep_fs': args.mix_timestep_fs,
-                        'mix_platform': args.mix_platform,
-                        'mix_charge_method': args.mix_charge_method}
-                       if args.mix else None),
+            # Same single-source-of-truth builder the guard uses, so persisted
+            # and compared dicts can never drift apart.
+            'mixing': _mixing_setup_from_args(args),
         },
     )
 
     n_form = len(tracker.confirmed_formations())
     n_dissoc = len(tracker.confirmed_dissociations())
     logger.info('Confirmed formations: %d, dissociations: %d', n_form, n_dissoc)
+
+    # Surface graceful mixing skips (WM-P4 de-clash safety net, specs/decisions.md
+    # 追補 2026-07-18): a cycle whose classical mixing diverged even after
+    # de-clash + minimize + warm-up is skipped (pre-mixing MLIP state kept) rather
+    # than crashing the run. De-clash should make this near-zero; a non-trivial
+    # tally (say > 2 of n_cycles) is a RED FLAG that the measurement is
+    # compromised, so it is recorded here for the analysis to check.
+    mixing_skipped_cycles: list[int] = []
+    mixing_log = args.output_dir / 'mixing.jsonl'
+    if args.mix and mixing_log.exists():
+        for raw in mixing_log.read_text(encoding='utf-8').splitlines():
+            if not raw.strip():
+                continue
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if rec.get('skipped'):
+                mixing_skipped_cycles.append(rec.get('cycle'))
+    if mixing_skipped_cycles:
+        logger.warning(
+            'Mixing was SKIPPED on %d/%d cycle(s): %s. De-clash should make this '
+            'near-zero — investigate the packing/geometry if this is non-trivial.',
+            len(mixing_skipped_cycles), args.n_cycles, mixing_skipped_cycles,
+        )
 
     summary = {
         'total_steps': state.step,
@@ -455,6 +550,11 @@ def main() -> None:
         'mix_timestep_fs': args.mix_timestep_fs if args.mix else None,
         'mix_platform': args.mix_platform if args.mix else None,
         'mix_charge_method': args.mix_charge_method if args.mix else None,
+        # Graceful mixing-skip tally (WM-P4 de-clash safety net): cycle indices
+        # whose classical mixing diverged and was skipped. Empty is the healthy
+        # case; a non-trivial count flags a compromised measurement.
+        'mixing_skipped_cycles': mixing_skipped_cycles,
+        'n_mixing_skipped': len(mixing_skipped_cycles),
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'propagation_events': n_form,

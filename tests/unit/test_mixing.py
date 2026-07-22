@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from kagome.reactive.topology import BondTopology, apply_vinyl_addition
+from kagome.prep.mix_md import MixMDConfig, run_mix_md
 from kagome.prep.mixing import (
     ClassicalMix,
     FragmentParamCache,
@@ -428,3 +429,344 @@ def test_cache_reuse_across_two_calls():
     # second call adds no new misses, only hits for each fragment
     assert cache.misses == misses_first
     assert cache.hits > hits_before
+
+
+# ── WM-P4: classical mixing MD survives post-reaction injected hot contacts ────
+
+def _dense_reacted_mix(box_A=12.0, place_box_A=30.0, seed=7, declash_injected=False):
+    """Build a dense, *reacted* ClassicalMix (cap H + placeholder H injected).
+
+    A confirmed vinyl addition (``apply_vinyl_addition``) caps the new growth-end
+    radical and sheds a placeholder H that lands ~1 Å from its former parent — the
+    exact injected-hot-contact geometry that crashed the WM-P4 campaign's mixing
+    phase. The monomers are packed by placing them in a roomy box and then
+    isotropically compressing coordinates + cell to ``box_A`` (~0.4 g/mL): the
+    random placer cannot reach that density directly (min-separation), and the
+    dense box is what makes the injected contacts bite under dynamics.
+
+    ``declash_injected`` defaults to ``False`` so the warm-up regression below
+    sees the ORIGINAL injected hot contacts (the geometric de-clash is exactly
+    what removes them); the de-clash tests build with it True.
+    """
+    specs = [(_MONOMER_SMILES, 2), (_METHACRYLATE_SMILES, 2)]
+    pos, species, pmap, topo, _cell = _copolymer_system(
+        specs, 1, box=place_box_A, seed=seed)
+    radical_c = _radical_c_of_initiator(species, topo, 1, _INITIATOR_SMILES)
+    apply_vinyl_addition(topo, radical_c, min(pmap), pmap, species)
+
+    pos = (pos % place_box_A) * (box_A / place_box_A)   # isotropic compression
+    cell = np.diag([box_A, box_A, box_A]).astype(float)
+    mix = build_classical_mix(
+        topo, species, pos, cell,
+        MixTranslatorConfig(
+            charge_method='gasteiger', declash_injected=declash_injected))
+    # sanity: this fixture must actually exercise the injected-atom path
+    assert mix.metadata['n_cap_h'] == 1
+    assert mix.metadata['n_placeholder_h'] == 1
+    return mix
+
+
+@requires_openmm
+def test_mixing_md_survives_injected_hot_contacts_after_reaction():
+    """Regression for the WM-P4 mixing NaN (specs/decisions.md 追補 2026-07-18).
+
+    A freshly translated post-reaction system carries injected hot contacts (a
+    placeholder H overlapping its former parent, a rigid cap C-H). At production
+    scale (~500+ atoms, 0.5 g/mL) the ``LocalEnergyMinimizer`` meets its
+    RMS-force tolerance globally while such a contact stays hot — its force is
+    diluted across all atoms — so stepping 0.5 fs Langevin straight away diverges
+    to ``Particle coordinate is NaN`` inside ``run_mix_md``.
+
+    We reproduce that *un-cleared hot start* deterministically at unit scale by
+    running the minimizer with a deliberately loose tolerance (a stand-in for the
+    scale-dependent RMS dilution — at unit scale a 10 kJ/mol/nm minimize would
+    clear the contact that production could not). Single-precision 'CPU' platform,
+    matching the campaign's single-precision GPU arithmetic where the overflow
+    actually turns into NaN.
+
+    Without the soft-start warm-up (``warmup_steps=0`` — the pre-fix code path)
+    the run diverges; with it (default) the run completes with finite positions.
+    """
+    import openmm
+
+    mix = _dense_reacted_mix()
+    common = dict(
+        temperature_K=333.0, n_steps=400, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e6,   # emulate an un-cleared hot start
+    )
+
+    # (1) pre-fix behaviour: no warm-up -> the injected hot contact makes 0.5 fs
+    # Langevin diverge to NaN (the exact production failure).
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix, MixMDConfig(warmup_steps=0, **common), seed=12345)
+
+    # (2) with the soft-start warm-up (default) the same system survives: finite
+    # positions, a healthy (finite) mixing energy, and the warm-up counted apart
+    # from the reported mixing steps.
+    result = run_mix_md(mix, MixMDConfig(**common), seed=12345)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    assert result.n_steps == 400                 # reported mixing steps unchanged
+    assert result.n_warmup_steps > 0             # warm-up ran, tracked separately
+    # write-back maps cleanly (no NaN leaked into the MLIP coordinates)
+    restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
+
+
+# ── WM-P4 Layer 1: geometric de-clash of injected atoms ───────────────────────
+
+def test_cap_direction_maximises_clearance_away_from_a_neighbour():
+    """Cap-H best-direction (pure geometry, no MD): with a real atom sitting on
+    the naive vacant-valence axis, the max-clearance placement points the cap the
+    OTHER way, so it never lands on the blocking neighbour."""
+    from kagome.prep.mixing import _cap_positions, _vacant_axis
+
+    # radical C at origin bonded to one neighbour at +x -> vacant axis is -x.
+    species = ['C', 'C']
+    topo = BondTopology.from_bonds([(0, 1, 1.0)])
+    pos = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+    axis = _vacant_axis(0, pos, topo, 2)
+    np.testing.assert_allclose(axis, [-1.0, 0.0, 0.0], atol=1e-9)
+
+    # Put a blocker exactly where the naive cap (p + 1.09*axis) would go.
+    blocker = pos[0] + 1.09 * axis
+    pos2 = np.vstack([pos, blocker[None, :]])            # atoms: C, C, blocker
+    topo2 = BondTopology.from_bonds([(0, 1, 1.0)])       # blocker unbonded
+    cap = _cap_positions(0, 1, pos2, topo2, 3)[0]
+
+    # naive placement would collide with the blocker; the de-clash placement
+    # keeps well clear of it while preserving the C-H bond length.
+    assert np.linalg.norm(cap - blocker) > 1.0
+    np.testing.assert_allclose(np.linalg.norm(cap - pos2[0]), 1.09, atol=1e-9)
+
+
+def test_legacy_cap_placement_ignores_clearance():
+    """maximize_clearance=False reproduces the legacy 'opposite the bond' cap."""
+    from kagome.prep.mixing import _cap_positions
+
+    species = ['C', 'C']
+    topo = BondTopology.from_bonds([(0, 1, 1.0)])
+    pos = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+    cap = _cap_positions(0, 1, pos, topo, 2, maximize_clearance=False)[0]
+    np.testing.assert_allclose(cap, [-1.09, 0.0, 0.0], atol=1e-9)
+
+
+def test_declash_moves_only_the_injected_atom_out_of_a_hard_overlap():
+    """_declash_injected relocates a coincident placeholder off its victim to a
+    safe clearance, and leaves every original atom exactly where it was."""
+    from kagome.prep.mixing import _box_diag, _declash_injected, _HARD_CLASH_A
+
+    # 4 real atoms + one placeholder (index 4) placed on top of atom 0.
+    pos = np.array([
+        [0.0, 0.0, 0.0],
+        [5.0, 0.0, 0.0],
+        [0.0, 5.0, 0.0],
+        [0.0, 0.0, 5.0],
+        [0.0, 0.0, 0.0],        # placeholder coincident with atom 0
+    ])
+    box = np.diag([20.0, 20.0, 20.0]).astype(float)
+    out, moved = _declash_injected(
+        pos, cap_parent_omm={}, placeholder_omm=[4], box_diag=_box_diag(box))
+    assert moved == 1
+    # originals untouched
+    np.testing.assert_array_equal(out[:4], pos[:4])
+    # placeholder pushed to a real clearance from every other atom
+    dists = np.linalg.norm(out[:4] - out[4], axis=1)
+    assert dists.min() >= _HARD_CLASH_A
+
+
+def test_declash_noop_when_no_hard_overlap():
+    """An injected atom already clear of everything is left in place."""
+    from kagome.prep.mixing import _box_diag, _declash_injected
+
+    pos = np.array([
+        [0.0, 0.0, 0.0],
+        [5.0, 0.0, 0.0],
+        [2.5, 2.5, 2.5],        # placeholder, far from both reals
+    ])
+    box = np.diag([20.0, 20.0, 20.0]).astype(float)
+    out, moved = _declash_injected(
+        pos, cap_parent_omm={}, placeholder_omm=[2], box_diag=_box_diag(box))
+    assert moved == 0
+    np.testing.assert_array_equal(out, pos)
+
+
+@requires_openmm
+def test_declash_rescues_hard_injected_overlap_end_to_end():
+    """Layer 1 rescues a hard, near-singular injected overlap under real MD.
+
+    Build a dense *reacted* copolymer (cap H + placeholder H injected) and force
+    the shed placeholder H to COINCIDE with a real atom — a true LJ singularity
+    that minimize + warm-up cannot escape. Only the build-time ``declash_injected``
+    flag differs between the two runs; the MD config (warm-up ON) is identical, so
+    the geometric de-clash is the sole cause of survival:
+
+    * OFF -> the coincident injected atom diverges (NaN / RuntimeError);
+    * ON  -> the placeholder is relocated before minimization and the run
+      completes with finite positions that write back cleanly.
+    """
+    import openmm
+
+    specs = [(_MONOMER_SMILES, 2), (_METHACRYLATE_SMILES, 2)]
+    place_box, box_A = 30.0, 12.0
+    pos, species, pmap, topo, _cell = _copolymer_system(
+        specs, 1, box=place_box, seed=7)
+    radical_c = _radical_c_of_initiator(species, topo, 1, _INITIATOR_SMILES)
+    apply_vinyl_addition(topo, radical_c, min(pmap), pmap, species)
+    pos = (pos % place_box) * (box_A / place_box)        # isotropic compression
+    cell = np.diag([box_A, box_A, box_A]).astype(float)
+
+    placeholder = [a for a in range(len(species))
+                   if is_placeholder_h(topo, species, a)]
+    assert len(placeholder) == 1
+    g = placeholder[0]
+    victim = next(a for a in range(len(species))
+                  if species[a] != 'H' and a != g)
+    pos[g] = pos[victim].copy()                          # force a hard overlap
+
+    # Deliberately WEAK minimization: at unit scale the minimizer is otherwise
+    # strong enough to relieve the overlap that production's 564-atom RMS-force
+    # dilution could not — so we stand that dilution in with a loose tolerance
+    # (same device as the WM-P4 warm-up regression) AND disable the tighter
+    # second-pass minimize (warmup tol == main tol, so it is skipped) so the hard
+    # overlap survives into the dynamics exactly as it did in production. The
+    # soft-start warm-up stays ON — identical for both runs — so the ONLY
+    # difference is the build-time de-clash.
+    common = dict(
+        temperature_K=333.0, n_steps=200, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e6,
+        warmup_minimize_tolerance_kj_mol_nm=1.0e6,
+    )
+
+    # Layer 1 OFF: coincident injected atom -> singular -> diverges.
+    mix_off = build_classical_mix(
+        topo, species, pos, cell,
+        MixTranslatorConfig(charge_method='gasteiger', declash_injected=False))
+    assert mix_off.metadata['n_declashed'] == 0
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix_off, MixMDConfig(**common), seed=1)
+
+    # Layer 1 ON (default): de-clash relocates the injected atom -> finite run.
+    mix_on = build_classical_mix(
+        topo, species, pos, cell,
+        MixTranslatorConfig(charge_method='gasteiger', declash_injected=True))
+    assert mix_on.metadata['n_declashed'] >= 1
+    result = run_mix_md(mix_on, MixMDConfig(**common), seed=1)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    restored = mix_on.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
+
+
+# ── WM-P4 bridge: ungated warm-up survives orb->Sage handed-over close contacts ─
+
+def _two_molecule_clash(gap_A, box=24.0, seed=5):
+    """Two free MA monomers (UNREACTED: no injected atoms), with molecule B
+    rigidly translated so its nearest atom to molecule A sits ``gap_A`` apart.
+
+    Rigid translation keeps every intramolecular bond length — hence every Sage
+    X-H constraint — intact, so this reproduces the production failure faithfully:
+    orb hands over a geometry with a pair closer than the classical Sage LJ wall
+    tolerates (orb's learned repulsion is softer), and the clashing atoms include
+    Sage-constrained H that a geometric push-apart cannot separate. Returns
+    ``(topology, species, positions_A, cell_A)``.
+    """
+    specs = [(_MONOMER_SMILES, 2)]
+    pos, species, _pmap, topo, cell = _copolymer_system(specs, 0, box=box, seed=seed)
+    comps = connected_components(topo, len(species))
+    assert len(comps) == 2, 'fixture expects two disjoint monomers'
+    mol_a, mol_b = comps[0], comps[1]
+
+    pa = pos[mol_a]
+    pb = pos[mol_b]
+    # nearest inter-molecular pair (roomy box: ignore PBC for the setup)
+    diff = pa[:, None, :] - pb[None, :, :]
+    d = np.linalg.norm(diff, axis=2)
+    ia, ib = np.unravel_index(int(np.argmin(d)), d.shape)
+    a_glob, b_glob = mol_a[ia], mol_b[ib]
+    d0 = float(d[ia, ib])
+    u = (pos[b_glob] - pos[a_glob]) / d0
+    # translate ALL of molecule B (rigid) so the nearest pair sits gap_A apart
+    delta = (gap_A - d0) * u
+    pos = pos.copy()
+    for g in mol_b:
+        pos[g] = pos[g] + delta
+    return topo, species, pos, cell
+
+
+@requires_openmm
+def test_ungated_warmup_survives_noninjected_handed_over_contact():
+    """Reproduces production cycle-2: a NON-injected mixing cycle whose handed-over
+    coordinates contain a Sage-intolerable close contact.
+
+    Pre-fix the warm-up + tighter 2nd-minimize were gated on ``has_injected`` so
+    for a cycle with no cap/placeholder H (cycle 2 selected but confirmed nothing)
+    NEITHER ran — only the loose first minimize, then 0.5 fs, which diverged. With
+    the ungated bridge (default) the same system survives. The loose minimize
+    tolerance stands in for production's 564-atom RMS-force dilution (the device
+    used by the WM-P4 warm-up regression) so the contact reaches the dynamics.
+    """
+    import openmm
+
+    topo, species, pos, cell = _two_molecule_clash(gap_A=0.9)
+    mix = build_classical_mix(
+        topo, species, pos, cell, MixTranslatorConfig(charge_method='gasteiger'))
+    assert mix.metadata['n_cap_h'] == 0
+    assert mix.metadata['n_placeholder_h'] == 0        # genuinely non-injected
+    common = dict(
+        temperature_K=333.0, n_steps=200, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e12,
+    )
+
+    # pre-fix behaviour (warm-up disabled, as the has_injected gate did here)
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix, MixMDConfig(warmup_steps=0, **common), seed=3)
+
+    # ungated bridge (default warm-up now runs every cycle) -> survives
+    result = run_mix_md(mix, MixMDConfig(**common), seed=3)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
+
+
+@requires_openmm
+def test_ungated_bridge_survives_constrained_hh_contact():
+    """The soft-core DECIDER: two molecules pushed to ~0.7 A closest approach with
+    Sage's rigid X-H constraints intact — the case a geometric push-apart cannot
+    fix (a displaced constrained H snaps back), so only bounded overdamped
+    dynamics moving whole rigid groups can separate them.
+
+    If the ungated tighter-minimize + soft-start warm-up survive this, the
+    orb<->Sage wall mismatch is bridged WITHOUT a soft-core pre-relaxation and the
+    graceful skip stays the only remaining net. If it diverges, a soft-core /
+    force-capped pre-relaxation is required.
+
+    EVIDENCE (this test, 2026-07-18): the bridge SURVIVES the constrained-H clash,
+    so no soft-core was implemented — see specs/decisions.md 追補 2026-07-18
+    (WM-P4 bridge).
+    """
+    import openmm
+
+    topo, species, pos, cell = _two_molecule_clash(gap_A=0.7)
+    mix = build_classical_mix(
+        topo, species, pos, cell, MixTranslatorConfig(charge_method='gasteiger'))
+    assert mix.metadata['n_cap_h'] == 0
+    assert mix.metadata['n_placeholder_h'] == 0
+    common = dict(
+        temperature_K=333.0, n_steps=200, timestep_fs=0.5, platform='CPU',
+        minimize_tolerance_kj_mol_nm=1.0e12,
+    )
+    # Without the bridge (warm-up + tighter minimize disabled) the constrained-H
+    # clash is genuinely unrecoverable — proves the contact is hard and the
+    # 'survives' assertion below is not vacuous.
+    with pytest.raises((openmm.OpenMMException, RuntimeError)):
+        run_mix_md(mix, MixMDConfig(warmup_steps=0, **common), seed=3)
+
+    # The ungated bridge (default) rescues it: bounded overdamped dynamics move
+    # the whole rigid molecules apart where a geometric push-apart could not.
+    result = run_mix_md(mix, MixMDConfig(**common), seed=3)
+    assert np.isfinite(result.positions_A).all()
+    assert np.isfinite(result.final_energy_kj_mol)
+    restored = mix.write_back(result.positions_A)
+    assert np.isfinite(restored).all()
