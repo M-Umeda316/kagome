@@ -1747,3 +1747,81 @@ Use this template for each decision.
    - **混合の候補リフレッシュ効果は決定的選択上で最も鮮烈**: A1→A2 で再選択率 40.0%→**0.0%**(同一ペア再選択が完全消失)、Jaccard 0.432→0.034(毎サイクルほぼ総入替)、固着連 3→1。凍結近傍病理を完全に解消。
    - **歩留低下は 2 つの独立な選択方策で再現**(A1→A2: 5→2、A3→A4: 4→1)。項目4の解釈(混合が再選択cook経路を破壊=バグでなく実在特性)を**両方策で裏付け**、副次要因(MB 再抽選/warm-up)の設計も維持のまま。
    - 依然として**単一シード**であり確定生成は単桁。混合時間の既定値確定は項目4のとおり多シード + `mix_time_ps` sweep 後まで先送り(決定 (v) 維持)。解析は `scripts/analyze_wm_p4.py`(cycle cap データ由来)で再現、図は `runs/wm_p4/analysis/`。
+
+## 追補 2026-07-19 — WM-P5b 実験計画(sweep × 多シード、ユーザー承認スコープ C)
+項目4/6 で先送りした「歩留低下はシグナルかノイズか」「混合時間の最適点」を確定するための生産測定キャンペーン。ユーザー承認(2026-07-19、AskUserQuestion): **スコープ C(sweep×多シード)・現行 40 モノマー系維持**。
+
+- **目的**: (Q1) 混合による確定歩留低下(WM-P4 で A1→A2 5→2、A3→A4 4→1)がシグナルかノイズかを多シードで判定。(Q2) `mix_time_ps` を振り、候補リフレッシュ(再選択率/Jaccard)を保ちつつ歩留を守れる最適混合時間を特定。→ 結果に基づき**混合時間の既定値を decisions.md に確定記載**(決定 (v) の無根拠デフォルト禁止則を、実測根拠で解除)。
+- **マトリクス**: 決定的選択(det)腕に固定(softmax の確率性を排し混合効果を単離、WM-P4 の A1/A2 軸を延長)。`mix_time_ps ∈ {0, 25, 50, 100}`(0 = 無混合ベースライン)× **シード {7, 11, 17, 23, 42}** = **20 ラン**。
+- **系・スケジュール**: WM-P4 の A2_mix50 と同一 — 20 acrylate + 20 methacrylate + 2 initiator(564 原子)、15 サイクル、biased 2000 / unbiased 1500 / mix_settle 500、timestep 0.25 fs、mix platform CUDA、nagl 電荷、333 K。全ラン同一コード SHA(feat/wm-p4-mixing-robustness 系)で provenance を統一。命名 `runs/wm_p5b/s{seed}_mix{ps}`。
+- **所要見積り(実測単価ベース)**: 0ps ~2.8h / 25ps ~3.4h / 50ps ~3.7h / 100ps ~4.2h(GPU 逐次)。1 シード計 ~14.1h × 5 = **~70h**、GPU 断続不安定のリトライ余裕込みで実 ~3.5〜4 日。耐性 launcher(`run_wm_p4_resilient.sh` の retry 機構)で自動 resume。
+- **解析**: `analyze_wm_p5b.py`(analyze_wm_p4 の指標を再利用)で **mix_ps ごとにシード横断の平均±標準誤差**(再選択率 / Jaccard / 固着連 / 確定歩留)を集計。主図 = **歩留 vs mix_ps(誤差棒付き)** と **再選択率/Jaccard vs mix_ps**。Q1=各 mix_ps の歩留分布の重なり、Q2=歩留-リフレッシュのトレードオフ曲線で判断。
+- **保留事項**: paper-scale(数百モノマー)への拡大は本スコープ外(1桁以上高コスト)。小系の per-encounter 統計で方法論の結論は出るとの判断。
+
+## 追補 2026-07-21 — MLIP バックエンド landscape 調査(Orb からの乗り換え検討)
+ユーザー依頼「この系で Orb バックエンドから変更する価値がある MLIP はあるか、最新動向含めて調査」に対し、調査用サブエージェント3本(有機/ポリマー精度・反応系/ラジカル・速度/ライセンス、sonnet)を並列展開して 2026-07 時点の landscape を集約。**本追補は決定でなく検討記録**(バックエンド変更は未実施・未承認)。CLAUDE.md「新バックエンドは商用ステータス文書化が前提」「不確かなら block」に従い、ライセンス評価を含めて記載する。関連: NEP89 個別評価は `specs/dependency-license-matrix.md` 2026-07-21 追記、及び本ファイル上流の AIMNet2-NSE spike(2026-06-25)。
+
+**結論: 現時点で Orb を置換する明確な上位モデルは(商用ライセンス要件を課すと)存在しない。乗り換えより「Orb-v3 アップグレード + 実装レベルのオーバーヘッド削減」が費用対効果で優る。**
+
+1. **規模の知見(最重要)**: 現行系 ~560 原子は**計算律速でなくホスト側ディスパッチ・オーバーヘッド律速**(ICLR-2026 ベンチ blogpost: Orb の ns/day は 10→100 原子でほぼ横ばい、GPU スループットが効くのは ~1000 原子超)。→ NEP89 等の「大系で桁違い高速」は本系の原子数では体感に転写されない。**backend 変更の速度上限は、torch.compile / CUDA-graph / per-step オブジェクト複製削減で得られる改善より低い可能性が高い**。OpenMM-torch のエタノール(小系=同レジーム)で torch.compile+CUDA graph が 8.2×(3.97→0.486 ms/step、host-launch 削減由来、arXiv:2412.18271)。
+
+2. **「11h GPU 劣化」の再解釈**: 公開 issue に WSL2 固有の「N時間で漸進劣化」機構は未発見。類似症状はすべて **Python 側パターン**が原因(毎ステップ `deepcopy` = MACE Disc.#445、nvFuser JIT 回帰 = NequIP Disc.#311、`empty_cache()` 常時呼び ~5-6% 損 = メモリ既知知見と符合)。→ 乗り換え前に `torch.cuda.memory_stats()` の `allocated_bytes` 単調増加を確認し、TDBB ループの per-step 複製を監査すべき。ドライバ劣化とリークで対策が正反対。
+
+3. **モデル別評価(この系の要件=有機/ポリマー精度・反応PES健全性・長距離分散/静電・商用ライセンスでフィルタ)**:
+
+   | モデル | 有機/ポリマー精度 | 反応/ラジカル | 速度(本系) | コード/重みライセンス | 判定 |
+   |---|---|---|---|---|---|
+   | **OrbMol-v2(現行)** | OPoly26(polymer 専用データ)+ 明示的 Coulomb/PME 長距離。唯一この組合せを持つ | OMol25 由来 | 基準 | **Apache-2.0(コード+重み)** | **主力継続** |
+   | **Orb-v3-direct** | v2 同系統 | 同 | **v2比 ~2.5× + compile +20-25%**(Orbital 自社ベンチ H200、arXiv:2504.06231) | 同上クリーン | **最低リスクの即効改善** |
+   | **AIMNet2-NSE** | GMTKN55 WTMAD-2 14.46(MACE-OFF 16.75-18.80 超)、明示的 D3(BJ)+静電 | **13M ラジカル配置+20万反応経路、ラジカル重合を明示的に狙う唯一** | 小分子のみ(126原子 4.67 ns/day)、大系ベンチなし | コード MIT、**重みライセンス未宣言 → blocked_pending_review** | **反応精度検証の補完候補** |
+   | AIMNet2-rxn | 反応経路 1-2 kcal/mol、閉殻のみ | 閉殻結合生成/解離 | 同上 | 同上(MIT/重み未確認) | 補完候補(閉殻) |
+   | **MACE-OFF23/24** | **液体密度 MAE 0.09 g/cm³=全調査中トップ**、TorsionNet MAE 1.40 | — | cuEq でも RTX4090 は +10-20% 止まり | コード MIT、**重み ASL=非商用 → ハードブロック** | **商用要件で失格** |
+   | UMA / eSEN(Meta) | OMol25 学習、Cu 含む全元素、開殻対応 | 開殻あり | H100 16 steps/s(Orb-v3-direct H200 216 steps/s より遅い) | コード MIT、**重み FAIR Chemistry License(商用可だが非OSI・地理制限・AUP・撤回条項)** | 条件付き・要サインオフ |
+   | NEP89 / GPUMD | 有機は定性的、**D3 なし**(密度に直撃) | SPICE/ANI-1xnr 由来、重合検証なし | 大系のみ超高速、**560原子では利点なし** | コード GPL-3(外部プロセス限定で商用可)、**重みライセンスなし → blocked** | この規模では不採用 |
+   | ANI-1xnr / ANI-1xBB | C/H/N/O、ポリマー無、長距離項なし | 実結合生成/解離データ(燃焼・核生成)。1xBB は反応 MAE 1.57 vs baseline 8.90 | — | コード MIT だが 1xnr/1xBB の LICENSE 未確認 → blocked_pending_review | 参照どまり |
+   | MatterSim | **著者が「有機ポリマーは低精度」と明言** | — | — | MIT(最クリーン) | 科学スコープ不適 |
+   | SevenNet-Omni / GRACE | SevenNet は無機中心・重合未検証、GRACE 精度良 | — | SevenNet 大系向き、本系ベンチなし | GRACE=**ASL 非商用ブロック**、SevenNet 重み variant 依存 | 不適/失格 |
+
+4. **反応系(TDBB)固有の品質ゲート(バックエンド非依存)**: 「反応対応」を謳う ANI-1xnr ですら素の状態で**非物理的(非単調・不連続)な結合解離カーブ**を出すと 2025 JCIM(DOI 10.1021/acs.jcim.4c01847)が報告、Morse データ拡張で修正。TDBB は外部バイアスで結合を駆動するため、MLIP には**解離/生成する結合まわりの PES 健全性**が要求される。→ どのバックエンドでも、ブースト対象の結合種について**解離カーブの滑らかさ・単調性を検証する品質ゲート**を設けるべき(将来タスク候補、未着手)。
+
+5. **要素被覆の制約**: ANI/AIMNet2 系は H,C,N,O(+F,Si,P,S,Cl)のみで **Cu 非対応** → ロードマップの epoxy/CuO 界面系には使えない。全元素(遷移金属含む)を単一バックエンドで賄うには Orb か UMA しかない。MA/nylon/acrylate-methacrylate/epoxy 有機相は AIMNet2 系で足りる。
+
+6. **推奨アクション(優先順、いずれも未実施・要ユーザー承認)**: (a) **Orb-v2→v3-direct + `model.compile()`** = 同 Apache-2.0・同 ASE 統合でほぼノーリスクの 2.5×+α、最短の勝ち筋。(b) **TDBB ループのオーバーヘッド監査**(deepcopy/empty_cache/メモリ単調増加プロファイル)= 560原子規模ではモデル変更より効く公算大。(c) **AIMNet2-NSE を置換でなく補完**として反応エネルギー検証の第2バックエンド評価(重みライセンス確認が前提)。(d) 解離カーブ健全性ゲートの導入。
+
+- **主要出典**: OrbMol-v2/Orb-v3(arXiv:2504.06231, HF Apache-2.0)、AIMNet2-NSE(Angew. Chem. 2026, DOI 10.1002/anie.202516763; github.com/isayevlab/aimnetcentral MIT)、MACE-OFF(ACEsuit/mace, 重み ASL)、UMA/OMol25(arXiv:2506.23971 / 2505.08762, FAIR Chemistry License)、NEP89(arXiv:2504.21286, GPUMD GPL-3)、ANI-1xnr 解離カーブ(DOI 10.1021/acs.jcim.4c01847)、小系オーバーヘッド(ICLR-2026 blogpost / arXiv:2412.18271)、Reactive MLIP レビュー(Chem. Rev. 2025, DOI 10.1021/acs.chemrev.5c00728)。
+
+## 追補 2026-07-22 — 大系(paper-scale 以上)高速化・スケールアップのフラット調査
+ユーザー依頼「32GB 機で paper-scale 以上を狙うとき、これまでの議論(Orb CPU ディスパッチ削減)に引きずられずフラットに高速化手段を洗い出せ」に対し、コード読取りサブエージェント2本(積分器/MD アルゴリズム、バックエンド精度/メモリ)で実装実態を確認した結果。**本追補は検討記録**(実装・変更は未実施)。以後この方向で検証を進める方針。
+
+1. **「force-eval 回数削減」系は科学的妥当性の壁で封鎖**(最重要): 積分器層に **拘束(SHAKE/RATTLE/LINCS)・HMR・RESPA/multiple-timestepping はいずれも実装ゼロ**(`src/kagome/integrators/` grep 確認)。さらに **dt=0.25fs は論文追従でなく実測強制**: 1.0fs は 4× 高速だが反応/開殻/TDBB バイアス系で温度が 1e6-1e10 K に発散(decisions.md 2026-06-25 CORRECTION、validity-domain.md §2.1/§3 で「域外」正式認定、C-H 伸縮 3000cm⁻¹+強バイアス+開殻剛性が原因)。HMR も反応系では C-H 結合自体が解離/生成の当事者になりうるため質量再配分が反応動力学を歪めるリスクで安易に不可。RESPA も力源が MLIP 単一で安い力/高い力の分離がなく適用先なし。→ **1サイクル ≈ biased+unbiased+2 ≈ 3500-4000 回の力計算は妥当性を保つ限りほぼ削れない。この方向に工数を割かない。**(唯一の余地=反応の起きない equil 区間の dt 引上げだが equil はサイクル前1回のみで旨味薄)。
+
+2. **TF32 は既に有効**(取りこぼしでない): orb_models の `orbmol_v2(precision="float32-high")` 既定が `set_torch_precision`→`torch.set_float32_matmul_precision("high")` を毎ロード呼出し(`orb_models/common/training/util.py:16`)、kagome は override しないので **TF32 相当の matmul 加速は既定で ON**(コメントに「>2x throughput」)。→ **ここに追加の速度伸びしろは無い**。autocast/bf16/fp16 の推論パスは orb_backend にも orb_models ローダにも存在しない。
+
+3. **paper-scale 以上の真の制約は速度でなくメモリ天井**: 力は **autograd backward** で算出(`compute_gradient_forces_and_stress`、直接ヘッドでない)ため活性化グラフ(原子数×エッジ数×hidden×MP層)を保持要、**2520 原子で per-call ~9.5GB**(decisions.md 2026-06-15)。エッジ数は `radius=6.0Å, max_num_neighbors=120`(`orb_models pretrained.py:436-440`、kagome 未 override)が決める。断片化対策は `PYTORCH_CUDA_ALLOC_CONF=expandable_segments`(**Windows native では no-op、WSL では有効** decisions.md:437/974-981)+ per-call `empty_cache`(有効だが 32GB で ~9% CPU コスト)。→ **スケールアップの本丸はメモリ天井の押上げ**。
+
+4. **検証の方向性(以後のタスク、実装は WM-P5b 完走後)**: (a) **32GB×WSL で `empty_cache` を外し `expandable_segments` に断片化対策を委ねられるか**を実測(速度 ~9% 回収 + メモリ挙動把握を兼ねる、最初の一手)。(b) `max_num_neighbors=120`/cutoff 6Å の安全な削減余地を upstream 理解の上で検討(エッジ数=活性化メモリ直結、ただし Orb 学習時パラメータで精度影響あり要検証)。(c) `--compile`(dynamic)の実 1.7× を本番スケールで実測(前回追補の通り)。(d) gradient checkpointing 相当のメモリ削減は backward 必須ゆえ upstream 改造領域=高コスト、当面見送り。
+
+5. **副次発見(速度でなく正しさ)→ 静的追跡完了 2026-07-22、診断図のみの軽微事項と確定**: `orb_backend.py:224` は `self._model(batch)`(=`forward`)を直接呼び、`predict()` が行う **参照エネルギー加算(`absolute_energy`=元素ごと参照エネルギー総和 `ref(atomic_numbers, n_node)`、`forcefield_heads.py:160-175`、OMol で ~1e4-1e5 eV)を欠く**(`conservative_regressor.py:216 forward` vs `274-277 predict`)。**影響範囲を全消費先で確認し、物理バグでないと確定**:
+   - **力は不変**(参照エネルギーは位置非依存で勾配ゼロ→TDBB 動力学・反応選択・密度・転化率すべて正しい)。
+   - **エネルギー値の消費先は2つのみ**(grep 確認): (i) **MC バロスタット受理判定**は `dE = new_base_energy - current_energy` の差分(`mc_barostat.py:120`)で、体積移動は組成不変ゆえ `ref` が相殺→**正しい**。(ii) **trajectory の `energy_base`/`energy_total` ログ** → `reproduce_figures.py:48 plot_energy_vs_step` の y 軸。
+   - **唯一の実害**: energy_vs_step 図の y 軸ラベル "Total energy (kcal/mol)" が実際は参照エネルギーを欠く相互作用エネルギー(絶対値でない)。固定組成セグメント内はオフセット定数ゆえドリフト/揺らぎ/保存の形は忠実、fp64 解像度問題も無関係(相互作用エネルギーは小さく fp32 で十分)。
+   - **対処(後日 spike、緊急でない)**: (a) `orb_backend` を `predict()` 化=真の絶対エネルギーをログ(ただし出力エネルギー値が変わる=ビット不変性に関わり PR 経由)、または (b) `reproduce_figures.py` の y 軸を "Interaction energy" に改名(安全・推奨、組成ジャンプが乗らない現挙動はむしろ可読)。`orb_backend.py` は走行中 WM が resume で読むため WM-P5b 完走まで編集禁止。
+
+## 追補 2026-07-22 — WM-P5b 結果確定 + 混合時間既定値 = 25 ps(決定 (v) の無根拠デフォルト禁止則を実測根拠で解除)
+2026-07-19 実験計画で先送りした Q1/Q2 に、全20ラン完走(2026-07-22 21:37、Done 20/20・Resets 4・Aborted False)+ `scripts/analyze_wm_p5b.py`(Windows native python、orb不要、jsonl 直読で `analyze_wm_p4.compute_arm_metrics` を import)で決着。成果物 `runs/wm_p5b/analysis/`(WM-P5b-analysis.md + 3図)。**det 腕・シード{7,11,17,23,42}横断 mean±SE**:
+
+| mix_ps | 歩留/cycle | 再選択率 | Jaccard | 固着連 | 混合RMS |
+|---|---|---|---|---|---|
+| 0 | 0.147±0.080 | 55.0% | 0.604 | 7.0 | — |
+| 25 | 0.053±0.025 | 2.1% | 0.046 | 1.4 | 11.0Å |
+| 50 | 0.080±0.039 | 5.5% | 0.039 | 2.0 | 13.9Å |
+| 100 | 0.093±0.045 | 2.0% | 0.036 | 1.4 | 18.3Å |
+
+- **Q1(歩留低下はシグナルかノイズか)= ノイズ(未分離)**: 全 mix_ps の yield/cycle が baseline(mix0)と 1SE で重なる。**WM-P4 単一シードで見えた歩留ペナルティ(A1→A2 5→2、A3→A4 4→1、項目6)は多シードで消失**。→ 混合は候補リフレッシュの利益を**確定的な歩留コストなしに**提供する、が現時点の最良の読み。限界: 40モノマー・単桁カウント・5シードでノイズ支配。歩留の確定ペナルティは主張しない。
+- **Q2(候補リフレッシュ)= 混合はどの時間でも頑健に効き、25ps で飽和**: 再選択率 55.0%→2〜5.5%、Jaccard 0.604→0.036-0.046、固着連 7→1.4-2.0。25/50/100ps 間でリフレッシュ指標に有意差なし(25ps で既に目標達成)。混合 RMS は全て≥5Å目標、graceful skip ~0% で混合自体は健全。
+
+**決定: 混合時間の既定値 = 25 ps(ユーザー承認 2026-07-22)**。根拠: (i) リフレッシュ目標(再選択率・Jaccard・固着連の崩壊)は 25ps で完全達成、50/100ps に伸ばしても改善しない。(ii) 歩留は 25/50/100 で統計的に区別不能ゆえ、長時間混合を正当化する歩留優位が無い。(iii) 25ps が最安(実測 ~3.4h/本 vs 100ps ~4.2h)。→ **目標達成の最小コスト点として 25ps を採用**。これにより決定 (v)(P4 で測るまで混合時間デフォルト導入禁止)を実測根拠で解除する。
+- **既定値の適用範囲の限定**: この既定値は **det 選択・40モノマー現行系**で導出。softmax 選択(WM-P4 A3/A4 軸)や paper-scale への一般化は本キャンペーン範囲外(analysis.md Limitations 参照)。paper-scale で混合の per-encounter 効果が変わりうるため、大系移行時は再確認対象。
+- **コードへの既定値導入は後続 PR**: 現在 `run_vinyl_copolymer.py` 等は `--mix-ps` に既定値なし(決定 (v) 準拠)。25ps を CLI/config 既定に組み込む実装は、PR #21 マージ後に main ベースの別 PR で行う(走行中ツリー・過渡ブランチを乱さないため本追補では記録のみ)。
+
+- **検証運用**: 上記 (a)-(c) は GPU 実行を伴うため WM-P5b 完走 + PR #21 マージ後に main から新規 spike ブランチを切って実施(走行中の共有作業ツリー・GPU を乱さないため)。(5) の forward/predict 確認は GPU 不要の静的コード/小系確認で先行可能。
