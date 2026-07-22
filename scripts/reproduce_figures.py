@@ -78,7 +78,12 @@ def plot_energy_vs_step(
     if np.any(unbiased_mask):
         ax1.scatter(steps[unbiased_mask], e_total[unbiased_mask],
                     s=4, c='tab:blue', label='unbiased', alpha=0.7)
-    ax1.set_ylabel('Total energy (kcal/mol)')
+    # OrbMol's compute() returns the interaction energy (model forward), NOT the
+    # absolute energy with the per-element reference offset that predict() adds
+    # (decisions.md 追補 2026-07-22 item 5). The absolute value is therefore not
+    # physical; within a fixed-composition segment the offset is constant, so
+    # trends/conservation are faithful. Label it truthfully rather than "Total".
+    ax1.set_ylabel('Interaction energy + bias (kcal/mol)')
     ax1.legend(markerscale=3)
     ax1.set_title('Energy vs. simulation step')
 
@@ -102,8 +107,10 @@ def plot_energy_vs_step(
     ax.plot(steps[unbiased_mask], e_base[unbiased_mask],
             linewidth=0.5, color='tab:green')
     ax.set_xlabel('Step')
-    ax.set_ylabel('Base energy (kcal/mol)')
-    ax.set_title('Base (unbiased) potential energy')
+    # Interaction energy (no per-element reference offset — see plot_energy_vs_step
+    # comment and decisions.md 追補 2026-07-22 item 5), unbiased segment only.
+    ax.set_ylabel('Interaction energy, unbiased (kcal/mol)')
+    ax.set_title('Base (unbiased) interaction energy')
     fig2.tight_layout()
     for fmt in ('png', 'pdf'):
         fig2.savefig(output_dir / f'base_energy.{fmt}', dpi=150)

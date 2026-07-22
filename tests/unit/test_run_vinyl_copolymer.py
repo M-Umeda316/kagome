@@ -20,6 +20,8 @@ import sys
 import pytest
 
 from scripts.run_vinyl_copolymer import (
+    MIX_KNOB_DEFAULTS,
+    _apply_mix_defaults,
     _mixing_setup_from_args,
     _mixing_setup_mismatch,
     main,
@@ -114,6 +116,35 @@ class TestResumeGuard:
         now_bad = _mixing_setup_from_args(
             _args(mix_ps=2.0, mix_friction_per_ps=99.0))
         assert _mixing_setup_mismatch(old, now_bad) is True
+
+
+# ── (c) mixing-knob default resolution (WM-P5b: 25 ps default) ────────────────
+
+class TestApplyMixDefaults:
+    def test_mix_ps_default_is_25(self):
+        """The WM-P5b sweep result (decisions.md 追補 2026-07-22)."""
+        assert MIX_KNOB_DEFAULTS['mix_ps'] == 25.0
+        assert MIX_KNOB_DEFAULTS['mix_settle_steps'] == 500
+
+    def test_unset_knobs_resolve_to_defaults(self):
+        ns = argparse.Namespace(
+            mix=True, mix_ps=None, mix_settle_steps=None, mix_timestep_fs=None,
+            mix_friction_per_ps=None, mix_platform=None, mix_charge_method=None)
+        _apply_mix_defaults(ns)
+        assert ns.mix_ps == 25.0
+        assert ns.mix_settle_steps == 500
+        assert ns.mix_timestep_fs == 0.5
+        assert ns.mix_friction_per_ps == 1.0
+        assert ns.mix_platform == 'CPU'
+        assert ns.mix_charge_method == 'nagl'
+
+    def test_explicit_values_are_preserved(self):
+        ns = argparse.Namespace(
+            mix=True, mix_ps=100.0, mix_settle_steps=750, mix_timestep_fs=None,
+            mix_friction_per_ps=None, mix_platform=None, mix_charge_method=None)
+        _apply_mix_defaults(ns)
+        assert ns.mix_ps == 100.0        # not overwritten by the default
+        assert ns.mix_settle_steps == 750
 
 
 # ── (b) symmetric CLI guard: mixing knob without --mix errors ─────────────────

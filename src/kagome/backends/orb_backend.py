@@ -223,6 +223,13 @@ class OrbCalculatorAdapter(Calculator):
 
         result = self._model(batch)
 
+        # NOTE: model.forward() returns the interaction energy; it does NOT add
+        # the per-element reference offset that model.predict() would (OMol
+        # references reach ~1e4-1e5 eV). Forces are unaffected (the reference is
+        # position-independent, so its gradient is zero) and any energy DIFFERENCE
+        # at fixed composition is exact (e.g. the MC barostat's dE). Only the
+        # reported absolute energy is offset — see decisions.md 追補 2026-07-22
+        # item 5. Switch to predict() here only via a deliberate, tested change.
         energy_ev = float(result['energy'].detach().item())
         forces_ev = result['grad_forces'].detach().cpu().numpy()
 
