@@ -55,6 +55,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -64,8 +65,13 @@ from pathlib import Path
 # production (run_vinyl_aibn.py / orb_backend.py set the same vars). Expandable
 # segments defragments the per-step neighbour-graph allocations; this is a no-op
 # on Windows-native CUDA but DOES work on Linux/WSL. See decisions.md 2026-06-15.
+# TORCHDYNAMO_DISABLE must NOT be set when --compile is requested, or the
+# "compiled" model silently runs eager (orb_backend._configure_torch_env,
+# decisions.md 2026-07-14) — argparse has not run yet at import time, so gate
+# on sys.argv.
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
-os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
+if '--compile' not in sys.argv:
+    os.environ.setdefault('TORCHDYNAMO_DISABLE', '1')
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import numpy as np
@@ -296,7 +302,8 @@ def _build_system(spec: SystemSpec, args, calc):
 
 
 def _run_md_probe(positions, velocities, species, cell, masses, calc,
-                  integrator, md_steps, dt_fs, rng, mem_sample_every=0):
+                  integrator, md_steps, dt_fs, rng, mem_sample_every=0,
+                  warmup_steps=0):
     """Run md_steps of Langevin MD; one OrbMol-v2 call per step (production
     pattern). Atoms move, so the neighbour graph varies per step — the regime
     that drove the historical VRAM creep.
@@ -304,7 +311,12 @@ def _run_md_probe(positions, velocities, species, cell, masses, calc,
     mem_sample_every > 0 records a torch reserved/allocated timeline so
     fragmentation creep (reserved growing while allocated stays flat) is
     visible, not just the peak — the empty_cache-off question (decisions.md
-    追補 2026-07-22, task (a)) is about the *slope*, not the max."""
+    追補 2026-07-22, task (a)) is about the *slope*, not the max.
+
+    warmup_steps > 0 runs (and separately times) MD steps excluded from the
+    steady-state sec/step: with --compile, dynamic-shape (re)compilation is
+    triggered by the first calls and would otherwise dominate the mean
+    (scale-up task (c))."""
     import torch
     samples: list[dict] = []
 
@@ -316,6 +328,14 @@ def _run_md_probe(positions, velocities, species, cell, masses, calc,
         })
 
     _, forces = calc.compute(positions, species, cell=cell)
+    warmup_s = 0.0
+    if warmup_steps > 0:
+        tw = time.perf_counter()
+        for _ in range(warmup_steps):
+            integrator.pre_force(positions, velocities, forces, masses, dt_fs, rng, cell)
+            _, forces = calc.compute(positions, species, cell=cell)
+            integrator.post_force(velocities, forces, masses, dt_fs)
+        warmup_s = time.perf_counter() - tw
     if mem_sample_every > 0:
         _sample(0)
     t0 = time.perf_counter()
@@ -326,7 +346,7 @@ def _run_md_probe(positions, velocities, species, cell, masses, calc,
         if mem_sample_every > 0 and (i + 1) % mem_sample_every == 0:
             _sample(i + 1)
     elapsed = time.perf_counter() - t0
-    return elapsed / max(1, md_steps), samples
+    return elapsed / max(1, md_steps), samples, warmup_s
 
 
 def _profile_one(spec, args, calc, integrator, total_vram_gb):
@@ -367,10 +387,11 @@ def _profile_one(spec, args, calc, integrator, total_vram_gb):
         rng = np.random.default_rng(args.seed)
         masses = masses_from_species(species)
         velocities = maxwell_boltzmann_velocities(masses, spec.temperature_K, rng)
-        s_per_step, mem_timeline = _run_md_probe(
+        s_per_step, mem_timeline, warmup_s = _run_md_probe(
             positions, velocities, species, cell, masses, calc, integrator,
             args.md_steps, args.timestep_fs, rng,
-            mem_sample_every=args.mem_sample_every)
+            mem_sample_every=args.mem_sample_every,
+            warmup_steps=args.warmup_steps)
 
         md_reserved_gb = torch.cuda.max_memory_reserved() / _BYTES_PER_GB
         md_alloc_gb = torch.cuda.max_memory_allocated() / _BYTES_PER_GB
@@ -401,6 +422,8 @@ def _profile_one(spec, args, calc, integrator, total_vram_gb):
             'headroom_gb': round(headroom, 2),
             'fits': fits,
             'sec_per_step': round(s_per_step, 3),
+            'warmup_steps': args.warmup_steps,
+            'warmup_total_s': round(warmup_s, 1),
             'mem_timeline': mem_timeline,
         })
         if len(mem_timeline) >= 2:
@@ -483,6 +506,14 @@ def main() -> None:
     parser.add_argument('--mem-sample-every', type=int, default=10,
                         help='record torch reserved/allocated every N MD steps '
                              '(0 disables the timeline)')
+    parser.add_argument('--compile', action='store_true',
+                        help='torch.compile the orb model (scale-up task (c); '
+                             'Linux/WSL only). Use with --warmup-steps so '
+                             'dynamic-shape compilation is excluded from the '
+                             'steady-state sec/step.')
+    parser.add_argument('--warmup-steps', type=int, default=0,
+                        help='MD steps run (and timed separately) before the '
+                             'steady-state timing window')
     parser.add_argument('--seed', type=int, default=7)
     args = parser.parse_args()
 
@@ -510,7 +541,8 @@ def main() -> None:
 
     logger.info('Creating OrbMol-v2 backend on %s...', args.device)
     from kagome.backends.orb_backend import create_orb_calculator
-    calc = create_orb_calculator(device=args.device, empty_cache=args.empty_cache)
+    calc = create_orb_calculator(device=args.device, compile=args.compile,
+                                 empty_cache=args.empty_cache)
     integrator = LangevinIntegrator(LangevinParams(temperature_K=300.0))
 
     results = []
@@ -529,6 +561,8 @@ def main() -> None:
         'compress_backend': args.compress_backend,
         'empty_cache': args.empty_cache,
         'mem_sample_every': args.mem_sample_every,
+        'compile': args.compile,
+        'warmup_steps': args.warmup_steps,
         'seed': args.seed,
         'env': {k: os.environ.get(k) for k in
                 ('PYTORCH_CUDA_ALLOC_CONF', 'TORCHDYNAMO_DISABLE')},
