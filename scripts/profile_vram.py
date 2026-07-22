@@ -296,18 +296,37 @@ def _build_system(spec: SystemSpec, args, calc):
 
 
 def _run_md_probe(positions, velocities, species, cell, masses, calc,
-                  integrator, md_steps, dt_fs, rng):
+                  integrator, md_steps, dt_fs, rng, mem_sample_every=0):
     """Run md_steps of Langevin MD; one OrbMol-v2 call per step (production
     pattern). Atoms move, so the neighbour graph varies per step — the regime
-    that drove the historical VRAM creep."""
+    that drove the historical VRAM creep.
+
+    mem_sample_every > 0 records a torch reserved/allocated timeline so
+    fragmentation creep (reserved growing while allocated stays flat) is
+    visible, not just the peak — the empty_cache-off question (decisions.md
+    追補 2026-07-22, task (a)) is about the *slope*, not the max."""
+    import torch
+    samples: list[dict] = []
+
+    def _sample(step: int) -> None:
+        samples.append({
+            'step': step,
+            'reserved_gb': round(torch.cuda.memory_reserved() / _BYTES_PER_GB, 3),
+            'allocated_gb': round(torch.cuda.memory_allocated() / _BYTES_PER_GB, 3),
+        })
+
     _, forces = calc.compute(positions, species, cell=cell)
+    if mem_sample_every > 0:
+        _sample(0)
     t0 = time.perf_counter()
-    for _ in range(md_steps):
+    for i in range(md_steps):
         integrator.pre_force(positions, velocities, forces, masses, dt_fs, rng, cell)
         _, forces = calc.compute(positions, species, cell=cell)
         integrator.post_force(velocities, forces, masses, dt_fs)
+        if mem_sample_every > 0 and (i + 1) % mem_sample_every == 0:
+            _sample(i + 1)
     elapsed = time.perf_counter() - t0
-    return elapsed / max(1, md_steps)
+    return elapsed / max(1, md_steps), samples
 
 
 def _profile_one(spec, args, calc, integrator, total_vram_gb):
@@ -348,9 +367,10 @@ def _profile_one(spec, args, calc, integrator, total_vram_gb):
         rng = np.random.default_rng(args.seed)
         masses = masses_from_species(species)
         velocities = maxwell_boltzmann_velocities(masses, spec.temperature_K, rng)
-        s_per_step = _run_md_probe(
+        s_per_step, mem_timeline = _run_md_probe(
             positions, velocities, species, cell, masses, calc, integrator,
-            args.md_steps, args.timestep_fs, rng)
+            args.md_steps, args.timestep_fs, rng,
+            mem_sample_every=args.mem_sample_every)
 
         md_reserved_gb = torch.cuda.max_memory_reserved() / _BYTES_PER_GB
         md_alloc_gb = torch.cuda.max_memory_allocated() / _BYTES_PER_GB
@@ -381,7 +401,15 @@ def _profile_one(spec, args, calc, integrator, total_vram_gb):
             'headroom_gb': round(headroom, 2),
             'fits': fits,
             'sec_per_step': round(s_per_step, 3),
+            'mem_timeline': mem_timeline,
         })
+        if len(mem_timeline) >= 2:
+            first, last = mem_timeline[0], mem_timeline[-1]
+            span = max(1, last['step'] - first['step'])
+            creep_mb_per_step = (last['reserved_gb'] - first['reserved_gb']) * 1024.0 / span
+            result['reserved_creep_mb_per_step'] = round(creep_mb_per_step, 3)
+            logger.info('  -> reserved %.2f -> %.2f GB over %d steps (creep %.2f MB/step)',
+                        first['reserved_gb'], last['reserved_gb'], span, creep_mb_per_step)
         logger.info('  -> peak %.1f GB (%s); budget %.0f GB; headroom %.1f GB; fits=%s',
                     peak_gb, peak_source, budget, headroom, fits)
         return result
@@ -446,6 +474,15 @@ def main() -> None:
     parser.add_argument('--context-margin-gb', type=float, default=1.5,
                         help='CUDA-context margin added to torch reserved when '
                              'nvidia-smi device peak is unavailable')
+    parser.add_argument('--no-empty-cache', dest='empty_cache',
+                        action='store_false', default=True,
+                        help='Skip per-step torch.cuda.empty_cache() in the orb backend '
+                             'and rely on expandable_segments alone (scale-up task (a), '
+                             'decisions.md 追補 2026-07-22): reclaims ~9%% CPU time on '
+                             '>=32 GB GPUs if reserved VRAM does not creep.')
+    parser.add_argument('--mem-sample-every', type=int, default=10,
+                        help='record torch reserved/allocated every N MD steps '
+                             '(0 disables the timeline)')
     parser.add_argument('--seed', type=int, default=7)
     args = parser.parse_args()
 
@@ -473,7 +510,7 @@ def main() -> None:
 
     logger.info('Creating OrbMol-v2 backend on %s...', args.device)
     from kagome.backends.orb_backend import create_orb_calculator
-    calc = create_orb_calculator(device=args.device)
+    calc = create_orb_calculator(device=args.device, empty_cache=args.empty_cache)
     integrator = LangevinIntegrator(LangevinParams(temperature_K=300.0))
 
     results = []
@@ -490,6 +527,8 @@ def main() -> None:
         'timestep_fs': args.timestep_fs,
         'no_compress': args.no_compress,
         'compress_backend': args.compress_backend,
+        'empty_cache': args.empty_cache,
+        'mem_sample_every': args.mem_sample_every,
         'seed': args.seed,
         'env': {k: os.environ.get(k) for k in
                 ('PYTORCH_CUDA_ALLOC_CONF', 'TORCHDYNAMO_DISABLE')},
