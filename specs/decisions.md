@@ -1881,7 +1881,7 @@ Use this template for each decision.
 - **インフラ観測(別件)**: 同一条件の eager が昨日 0.558 → 今日 0.83 と**日間 ±50% 変動**(GPU 温度・残留プロセス・WSL 劣化は除外済み。CPU ディスパッチ律速ゆえホスト側負荷が疑わしい)。**絶対値の日跨ぎ比較は無効、速度比較は必ず同日ペア(挟み込み)で行うこと**。
 - **含意**: (a) empty_cache off(1.41×)と (c) compile(1.24×)は独立機構で積算見込み ~1.7×。ただし積算の同日ペア実測は未実施(次に 4条件マトリクスを回すか、32GB 機での再計測時に併せて確認)。**本番既定値は未変更**(`--compile` は run スクリプトに既存フラグあり、opt-in のまま)。
 
-### 同日4条件マトリクス実測(2026-07-23、runs/scaleup_matrix/、launcher runs/scaleup_matrix_run.sh)
+### 同日4条件マトリクス実測(2026-07-23、runs/scaleup_matrix/、launcher scripts/run_scaleup_matrix.sh)
 
 empty_cache × compile の4条件+挟み込みを同日連続5本で実測(条件は上と同一: MA 2520原子・300 step・warmup 30)。挟み込み成立(m1 1.117 / m5 1.091 s/step、差 2.4%)。baseline = m1/m5 平均 1.104。
 
