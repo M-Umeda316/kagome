@@ -1825,3 +1825,75 @@ Use this template for each decision.
 - **コードへの既定値導入は後続 PR**: 現在 `run_vinyl_copolymer.py` 等は `--mix-ps` に既定値なし(決定 (v) 準拠)。25ps を CLI/config 既定に組み込む実装は、PR #21 マージ後に main ベースの別 PR で行う(走行中ツリー・過渡ブランチを乱さないため本追補では記録のみ)。
 
 - **検証運用**: 上記 (a)-(c) は GPU 実行を伴うため WM-P5b 完走 + PR #21 マージ後に main から新規 spike ブランチを切って実施(走行中の共有作業ツリー・GPU を乱さないため)。(5) の forward/predict 確認は GPU 不要の静的コード/小系確認で先行可能。
+
+## 追補 2026-07-22 — スケールアップ検証 (a) 実測: empty_cache off + expandable_segments は 16GB×WSL でも安全、paper-scale で 29% 高速
+
+上記フラット調査の検証タスク (a)「`empty_cache` を外し `expandable_segments` に断片化対策を委ねられるか」の実測結果。**注意: 実測機は RTX 4060 Ti 16GB(WSL Ubuntu-24.04, pfpoly-gpu)であり、当初想定の RTX 5000 Ada 32GB 機ではない**。ただし 16GB は歴史的に断片化ハング(2026-06-15、2520原子)が起きた最も厳しい条件であり、ここで成立すれば 32GB では a fortiori 安全。
+
+**手段**: `scripts/profile_vram.py` に `--no-empty-cache`(orb backend の既存 `empty_cache` フラグへ配線)と `--mem-sample-every`(torch reserved/allocated 時系列 + クリープ MB/step)を追加(branch `spike/scaleup-memory-a`, commit 26e2eee)。断片化は「ピーク」でなく **reserved の傾き**で判定する。
+
+**結果(vinyl_methyl_acrylate 2520原子・0.5 g/mL・333K・Langevin 300 step・seed 7、`runs/scaleup_a/ma_ec_{on,off}/vram_profile.json`)**:
+
+| empty_cache | sec/step | device peak | md reserved | reserved クリープ |
+|---|---|---|---|---|
+| on(現行既定) | 0.785 | 9.48 GB | 0.15 GB(毎step解放) | 0.0 MB/step |
+| **off** | **0.558(-29%)** | 9.50 GB | 7.86 GB(定常保持) | **0.0 MB/step(300stepフラット)** |
+
+- **速度**: off で **29% 高速化**。py-spy の CPU 時間シェア ~9%(2026-07-14)より大きいのは、`empty_cache()` の暗黙同期がパイプライン全体を止めていたため(wall-clock への効きは CPU シェアより大きい)。
+- **メモリ**: off でも reserved は 7.86 GB で完全フラット(allocated はステップ間 0.11 GB)。expandable_segments(WSL で有効)がセグメント内再利用で断片化を吸収しており、デバイスピークも on と同等(+0.02 GB)。歴史的クリープ(2026-06-15)は Windows native(expandable_segments が no-op)での観測であり、**WSL では empty_cache は不要**というのが本実測の読み。
+- **持続確認**: off のみ 1000 step を追加実測(`runs/scaleup_a/ma_ec_off_1000/`): reserved は全41サンプルで 7.805 GB 一定(min=max)、クリープ 0.0 MB/step、0.533 s/step。短時間アーティファクトではない。
+- **限定**: NVT・固定セル・非反応 MD(最長 1000 step、probe 既定 dt=1.0 fs = 1 ps)での結果。本番は MC バロスタット(体積変動=グラフサイズ変動大)+ 結合生成があるため、既定値の切替(`empty_cache=False` を WSL 既定にする等)は本番ワークロードでの長時間確認後に別途判断。現時点では **`--no-empty-cache` フラグを WSL 実行で明示指定するのが推奨運用**。
+- **32GB 機への含意**: 安全性の結論は移送可能(16GB で成立)。速度回収率はマシン依存のため 32GB 機では同ブランチ・同コマンドで再計測(`python -m scripts.profile_vram --device cuda --systems vinyl_methyl_acrylate --md-steps 300 --mem-sample-every 10 [--no-empty-cache] --output-dir runs/scaleup_a/...`)。
+
+## 追補 2026-07-23 — スケールアップ検証 (b) 実測: グラフパラメータ削減によるメモリ天井押上げは封鎖(ネガティブ結果)
+
+検証タスク (b)「`max_num_neighbors=120` / cutoff 6Å の安全な削減余地」を `scripts/spike_edge_budget.py`(branch `spike/scaleup-memory-a`)で実測した結果、**安全な削減余地は存在しない**と確定。paper-scale MA 2520原子・0.5 g/mL・RTX 4060 Ti 16GB×WSL、(radius, cap) スイープを relaxed / md50 の2スナップショットで評価、baseline=(6.0Å, 120) との力偏差で判定(`runs/scaleup_b/edge_budget.json`)。
+
+**前提の実測**: 同一グラフでの再計算でも F-RMSE ~0.005-0.007 kcal/mol/Å が出る(TF32/atomics の非決定性)。以下ではこれを**ノイズ床**として使う。また upstream の実装(forcefield_adapter.py)はエッジをパディングなしの実 COO リストで持つため、**メモリはキャップでなく実エッジ数で決まる**。
+
+| radius | cap | エッジ数 | peak alloc | F-RMSE (md50) | F-max (md50) | 判定 |
+|---|---|---|---|---|---|---|
+| 6.0 | 120 | 105.9k | 7.22 GB | (baseline) | — | — |
+| 6.0 | 80 | 105.9k(同一) | 7.22 GB | 0.007(=ノイズ床) | 0.10 | 無害だが**メモリ収穫ゼロ** |
+| 6.0 | 40 | 92.7k(−12%) | 6.42 GB | 0.157(22×床) | 3.99 | 不可 |
+| 5.5 | 120 | 83.1k(−22%) | 5.86 GB | 0.197(28×床) | 3.23 | 不可 |
+| 5.0 | 120 | 64.4k(−39%) | 4.77 GB | 0.814 | 14.5 | 論外 |
+| 4.0 | 120 | 35.1k(−67%) | 3.07 GB | 5.117 | 128.7 | 論外 |
+
+- **キャップは拘束していない**: 本番密度での実隣接数は平均42・p95=58・最大76。cap=120 は一度もバインドせず、80 へ下げてもグラフ同一=メモリ不変。60 で拘束開始(3.5%の原子)、40 で 38% が拘束され力が壊れる。→ **キャップ側に自由昼食なし**。
+- **radius 削減は密度上で精度崩壊が加速**: 希薄スモーク(252原子)では 5.5Å の F-RMSE は 0.03 だったが、本番密度では 0.20(最大誤差 ~4 kcal/mol/Å)。TDBB は結合形成の障壁形状に敏感であり、この規模の力誤差は反応動力学を歪める。メモリ削減(6.0→5.5 で −19%)の対価として受容不能。
+- **結論**: エッジ数経由のメモリ天井押上げは**封鎖**。paper-scale 以上のメモリ対策として残るのは (d) upstream の gradient checkpointing(高コスト・当面見送り)と、adapter の `half_supercell` オプション(**グラフを変えずに** 5k+ 原子でグラフ構築のメモリ/スループットを改善と upstream 文書に記載 — ただし活性化メモリ本体でなくグラフ構築段の話なので効果は限定的の見込み、nylon66 4400原子で要実測)。
+- 計測スクリプトは adapter 差し替えのみで upstream 無改造・本番既定値無変更。採否判断は不要(何も採用しない)。
+
+## 追補 2026-07-23 — スケールアップ検証 (c) 実測: --compile は paper-scale で 1.24×、メモリも −8%(このカードでは 1.7× に届かず)
+
+検証タスク (c)「`--compile`(dynamic)の実 1.7× を本番スケールで実測」の結果。`profile_vram.py` に `--compile`/`--warmup-steps` を追加(commit 4cc0859)。**罠の修正込み**: profile_vram はモジュール先頭で `TORCHDYNAMO_DISABLE=1` を setdefault しており、素朴に `--compile` を足すと黙って eager 実行になる(2026-07-14 記載の既知の罠)— sys.argv ゲートで回避。paper-scale MA 2520原子・MD 300 step・warmup 30 step・`--no-empty-cache`・RTX 4060 Ti 16GB×WSL(`runs/scaleup_c/`)。
+
+| 腕(実行順) | sec/step | device peak | md alloc |
+|---|---|---|---|
+| eager① | 0.841 | 9.76 GB | 7.23 GB |
+| compile | **0.669** | **9.23 GB** | **6.63 GB(−8%)** |
+| eager②(挟み込み) | 0.820 | 9.76 GB | 7.23 GB |
+
+- **速度: compile = 1.24×**(eager 平均 0.83 → 0.669)。eager①≈eager② で同日内ドリフトなし=ペア比は有効。upstream 主張の 1.7× には届かないが、**このカード(4060 Ti)は SM 不足で inductor が `max_autotune_gemm` を無効化している**(ログ明記)ため、SM の多い RTX 5000 Ada 32GB 機では上振れの余地あり(要再計測)。
+- **メモリ: −8%**(alloc 7.23→6.63 GB、device peak −0.53 GB)。カーネル融合で中間活性化が減るためで、メモリ天井が本丸という文脈では速度と同じく有意義な副収穫。
+- **安定性**: 再コンパイル暴発なし(300 step 中 Recompiling 0 件)、reserved クリープ ~0-0.2 MB/step(有界)、警告どおり dynamic shapes で shape 変動(MD の隣接数変動)を吸収。コンパイル初期コストは minimize/warmup 段に吸収され、warmup 30 step 後の定常は安定。
+- **インフラ観測(別件)**: 同一条件の eager が昨日 0.558 → 今日 0.83 と**日間 ±50% 変動**(GPU 温度・残留プロセス・WSL 劣化は除外済み。CPU ディスパッチ律速ゆえホスト側負荷が疑わしい)。**絶対値の日跨ぎ比較は無効、速度比較は必ず同日ペア(挟み込み)で行うこと**。
+- **含意**: (a) empty_cache off(1.41×)と (c) compile(1.24×)は独立機構で積算見込み ~1.7×。ただし積算の同日ペア実測は未実施(次に 4条件マトリクスを回すか、32GB 機での再計測時に併せて確認)。**本番既定値は未変更**(`--compile` は run スクリプトに既存フラグあり、opt-in のまま)。
+
+### 同日4条件マトリクス実測(2026-07-23、runs/scaleup_matrix/、launcher scripts/run_scaleup_matrix.sh)
+
+empty_cache × compile の4条件+挟み込みを同日連続5本で実測(条件は上と同一: MA 2520原子・300 step・warmup 30)。挟み込み成立(m1 1.117 / m5 1.091 s/step、差 2.4%)。baseline = m1/m5 平均 1.104。
+
+| 腕 | empty_cache | compile | sec/step | 対 baseline | md alloc |
+|---|---|---|---|---|---|
+| m1+m5(基準) | on | — | 1.104 | 1.00× | 7.23 GB |
+| m2 | off | — | 0.857 | 1.29× | 7.22 GB |
+| m3 | on | ✓ | 0.919 | 1.20× | 6.61 GB |
+| **m4(併用)** | **off** | **✓** | **0.668** | **1.65×** | **6.59 GB(−8.8%)** |
+
+- **併用 = 1.65×、実測確定**。独立仮定の予測(1.29×1.20=1.55×)をやや上回る超相乗(compile で GPU 仕事が減るぶん empty_cache の固定同期コストの相対比重が増すため、off の利得が拡大する方向で整合)。
+- メモリは compile 由来の −8.8% が併用でも維持。m4 の reserved クリープ 0.2 MB/step は単独 compile 計測と同値で有界(300 step で +60 MB、天井には遠い)。
+- 基準絶対値は昨日比でまた変動(ec-on eager: 昨日 0.785 → 本日 1.10)。**同日挟み込みルールの必要性を再確認**。
+- **運用推奨(このカード・WSL)**: 長尺 GPU ランは `--no-empty-cache --compile` 併用で ~1.65×。既定値は据え置き(opt-in)。本番ワークロード(バロスタット+結合生成+resume)での compile 長時間 soak が既定値昇格の残条件。
+- **compile の数値等価性(2026-07-23 確認)**: 同一座標(MA 624原子)で eager vs compile の力を比較: クロス RMSE 0.00394 kcal/mol/Å は eager 同士の再計算ノイズ床 0.00408(TF32/atomics 非決定性)と同一、最大差も同水準。**compile は力をノイズ床を超えて変えない** — 併用推奨の数値的裏付け。
