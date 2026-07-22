@@ -1880,3 +1880,19 @@ Use this template for each decision.
 - **安定性**: 再コンパイル暴発なし(300 step 中 Recompiling 0 件)、reserved クリープ ~0-0.2 MB/step(有界)、警告どおり dynamic shapes で shape 変動(MD の隣接数変動)を吸収。コンパイル初期コストは minimize/warmup 段に吸収され、warmup 30 step 後の定常は安定。
 - **インフラ観測(別件)**: 同一条件の eager が昨日 0.558 → 今日 0.83 と**日間 ±50% 変動**(GPU 温度・残留プロセス・WSL 劣化は除外済み。CPU ディスパッチ律速ゆえホスト側負荷が疑わしい)。**絶対値の日跨ぎ比較は無効、速度比較は必ず同日ペア(挟み込み)で行うこと**。
 - **含意**: (a) empty_cache off(1.41×)と (c) compile(1.24×)は独立機構で積算見込み ~1.7×。ただし積算の同日ペア実測は未実施(次に 4条件マトリクスを回すか、32GB 機での再計測時に併せて確認)。**本番既定値は未変更**(`--compile` は run スクリプトに既存フラグあり、opt-in のまま)。
+
+### 同日4条件マトリクス実測(2026-07-23、runs/scaleup_matrix/、launcher runs/scaleup_matrix_run.sh)
+
+empty_cache × compile の4条件+挟み込みを同日連続5本で実測(条件は上と同一: MA 2520原子・300 step・warmup 30)。挟み込み成立(m1 1.117 / m5 1.091 s/step、差 2.4%)。baseline = m1/m5 平均 1.104。
+
+| 腕 | empty_cache | compile | sec/step | 対 baseline | md alloc |
+|---|---|---|---|---|---|
+| m1+m5(基準) | on | — | 1.104 | 1.00× | 7.23 GB |
+| m2 | off | — | 0.857 | 1.29× | 7.22 GB |
+| m3 | on | ✓ | 0.919 | 1.20× | 6.61 GB |
+| **m4(併用)** | **off** | **✓** | **0.668** | **1.65×** | **6.59 GB(−8.8%)** |
+
+- **併用 = 1.65×、実測確定**。独立仮定の予測(1.29×1.20=1.55×)をやや上回る超相乗(compile で GPU 仕事が減るぶん empty_cache の固定同期コストの相対比重が増すため、off の利得が拡大する方向で整合)。
+- メモリは compile 由来の −8.8% が併用でも維持。m4 の reserved クリープ 0.2 MB/step は単独 compile 計測と同値で有界(300 step で +60 MB、天井には遠い)。
+- 基準絶対値は昨日比でまた変動(ec-on eager: 昨日 0.785 → 本日 1.10)。**同日挟み込みルールの必要性を再確認**。
+- **運用推奨(このカード・WSL)**: 長尺 GPU ランは `--no-empty-cache --compile` 併用で ~1.65×。既定値は据え置き(opt-in)。本番ワークロード(バロスタット+結合生成+resume)での compile 長時間 soak が既定値昇格の残条件。
