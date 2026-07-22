@@ -1825,3 +1825,22 @@ Use this template for each decision.
 - **コードへの既定値導入は後続 PR**: 現在 `run_vinyl_copolymer.py` 等は `--mix-ps` に既定値なし(決定 (v) 準拠)。25ps を CLI/config 既定に組み込む実装は、PR #21 マージ後に main ベースの別 PR で行う(走行中ツリー・過渡ブランチを乱さないため本追補では記録のみ)。
 
 - **検証運用**: 上記 (a)-(c) は GPU 実行を伴うため WM-P5b 完走 + PR #21 マージ後に main から新規 spike ブランチを切って実施(走行中の共有作業ツリー・GPU を乱さないため)。(5) の forward/predict 確認は GPU 不要の静的コード/小系確認で先行可能。
+
+## 追補 2026-07-22 — スケールアップ検証 (a) 実測: empty_cache off + expandable_segments は 16GB×WSL でも安全、paper-scale で 29% 高速
+
+上記フラット調査の検証タスク (a)「`empty_cache` を外し `expandable_segments` に断片化対策を委ねられるか」の実測結果。**注意: 実測機は RTX 4060 Ti 16GB(WSL Ubuntu-24.04, pfpoly-gpu)であり、当初想定の RTX 5000 Ada 32GB 機ではない**。ただし 16GB は歴史的に断片化ハング(2026-06-15、2520原子)が起きた最も厳しい条件であり、ここで成立すれば 32GB では a fortiori 安全。
+
+**手段**: `scripts/profile_vram.py` に `--no-empty-cache`(orb backend の既存 `empty_cache` フラグへ配線)と `--mem-sample-every`(torch reserved/allocated 時系列 + クリープ MB/step)を追加(branch `spike/scaleup-memory-a`, commit 26e2eee)。断片化は「ピーク」でなく **reserved の傾き**で判定する。
+
+**結果(vinyl_methyl_acrylate 2520原子・0.5 g/mL・333K・Langevin 300 step・seed 7、`runs/scaleup_a/ma_ec_{on,off}/vram_profile.json`)**:
+
+| empty_cache | sec/step | device peak | md reserved | reserved クリープ |
+|---|---|---|---|---|
+| on(現行既定) | 0.785 | 9.48 GB | 0.15 GB(毎step解放) | 0.0 MB/step |
+| **off** | **0.558(-29%)** | 9.50 GB | 7.86 GB(定常保持) | **0.0 MB/step(300stepフラット)** |
+
+- **速度**: off で **29% 高速化**。py-spy の CPU 時間シェア ~9%(2026-07-14)より大きいのは、`empty_cache()` の暗黙同期がパイプライン全体を止めていたため(wall-clock への効きは CPU シェアより大きい)。
+- **メモリ**: off でも reserved は 7.86 GB で完全フラット(allocated はステップ間 0.11 GB)。expandable_segments(WSL で有効)がセグメント内再利用で断片化を吸収しており、デバイスピークも on と同等(+0.02 GB)。歴史的クリープ(2026-06-15)は Windows native(expandable_segments が no-op)での観測であり、**WSL では empty_cache は不要**というのが本実測の読み。
+- **持続確認**: off のみ 1000 step を追加実測(`runs/scaleup_a/ma_ec_off_1000/`): reserved は全41サンプルで 7.805 GB 一定(min=max)、クリープ 0.0 MB/step、0.533 s/step。短時間アーティファクトではない。
+- **限定**: NVT・固定セル・非反応 MD(最長 1000 step、probe 既定 dt=1.0 fs = 1 ps)での結果。本番は MC バロスタット(体積変動=グラフサイズ変動大)+ 結合生成があるため、既定値の切替(`empty_cache=False` を WSL 既定にする等)は本番ワークロードでの長時間確認後に別途判断。現時点では **`--no-empty-cache` フラグを WSL 実行で明示指定するのが推奨運用**。
+- **32GB 機への含意**: 安全性の結論は移送可能(16GB で成立)。速度回収率はマシン依存のため 32GB 機では同ブランチ・同コマンドで再計測(`python -m scripts.profile_vram --device cuda --systems vinyl_methyl_acrylate --md-steps 300 --mem-sample-every 10 [--no-empty-cache] --output-dir runs/scaleup_a/...`)。
