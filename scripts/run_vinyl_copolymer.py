@@ -123,6 +123,33 @@ def _mixing_setup_mismatch(ckpt_mix: dict | None, now_mix: dict | None) -> bool:
     return any(ckpt_mix[k] != now_mix[k] for k in shared)
 
 
+# Documented defaults for the optional mixing knobs. Every knob carries an
+# argparse sentinel of None so "not given" is distinguishable from "given"
+# (the symmetric stray-knob guard depends on this); the sentinels are resolved
+# to these values only when --mix is present. mix_ps=25.0 is the WM-P5b sweep
+# result (decisions.md 追補 2026-07-22: refresh saturates by 25 ps, yield
+# unresolved across 25/50/100, 25 ps cheapest); mix_settle_steps=500 is the
+# established WM-P4/P5b campaign value. The rest mirror MixConfig's defaults.
+MIX_KNOB_DEFAULTS = {
+    'mix_ps': 25.0,
+    'mix_settle_steps': 500,
+    'mix_timestep_fs': 0.5,
+    'mix_friction_per_ps': 1.0,
+    'mix_platform': 'CPU',
+    'mix_charge_method': 'nagl',
+}
+
+
+def _apply_mix_defaults(args) -> None:
+    """Resolve each unset (None) mixing knob to its documented default in place.
+
+    Only call when --mix is on. Knobs the user passed explicitly are left as-is.
+    """
+    for knob, default in MIX_KNOB_DEFAULTS.items():
+        if getattr(args, knob) is None:
+            setattr(args, knob, default)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description='Vinyl copolymerization (acrylate + methacrylate) via TDBB.',
@@ -179,24 +206,24 @@ def main() -> None:
                              '--selection-policy softmax, ignored otherwise.')
     # WM-P3 (specs/decisions.md "2026-07-17: well-mixed 測定モード" item (i),
     # 追補 2026-07-18): optional per-cycle classical mixing stage. Off by
-    # default — the paper-faithful loop is unchanged. --mix-ps and
-    # --mix-settle-steps have NO defaults on purpose (decisions.md (v): mixing
-    # durations must be chosen explicitly until the P4 sweep measures them).
+    # default — the paper-faithful loop is unchanged. Mixing durations now have
+    # documented defaults resolved from MIX_KNOB_DEFAULTS (mix_ps=25 ps is the
+    # WM-P5b sweep result, decisions.md 追補 2026-07-22, lifting the earlier
+    # "no defaults until measured" rule of decision (v)).
     parser.add_argument('--mix', action='store_true',
                         help='enable the classical (OpenFF/OpenMM) mixing '
                              'stage after each cycle (well-mixed measurement '
                              'mode; NOT paper-faithful).')
     parser.add_argument('--mix-ps', type=float, default=None,
-                        help='classical mixing duration per cycle in ps; '
-                             'required with --mix.')
+                        help='classical mixing duration per cycle in ps '
+                             '(default 25, WM-P5b); requires --mix.')
     parser.add_argument('--mix-settle-steps', type=int, default=None,
-                        help='MLIP settle steps after coordinate write-back; '
-                             'required with --mix.')
-    # These four have a sentinel default of None so we can tell "not given" from
-    # "given" and (a) error if any is passed WITHOUT --mix (symmetric with
-    # --mix-ps/--mix-settle-steps) and (b) resolve None to the documented default
-    # only when --mix is present. Real defaults: 0.5 fs / 1.0 per ps / 'CPU' /
-    # 'nagl'.
+                        help='MLIP settle steps after coordinate write-back '
+                             '(default 500, WM-P4/P5b); requires --mix.')
+    # Like every mixing knob these carry a sentinel default of None so we can
+    # tell "not given" from "given" and (a) error if any is passed WITHOUT --mix
+    # (the symmetric stray-knob guard below) and (b) resolve None to the
+    # documented default (MIX_KNOB_DEFAULTS) only when --mix is present.
     parser.add_argument('--mix-timestep-fs', type=float, default=None,
                         help='classical mixing timestep in fs (default 0.5, '
                              'ClassicalPrepConfig precedent); requires --mix.')
@@ -234,24 +261,11 @@ def main() -> None:
     if args.selection_policy == 'deterministic' and args.selection_temperature is not None:
         parser.error('--selection-temperature was given without '
                       '--selection-policy softmax.')
-    # Documented defaults for the optional mixing knobs (sentinel None until
-    # resolved here). Mirrors MixConfig's defaults and the help text above.
-    _MIX_KNOB_DEFAULTS = {
-        'mix_timestep_fs': 0.5,
-        'mix_friction_per_ps': 1.0,
-        'mix_platform': 'CPU',
-        'mix_charge_method': 'nagl',
-    }
     if args.mix:
-        if args.mix_ps is None or args.mix_settle_steps is None:
-            parser.error('--mix requires both --mix-ps and --mix-settle-steps '
-                         '(no defaults until the P4 sweep — decisions.md (v)).')
-        # Resolve each sentinel to its documented default now so every downstream
-        # consumer (MixConfig, the resume guard, checkpoint_extra, summary.json)
-        # sees the real value rather than None.
-        for _knob, _default in _MIX_KNOB_DEFAULTS.items():
-            if getattr(args, _knob) is None:
-                setattr(args, _knob, _default)
+        # Resolve every unset mixing knob to its documented default now so that
+        # each downstream consumer (MixConfig, the resume guard, checkpoint_extra,
+        # summary.json) sees a real value rather than None.
+        _apply_mix_defaults(args)
         try:
             import openff.toolkit  # noqa: F401
             import openmm  # noqa: F401
