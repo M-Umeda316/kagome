@@ -3,7 +3,12 @@
 ## 概要
 
 S6 は論文スケール（200 monomer + 10 AIBN = ≈2520 atoms）の実行です。
-OrbMol-v2 のシングルステップ VRAM フットプリントが約 9.5 GB のため、**24 GB 以上の GPU** が必要です。
+OrbMol-v2 のこのスケールでの実測デバイスピークは **~9.5-9.8 GB**（WSL +
+`expandable_segments`、runs/scaleup_a/c、decisions.md 追補 2026-07-22/23）で、
+**WSL 上なら 16 GB GPU で足ります**。かつての「24 GB 以上必要」という指針は
+Windows native（`expandable_segments` が no-op で断片化ハングした環境、
+2026-06-15）由来のものです。**実行は WSL(Linux) を必須とします** — native
+Windows の pfpoly 環境は CPU ビルドの torch になり orb が動きません。
 
 ---
 
@@ -11,7 +16,8 @@ OrbMol-v2 のシングルステップ VRAM フットプリントが約 9.5 GB �
 
 | 項目 | 要件 |
 |------|------|
-| GPU VRAM | ≥ 24 GB（RTX 3090 / 4090 / A10G / A100 等） |
+| GPU VRAM | ≥ 16 GB（WSL/Linux + expandable_segments 前提。実測ピーク ~9.8 GB） |
+| OS | Linux または WSL2（Windows native は不可 — 上記） |
 | CUDA | ≥ 12.1 |
 | RAM | ≥ 32 GB 推奨 |
 | ストレージ | ≥ 20 GB（conda env + run artifacts） |
@@ -70,56 +76,35 @@ conda env export -n pfpoly-gpu --no-builds | grep -v "^prefix:" > environment.ym
 
 ## 実行手順
 
-### Windows (PowerShell) — 推奨
+### Linux / WSL2（唯一のサポート環境）
 
-```powershell
-# repo root から
-conda activate pfpoly-gpu
-
-# S6 実行（デフォルト: seed=7, 50 cycles）
-# 環境変数 PYTORCH_CUDA_ALLOC_CONF, KMP_DUPLICATE_LIB_OK はスクリプト内で自動設定
-.\scripts\run_s6_paper_scale.ps1
-
-# カスタム設定で実行する場合
-.\scripts\run_s6_paper_scale.ps1 -Seed 42 -OutputDir runs\s6_seed42 -NCycles 100
-
-# GPU が 16 GB しかない場合（論文スケール半分: 100+5）
-python scripts\run_vinyl_aibn.py `
-    --seed 7 --output-dir runs\s6_half_scale `
-    --n-monomers 100 --n-initiators 5 `
-    --activation --activation-f2 0.3 --activation-f1-max 250 `
-    --f2 5.0 --density 0.5 --temperature 333.0 --no-barostat `
-    --backend orb --device cuda `
-    --n-cycles 30 --biased-steps 2000 --unbiased-steps 500 `
-    --equil-steps 2000 --timestep-fs 1.0
-```
-
-### Linux / WSL2 / Git Bash
+旧 Windows PowerShell 版ランチャー（`run_s6_paper_scale.ps1`）は、native
+Windows で orb が動かないため 2026-07-23 に削除しました。実行は常に WSL の
+`pfpoly-gpu` 環境から `run_s6_paper_scale.sh` を使います。
 
 ```bash
 # repo root から
 conda activate pfpoly-gpu
 
-# 環境変数設定（OrbMol-v2 VRAM 断片化対策）
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export KMP_DUPLICATE_LIB_OK=TRUE
-
 # S6 実行（デフォルト: seed=7, 50 cycles）
+# PYTORCH_CUDA_ALLOC_CONF / KMP_DUPLICATE_LIB_OK / PYTHONPATH はスクリプト内で自動設定
 bash scripts/run_s6_paper_scale.sh
 
 # カスタム設定で実行する場合
 SEED=42 OUTPUT_DIR=runs/s6_seed42 N_CYCLES=100 bash scripts/run_s6_paper_scale.sh
 
-# GPU が 16 GB しかない場合（論文スケール半分: 100+5）
-python scripts/run_vinyl_aibn.py \
-    --seed 7 --output-dir runs/s6_half_scale \
-    --n-monomers 100 --n-initiators 5 \
-    --activation --activation-f2 0.3 --activation-f1-max 250 \
-    --f2 5.0 --density 0.5 --temperature 333.0 --no-barostat \
-    --backend orb --device cuda \
-    --n-cycles 30 --biased-steps 2000 --unbiased-steps 500 \
-    --equil-steps 2000 --timestep-fs 1.0
+# 中断したランの再開（毎サイクル checkpoint が書かれる）
+RESUME=1 OUTPUT_DIR=runs/s6_seed42 bash scripts/run_s6_paper_scale.sh
+
+# 速度フラグ（decisions.md 2026-07-22/23）: 既定で --no-empty-cache が付く。
+# torch.compile を試すとき（併用で ~1.65x、本番 soak は未実施の opt-in）:
+COMPILE=1 bash scripts/run_s6_paper_scale.sh
 ```
+
+半分スケール（100+5）を明示的に走らせたい場合の検証済みレシピ（f2=2 /
+dt=0.25 fs / friction=0.01。旧記載の f2=5, dt=1.0 fs は開殻反応系で温度発散
+するため使用禁止 — decisions.md 2026-06-25/26, validity-domain.md §2.1/§3）は
+`scripts/run_s6_paper_scale.sh` ヘッダのコマンド例を参照。
 
 ---
 

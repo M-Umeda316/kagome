@@ -87,6 +87,33 @@ if [ "${BAROSTAT:-0}" = "1" ]; then BAROSTAT_FLAG="--barostat --pressure ${PRESS
 RESUME_FLAG=""
 if [ "${RESUME:-0}" = "1" ]; then RESUME_FLAG="--resume"; fi
 
+# ─── Perf flags (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix) ─
+# Applied only for the orb backend (the toy smoke path has no CUDA cache).
+# NO_EMPTY_CACHE=1 (default): skip per-step torch.cuda.empty_cache(). On WSL,
+#   expandable_segments absorbs fragmentation (reserved flat, 1.29-1.41x faster)
+#   — the measured recommended operation for WSL runs. Set NO_EMPTY_CACHE=0 only
+#   on Windows-native python, where expandable_segments is a no-op.
+# COMPILE=1 (opt-in, default 0): torch.compile — 1.24x alone, 1.65x combined
+#   with NO_EMPTY_CACHE=1, and ~8% less VRAM. Forces match eager within the
+#   TF32 noise floor. Kept opt-in until the first long soak on a production
+#   workload (bond formation + resume) per decisions.md 2026-07-23.
+NO_EMPTY_CACHE="${NO_EMPTY_CACHE:-1}"
+COMPILE="${COMPILE:-0}"
+PERF_FLAGS=""
+if [ "${BACKEND}" = "orb" ]; then
+    if [ "${NO_EMPTY_CACHE}" = "1" ]; then PERF_FLAGS="--no-empty-cache"; fi
+    if [ "${COMPILE}" = "1" ]; then PERF_FLAGS="${PERF_FLAGS} --compile"; fi
+fi
+
+# MIX=1 enables the well-mixed measurement mode (--mix): a classical OpenMM
+# mixing segment per cycle. The CLI resolves the knobs to their documented
+# defaults (mix_ps=25 — WM-P5b decision 2026-07-22: re-selection 55%->2%,
+# no measurable yield cost across seeds). Off by default here because the
+# 25 ps default was derived on 40-monomer systems; re-confirm at this scale
+# before leaning on it (decisions.md 2026-07-22, 適用範囲の限定).
+MIX_FLAG=""
+if [ "${MIX:-0}" = "1" ]; then MIX_FLAG="--mix"; fi
+
 N_MONOMERS=$(( N_ACRYLATE + N_METHACRYLATE ))
 
 echo "=== Vinyl copolymer (acrylate + methacrylate) run ==="
@@ -100,6 +127,8 @@ echo "  Schedule:       ${N_CYCLES} cycles x (${BIASED_STEPS} biased + ${UNBIASE
 echo "  TDBB:           f2=${F2}, f1_max_form=${F1_MAX_FORMATION}, f1_max_dissoc=${F1_MAX_DISSOCIATION}, friction=${FRICTION_PER_FS}"
 echo "  T=${TEMPERATURE} K, density=${DENSITY} g/mL"
 echo "  Resume:         $( [ -n "${RESUME_FLAG}" ] && echo yes || echo 'no (fresh; checkpoints written each cycle)' )"
+echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off || echo on ), compile=$( [ "${COMPILE}" = "1" ] && echo on || echo off )"
+echo "  Mixing:         $( [ -n "${MIX_FLAG}" ] && echo 'on (--mix, CLI defaults: 25 ps)' || echo off )"
 echo ""
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -133,6 +162,8 @@ echo "Starting run..."
     --minimize-fmax "${MINIMIZE_FMAX}" \
     --backend "${BACKEND}" \
     --device "${DEVICE}" \
+    ${PERF_FLAGS} \
+    ${MIX_FLAG} \
     ${BAROSTAT_FLAG} \
     ${RESUME_FLAG}
 

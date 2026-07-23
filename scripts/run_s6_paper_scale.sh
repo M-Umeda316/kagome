@@ -2,14 +2,21 @@
 # S6: Paper-scale vinyl radical polymerization reproduction
 # Paper: arXiv:2511.22874, Table S1, SI S-3
 # System: 200 methyl acrylate monomers + 10 AIBN initiators (≈2520 atoms)
-# Required GPU VRAM: ≥24 GB (OrbMol-v2 single-step footprint ~9.5 GB at this scale)
+# GPU VRAM: measured device peak ~9.5-9.8 GB at this scale on WSL with
+#   expandable_segments (runs/scaleup_a/c, decisions.md 2026-07-22/23) — a 16 GB
+#   GPU under WSL suffices. The old ">=24 GB required" guidance came from
+#   Windows-native fragmentation, where expandable_segments is a no-op.
 #
 # Usage:
-#   # From repo root, with conda env active:
+#   # From repo root, with conda env active (WSL pfpoly-gpu):
 #   bash scripts/run_s6_paper_scale.sh
 #
 #   # Or with explicit seed/output-dir:
 #   SEED=42 OUTPUT_DIR=runs/s6_seed42 bash scripts/run_s6_paper_scale.sh
+#
+#   # Perf knobs (see "Perf flags" block below):
+#   COMPILE=1 bash scripts/run_s6_paper_scale.sh      # opt in to torch.compile
+#   NO_EMPTY_CACHE=0 bash scripts/run_s6_paper_scale.sh  # restore per-step empty_cache
 #
 # For 16 GB GPU (half-scale 100+5), run run_vinyl_aibn.py directly. This mirrors
 # the full-scale flags below; only system size and n-cycles differ (RF22). This
@@ -54,10 +61,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src:${PYTHONPATH:-}"
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
+
+# Interpreter: override with PYTHON=/abs/path/to/python for a specific conda env.
+PYTHON="${PYTHON:-python}"
 
 # Source calibrated parameters if available (from calibrate_tdbb.py).
 # These set ACTIVATION_F2, ACTIVATION_F1_MAX, ACTIVATION_STEPS, F2,
@@ -91,6 +101,22 @@ RESUME="${RESUME:-0}"
 RESUME_FLAG=""
 if [ "${RESUME}" = "1" ]; then RESUME_FLAG="--resume"; fi
 
+# ─── Perf flags (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix) ─
+# NO_EMPTY_CACHE=1 (default): skip per-step torch.cuda.empty_cache(). On WSL,
+#   expandable_segments absorbs fragmentation (reserved flat over 1000 steps,
+#   1.29-1.41x faster) — the measured recommended operation for WSL runs.
+#   Set NO_EMPTY_CACHE=0 only on Windows-native python, where
+#   expandable_segments is a no-op (historical 2026-06-15 fragmentation hang).
+# COMPILE=1 (opt-in, default 0): torch.compile — 1.24x alone, 1.65x combined
+#   with NO_EMPTY_CACHE=1, and ~8% less VRAM. Forces match eager within the
+#   TF32 noise floor. Kept opt-in until the first long soak on a production
+#   workload (bond formation + resume) per decisions.md 2026-07-23.
+NO_EMPTY_CACHE="${NO_EMPTY_CACHE:-1}"
+COMPILE="${COMPILE:-0}"
+PERF_FLAGS=""
+if [ "${NO_EMPTY_CACHE}" = "1" ]; then PERF_FLAGS="--no-empty-cache"; fi
+if [ "${COMPILE}" = "1" ]; then PERF_FLAGS="${PERF_FLAGS} --compile"; fi
+
 echo "=== S6 paper-scale run ==="
 echo "  Seed:           ${SEED}"
 echo "  Output dir:     ${OUTPUT_DIR}"
@@ -100,22 +126,23 @@ echo "  Biased steps:   ${BIASED_STEPS}"
 echo "  Unbiased steps: ${UNBIASED_STEPS}"
 echo "  Activation:     f2=${ACTIVATION_F2}, f1_max=${ACTIVATION_F1_MAX}, steps=${ACTIVATION_STEPS}"
 echo "  Production:     f2=${F2}, f1_max_form=${F1_MAX_FORMATION}, f1_max_dissoc=${F1_MAX_DISSOCIATION}"
+echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off || echo on ), compile=$( [ "${COMPILE}" = "1" ] && echo on || echo off )"
 echo ""
 
 # Warn if VRAM might be insufficient
 if command -v nvidia-smi &>/dev/null; then
     VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
     VRAM_GB=$(echo "scale=1; ${VRAM_MB:-0} / 1024" | bc 2>/dev/null || echo "?")
-    echo "  GPU VRAM:       ${VRAM_GB} GB (need ≥24 GB for 200+10 system)"
-    if [ "${VRAM_MB:-0}" -lt 20000 ] 2>/dev/null; then
-        echo "  WARNING: VRAM may be insufficient. Consider --n-monomers 100 --n-initiators 5 for 16 GB GPU."
+    echo "  GPU VRAM:       ${VRAM_GB} GB (200+10 system: measured peak ~9.8 GB on WSL)"
+    if [ "${VRAM_MB:-0}" -lt 12000 ] 2>/dev/null; then
+        echo "  WARNING: VRAM may be insufficient. Consider --n-monomers 100 --n-initiators 5 (half scale)."
     fi
 fi
 
 echo ""
 echo "Starting run..."
 
-python scripts/run_vinyl_aibn.py \
+"${PYTHON}" scripts/run_vinyl_aibn.py \
     --seed "${SEED}" \
     --output-dir "${OUTPUT_DIR}" \
     --n-monomers 200 \
@@ -140,6 +167,7 @@ python scripts/run_vinyl_aibn.py \
     --timestep-fs 0.25 \
     --minimize \
     --minimize-fmax 1.0 \
+    ${PERF_FLAGS} \
     ${RESUME_FLAG}
 
 echo ""
@@ -147,7 +175,7 @@ echo "Run complete. Generating figures..."
 
 # n_reactive_sites is auto-read from the trajectory header (RF2: α denominator
 # = n_monomers, written by PolymerizationWorkflow). No CLI override needed.
-python scripts/reproduce_figures.py \
+"${PYTHON}" scripts/reproduce_figures.py \
     --trajectory "${OUTPUT_DIR}/trajectory.jsonl" \
     --bonds "${OUTPUT_DIR}/bonds.jsonl" \
     --target-temperature 333.0 \

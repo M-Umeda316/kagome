@@ -79,6 +79,23 @@ if [ "${NO_BAROSTAT:-0}" = "1" ]; then BAROSTAT_FLAG="--no-barostat"; fi
 RESUME_FLAG=""
 if [ "${RESUME:-0}" = "1" ]; then RESUME_FLAG="--resume"; fi
 
+# ─── Perf flags (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix) ─
+# NO_EMPTY_CACHE=1 (default): skip per-step torch.cuda.empty_cache(). On WSL,
+#   expandable_segments absorbs fragmentation (reserved flat, 1.29-1.41x faster)
+#   — the measured recommended operation for WSL runs. Set NO_EMPTY_CACHE=0 only
+#   on Windows-native python, where expandable_segments is a no-op.
+# COMPILE=1 (opt-in, default 0): torch.compile — 1.24x alone, 1.65x combined
+#   with NO_EMPTY_CACHE=1, and ~8% less VRAM (welcome at this ~4400-atom scale).
+#   Forces match eager within the TF32 noise floor. Kept opt-in until the first
+#   long soak on a production workload (barostat + bond formation + resume);
+#   note the NPT volume moves here vary graph sizes more than the NVT probe
+#   the 1.65x was measured on (decisions.md 2026-07-23).
+NO_EMPTY_CACHE="${NO_EMPTY_CACHE:-1}"
+COMPILE="${COMPILE:-0}"
+PERF_FLAGS=""
+if [ "${NO_EMPTY_CACHE}" = "1" ]; then PERF_FLAGS="--no-empty-cache"; fi
+if [ "${COMPILE}" = "1" ]; then PERF_FLAGS="${PERF_FLAGS} --compile"; fi
+
 # Reactive-site count for the figure alpha(t) denominator: each diamine has 2
 # amine_N ends, each diacid 2 carboxyl_C ends -> 2*(N_DIAMINES+N_DIACIDS).
 N_REACTIVE_SITES=$(( 2 * (N_DIAMINES + N_DIACIDS) ))
@@ -92,6 +109,7 @@ echo "  System:         ${N_DIAMINES} diamine + ${N_DIACIDS} diacid (${N_REACTIV
 echo "  Ensemble:       $( [ -n "${BAROSTAT_FLAG}" ] && echo 'NVT (--no-barostat)' || echo 'NPT, '"${PRESSURE}"' atm' )"
 echo "  Schedule:       ${N_CYCLES} cycles x (${BIASED_STEPS} biased + ${UNBIASED_STEPS} unbiased), f2=${F2}, T=${TEMPERATURE} K"
 echo "  Resume:         $( [ -n "${RESUME_FLAG}" ] && echo yes || echo 'no (fresh; checkpoints written each cycle)' )"
+echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off || echo on ), compile=$( [ "${COMPILE}" = "1" ] && echo on || echo off )"
 echo ""
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -121,6 +139,7 @@ echo "Starting run..."
     --minimize-fmax 1.0 \
     --backend orb \
     --device "${DEVICE}" \
+    ${PERF_FLAGS} \
     ${BAROSTAT_FLAG} \
     ${RESUME_FLAG}
 

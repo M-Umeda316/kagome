@@ -1897,3 +1897,13 @@ empty_cache × compile の4条件+挟み込みを同日連続5本で実測(条�
 - 基準絶対値は昨日比でまた変動(ec-on eager: 昨日 0.785 → 本日 1.10)。**同日挟み込みルールの必要性を再確認**。
 - **運用推奨(このカード・WSL)**: 長尺 GPU ランは `--no-empty-cache --compile` 併用で ~1.65×。既定値は据え置き(opt-in)。本番ワークロード(バロスタット+結合生成+resume)での compile 長時間 soak が既定値昇格の残条件。
 - **compile の数値等価性(2026-07-23 確認)**: 同一座標(MA 624原子)で eager vs compile の力を比較: クロス RMSE 0.00394 kcal/mol/Å は eager 同士の再計算ノイズ床 0.00408(TF32/atomics 非決定性)と同一、最大差も同水準。**compile は力をノイズ床を超えて変えない** — 併用推奨の数値的裏付け。
+
+## 追補 2026-07-23 — scripts/ 整理 + 大規模系ランチャーへの perf フラグ配線(運用変更、科学的内容の変更なし)
+
+上記スケールアップ実測の運用推奨を、3本の大規模系ランチャー(`run_s6_paper_scale.sh` / `run_nylon66_paper_scale.sh` / `run_vinyl_copolymer_gpu.sh`)に反映した。
+
+- **`NO_EMPTY_CACHE=1` を各ランチャーの既定に**: 追補 (a) の「WSL 実行では `--no-empty-cache` を明示指定するのが推奨運用」の実装。CLI/バックエンドの既定値(`empty_cache=True`)は据え置き。Windows native で走らせる場合(現状想定なし)は `NO_EMPTY_CACHE=0`。
+- **`COMPILE=1` は opt-in のまま環境変数で配線**: 併用 1.65× の実測はあるが本番ワークロード soak 未実施のため既定 off(追補 (c) の残条件どおり)。soak を行うランで `COMPILE=1` を指定する。
+- **copolymer ランチャーに `MIX=1` → `--mix` を配線**(既定 off): CLI 側の documented defaults(mix_ps=25、WM-P5b 決定)に委譲。25 ps 既定の適用範囲限定(40モノマー系で導出、大系は要再確認)のため大規模ランチャーでは既定 off。
+- **run_s6_paper_scale.sh の修正**: PYTHONPATH に `src/` 追加(従来は repo root のみ — 環境の editable install に依存していた)、`PYTHON` 環境変数対応(他2本と対称化)、VRAM 記述を実測(paper-scale ピーク ~9.8 GB、16GB WSL で可)に更新。
+- **削除(git 履歴に残る)**: `run_s6_paper_scale.ps1`(native Windows は CPU torch で orb 不可のため死路; `specs/s6-environment-setup.md` を WSL 専用に書き換え、域外レシピ f2=5/dt=1.0fs の half-scale 例も検証済みレシピへの参照に置換)、`run_epoxy_e0_when_gpu_free.sh`(E0 完了済みの一回性 GPU 待ちラッパ、参照ゼロ)、`wm_p5b_supervisor.ps1`(P5b キャンペーン完走済み・実運用では nohup バッチ方式に置換された監督スクリプト、参照ゼロ。WSL CUDA 劣化の知見は本 decisions.md 追補 2026-07-19/22 に記録済み)。
