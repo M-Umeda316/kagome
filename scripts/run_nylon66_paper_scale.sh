@@ -48,7 +48,7 @@
 # friction=0.01 /fs             : Bias-heat dissipation for the f2=2 recipe, same
 #                                 rationale as the epoxy-amine/vinyl runs (dissolves
 #                                 the addition/formation bias work so T stays near
-#                                 target; decisions.md 2026-07-30 addendum, pending).
+#                                 target; decisions.md 2026-07-30 addendum).
 # checkpoint every cycle        : Resumable long run (RESUME=1).
 
 set -euo pipefail

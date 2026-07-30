@@ -330,7 +330,7 @@ def plot_density_profile(
     """
     events = read_bond_events(bonds_path)
     # A5: rho_rxn is the density of *reactions*. Exclude water-forming (and other
-    # count_as_reaction=False) formation events so a condensation reaction is
+    # counts_as_reaction=False) formation events so a condensation reaction is
     # placed once, at its primary bond. Missing field -> True (vinyl unaffected).
     formations = [
         e for e in events

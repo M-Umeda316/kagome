@@ -36,7 +36,7 @@ class TrackedPair:
       each cycle). ``< 0`` marks activation / legacy / pre-candidate_id paths,
       which BondTracker confirms per-pair instead of per-candidate.
     - ``counts_as_reaction``: if ``False`` a confirmed formation is excluded
-      from reaction counting (alpha / Carothers p); bias and topology effects
+      when counting reactions (alpha / Carothers p); bias and topology effects
       are unchanged. Used for nylon water-forming k-l pairs
       (specs/decisions.md 2026-07-06 A5).
     - ``is_trigger``: whether this pair belongs to the paper's identification
