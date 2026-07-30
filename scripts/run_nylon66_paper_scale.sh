@@ -45,17 +45,16 @@
 # minimize + equil=2000         : Pre-TDBB relaxation of the compressed 0.5 g/mL
 #                                 box; without it OrbMol segfaults on the first
 #                                 biased step (decisions.md 2026-07-08). Paper p.20.
+# friction=0.01 /fs             : Bias-heat dissipation for the f2=2 recipe, same
+#                                 rationale as the epoxy-amine/vinyl runs (dissolves
+#                                 the addition/formation bias work so T stays near
+#                                 target; decisions.md 2026-07-30 addendum, pending).
 # checkpoint every cycle        : Resumable long run (RESUME=1).
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src:${PYTHONPATH:-}"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
-
-# Interpreter: override with PYTHON=/abs/path/to/python for a specific conda env.
-PYTHON="${PYTHON:-python}"
+# shellcheck source=scripts/_paper_scale_common.sh
+source "$(dirname "$0")/_paper_scale_common.sh"
 
 SEED="${SEED:-7}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/nylon66_paper_scale_seed${SEED}}"
@@ -70,56 +69,35 @@ F2="${F2:-2}"
 DENSITY="${DENSITY:-0.5}"
 TEMPERATURE="${TEMPERATURE:-300.0}"
 PRESSURE="${PRESSURE:-1.0}"
+FRICTION_PER_FS="${FRICTION_PER_FS:-0.01}"
 
 # NPT by default (paper). NO_BAROSTAT=1 -> NVT (the small-run-validated ensemble).
-BAROSTAT_FLAG=""
-if [ "${NO_BAROSTAT:-0}" = "1" ]; then BAROSTAT_FLAG="--no-barostat"; fi
+build_barostat_flag npt
 
 # RESUME=1 continues from ${OUTPUT_DIR}/checkpoint.pkl after a killed run.
-RESUME_FLAG=""
-if [ "${RESUME:-0}" = "1" ]; then RESUME_FLAG="--resume"; fi
+build_resume_flag
 
-# ─── Perf flags (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix) ─
-# NO_EMPTY_CACHE=1 (default): skip per-step torch.cuda.empty_cache(). On WSL,
-#   expandable_segments absorbs fragmentation (reserved flat, 1.29-1.41x faster)
-#   — the measured recommended operation for WSL runs. Set NO_EMPTY_CACHE=0 only
-#   on Windows-native python, where expandable_segments is a no-op.
-# COMPILE=1 (opt-in, default 0): torch.compile — 1.24x alone, 1.65x combined
-#   with NO_EMPTY_CACHE=1, and ~8% less VRAM (welcome at this ~4400-atom scale).
-#   Forces match eager within the TF32 noise floor. Kept opt-in until the first
-#   long soak on a production workload (barostat + bond formation + resume);
-#   note the NPT volume moves here vary graph sizes more than the NVT probe
-#   the 1.65x was measured on (decisions.md 2026-07-23).
-NO_EMPTY_CACHE="${NO_EMPTY_CACHE:-1}"
-COMPILE="${COMPILE:-0}"
-PERF_FLAGS=""
-if [ "${NO_EMPTY_CACHE}" = "1" ]; then PERF_FLAGS="--no-empty-cache"; fi
-if [ "${COMPILE}" = "1" ]; then PERF_FLAGS="${PERF_FLAGS} --compile"; fi
-
-# Reactive-site count for the figure alpha(t) denominator: each diamine has 2
-# amine_N ends, each diacid 2 carboxyl_C ends -> 2*(N_DIAMINES+N_DIACIDS).
-N_REACTIVE_SITES=$(( 2 * (N_DIAMINES + N_DIACIDS) ))
+# Perf flags: see _paper_scale_common.sh for NO_EMPTY_CACHE/COMPILE rationale
+# (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix). At this
+# ~4400-atom scale COMPILE=1 is kept opt-in until the first long soak on a
+# production workload (barostat + bond formation + resume); note the NPT
+# volume moves here vary graph sizes more than the NVT probe the 1.65x was
+# measured on (decisions.md 2026-07-23).
+build_perf_flags
 
 echo "=== Nylon-6,6 paper-scale run ==="
 echo "  Python:         ${PYTHON}"
 echo "  Seed:           ${SEED}"
 echo "  Output dir:     ${OUTPUT_DIR}"
 echo "  Device:         ${DEVICE}"
-echo "  System:         ${N_DIAMINES} diamine + ${N_DIACIDS} diacid (${N_REACTIVE_SITES} reactive ends)"
+echo "  System:         ${N_DIAMINES} diamine + ${N_DIACIDS} diacid"
 echo "  Ensemble:       $( [ -n "${BAROSTAT_FLAG}" ] && echo 'NVT (--no-barostat)' || echo 'NPT, '"${PRESSURE}"' atm' )"
 echo "  Schedule:       ${N_CYCLES} cycles x (${BIASED_STEPS} biased + ${UNBIASED_STEPS} unbiased), f2=${F2}, T=${TEMPERATURE} K"
 echo "  Resume:         $( [ -n "${RESUME_FLAG}" ] && echo yes || echo 'no (fresh; checkpoints written each cycle)' )"
 echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off || echo on ), compile=$( [ "${COMPILE}" = "1" ] && echo on || echo off )"
 echo ""
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-    VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
-    echo "  GPU VRAM: ${VRAM_MB:-?} MB (this ~4400-atom system wants >=24 GB; shrink N_DIAMINES/N_DIACIDS if OOM)"
-    if [ "${VRAM_MB:-0}" -lt 20000 ] 2>/dev/null; then
-        echo "  WARNING: <20 GB VRAM — reduce system size, e.g. N_DIAMINES=50 N_DIACIDS=50."
-    fi
-    echo ""
-fi
+check_vram 24000 "nylon66 ~4400 atoms; wants >=24 GB — shrink N_DIAMINES/N_DIACIDS if OOM, e.g. N_DIAMINES=50 N_DIACIDS=50"
 
 echo "Starting run..."
 "${PYTHON}" scripts/run_nylon66.py \
@@ -135,6 +113,7 @@ echo "Starting run..."
     --density "${DENSITY}" \
     --temperature "${TEMPERATURE}" \
     --pressure "${PRESSURE}" \
+    --friction-per-fs "${FRICTION_PER_FS}" \
     --minimize \
     --minimize-fmax 1.0 \
     --backend orb \
@@ -145,14 +124,27 @@ echo "Starting run..."
 
 echo ""
 echo "Run complete. Generating Carothers + stability figures..."
-"${PYTHON}" scripts/reproduce_figures.py \
-    --trajectory "${OUTPUT_DIR}/trajectory.jsonl" \
-    --bonds "${OUTPUT_DIR}/bonds.jsonl" \
-    --topology "${OUTPUT_DIR}/topology.jsonl" \
-    --summary "${OUTPUT_DIR}/summary.json" \
-    --n-reactive-sites "${N_REACTIVE_SITES}" \
-    --target-temperature "${TEMPERATURE}" \
+# n-reactive-sites is intentionally omitted: reproduce_figures.py auto-reads
+# the true count from the trajectory header, and passing an explicit value
+# here would overwrite that (correct) figure with a stale/manual one.
+FIGURES_CMD=(
+    "${PYTHON}" scripts/reproduce_figures.py
+    --trajectory "${OUTPUT_DIR}/trajectory.jsonl"
+    --bonds "${OUTPUT_DIR}/bonds.jsonl"
+    --summary "${OUTPUT_DIR}/summary.json"
+    --target-temperature "${TEMPERATURE}"
+    --timestep-fs 0.25
     --output-dir "${OUTPUT_DIR}/figures"
+)
+if [ -f "${OUTPUT_DIR}/topology.jsonl" ]; then
+    FIGURES_CMD+=(--topology "${OUTPUT_DIR}/topology.jsonl")
+else
+    echo "  (topology.jsonl not found; skipping --topology)"
+fi
+if ! "${FIGURES_CMD[@]}"; then
+    echo "WARNING: figure generation failed; run manually:"
+    echo "  ${PYTHON} scripts/reproduce_figures.py --trajectory ${OUTPUT_DIR}/trajectory.jsonl --bonds ${OUTPUT_DIR}/bonds.jsonl --summary ${OUTPUT_DIR}/summary.json --target-temperature ${TEMPERATURE} --timestep-fs 0.25 --output-dir ${OUTPUT_DIR}/figures"
+fi
 
 echo ""
 echo "=== Nylon paper-scale done ==="

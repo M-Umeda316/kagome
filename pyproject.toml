@@ -27,6 +27,14 @@ orb = [
     "orb-models>=0.7",
     "ase>=3.22",
 ]
+aimnet = [
+    # PyPI package name per src/kagome/backends/aimnet_backend.py's ImportError
+    # message ("pip install aimnet") and specs/dependency-license-matrix.md
+    # (github.com/isayevlab/aimnetcentral, MIT, verified 2026-06-25). No
+    # published version pin confirmed yet.
+    "aimnet",
+    "ase>=3.22",
+]
 fit = [
     "scipy>=1.10",
 ]

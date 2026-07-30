@@ -164,11 +164,13 @@ def main() -> None:
                         help='MD timestep (fs). Default 0.25 fs (conservative, validated '
                              'for FIRE densification + ML NVT). 1.0 fs is standard for '
                              'organic ML MD and gives 4x speed for the same physical time.')
-    parser.add_argument('--f2', type=float, default=10.0,
-                        help='TDBB Gaussian width parameter f2 (Å⁻²). Paper default 10.0, '
-                             'stated robust range 5-20. Lower values widen the bias well '
-                             '(capture radius ~1/√f2). Use 2.0 for OrbMol-v2 PES '
-                             '(see decisions.md 2026-06-26, supersedes 2026-06-17 f2=5).')
+    parser.add_argument('--f2', type=float, default=2.0,
+                        help='TDBB Gaussian width parameter f2 (Å⁻²). Default 2.0 for the '
+                             'OrbMol-v2 PES: the paper value 10.0 leaves a capture-shell '
+                             'dead-zone (bias force ≈0 across the [3,6] Å candidate window) '
+                             'so no bond forms. For a paper-faithful run pass --f2 10.0 '
+                             'explicitly (paper robust range 5-20; capture radius ~1/√f2). '
+                             'See decisions.md 2026-06-26 / 2026-07-30 (supersedes 2026-06-17 f2=5).')
     parser.add_argument('--f1-max-formation', type=float, default=250.0,
                         help='Peak V^f amplitude for production bond formation (kcal/mol). '
                              'Must exceed the radical-addition barrier on the active PES. '
@@ -724,6 +726,7 @@ def main() -> None:
         f'--bonds {args.output_dir}/bonds.jsonl '
         f'--n-reactive-sites {args.n_monomers} '
         f'--target-temperature {args.temperature} '
+        f'--timestep-fs {args.timestep_fs} '
         f'--output-dir {args.output_dir}/figures'
     )
 

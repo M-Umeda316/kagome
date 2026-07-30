@@ -110,6 +110,41 @@ class TestBondTracker:
         assert len(confirmed) == 1
         assert confirmed[0].event_type == 'confirmed_dissociation'
 
+    def test_record_confirmed_dissociation_appends_event(self):
+        """The public API appends a confirmed_dissociation event identical in
+        content to the old raw _events.append (activation path)."""
+        tracker = BondTracker()
+        ev = tracker.record_confirmed_dissociation(
+            step=42, cycle=-1, atom_a=3, atom_b=7,
+            distance=2.6, r0=2.5,
+        )
+        assert ev.event_type == 'confirmed_dissociation'
+        assert (ev.step, ev.cycle, ev.atom_a, ev.atom_b) == (42, -1, 3, 7)
+        assert ev.distance == pytest.approx(2.6)
+        assert ev.r0 == pytest.approx(2.5)
+        assert ev.candidate_id == -1          # activation default
+        assert tracker.events[-1] is ev
+        assert len(tracker.confirmed_dissociations()) == 1
+
+    def test_record_confirmed_dissociation_default_leaves_reacted_untouched(self):
+        """register_reacted defaults False: the activation path never populated
+        _reacted, and that behaviour is preserved (byte-identical to before)."""
+        tracker = BondTracker()
+        tracker.record_confirmed_dissociation(
+            step=1, cycle=-1, atom_a=0, atom_b=1, distance=3.0, r0=2.5,
+        )
+        assert tracker._reacted == set()
+
+    def test_record_confirmed_dissociation_can_register_reacted(self):
+        """register_reacted=True de-duplicates on (min, max, is_formation=False),
+        matching _confirm_pair's key convention."""
+        tracker = BondTracker()
+        tracker.record_confirmed_dissociation(
+            step=1, cycle=0, atom_a=7, atom_b=3, distance=3.0, r0=2.5,
+            register_reacted=True,
+        )
+        assert (3, 7, False) in tracker._reacted
+
     def test_save(self, tmp_path):
         tracker = BondTracker()
         positions = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])

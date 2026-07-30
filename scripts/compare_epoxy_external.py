@@ -97,10 +97,39 @@ def parse_xl_trend(path: Path | str) -> list[tuple[float, int, float]]:
 
 # ── Network metrics (shared between our runs and ref#2 structures) ──────────
 
+def _initial_invariants(bonds_initial: list, species: list[str]) -> dict:
+    """Snapshot-independent quantities derived from the INITIAL topology.
+
+    Hoisted out of :func:`network_metrics` so :func:`run_series` derives them
+    once for the whole run instead of recomputing from ``bonds_initial`` on
+    every snapshot.  The values are exactly what ``network_metrics`` used
+    internally, so per-snapshot outputs are unchanged.  Includes the epoxy
+    monomers (monomers owning at least one initial epoxide ring — the
+    denominator for the fully-ring-opened DGEBA fraction).
+    """
+    monomer_sets = monomer_sets_from_bonds(bonds_initial)
+    rings_initial = find_epoxide_rings(bonds_initial, species)
+    amine_h_initial = sum(amine_ranks(bonds_initial, species).values())
+    atom2mono: dict[int, int] = {}
+    for m, atoms in enumerate(monomer_sets):
+        for a in atoms:
+            atom2mono[int(a)] = m
+    epoxy_monomers = {atom2mono[o] for _c1, _c2, o in rings_initial
+                      if o in atom2mono}
+    return {
+        'monomer_sets': monomer_sets,
+        'rings_initial': rings_initial,
+        'n_epoxide_initial': len(rings_initial),
+        'amine_h_initial': amine_h_initial,
+        'n_epoxy_monomers': len(epoxy_monomers),
+    }
+
+
 def network_metrics(
     bonds_initial: list,
     bonds_final: list,
     species: list[str],
+    initial: dict | None = None,
 ) -> dict:
     """Conversion + normalized network metrics from two bond topologies.
 
@@ -110,29 +139,29 @@ def network_metrics(
     conversions and fractions are dimensionless (0..1).  Works identically
     for our ``topology.jsonl`` snapshots and for ref#2 LAMMPS structures
     parsed by :func:`kagome.io.lammps_data.read_lammps_data`.
+
+    ``initial`` optionally supplies the precomputed initial-topology
+    invariants from :func:`_initial_invariants`; when omitted they are
+    derived from ``bonds_initial`` (single-snapshot callers).
+    :func:`run_series` passes them so the snapshot loop does not recompute
+    them each iteration — outputs are identical either way.
     """
-    monomer_sets = monomer_sets_from_bonds(bonds_initial)
-    rings_initial = find_epoxide_rings(bonds_initial, species)
-    n_epoxide_initial = len(rings_initial)
+    inv = (initial if initial is not None
+           else _initial_invariants(bonds_initial, species))
+    monomer_sets = inv['monomer_sets']
+    rings_initial = inv['rings_initial']
+    n_epoxide_initial = inv['n_epoxide_initial']
+    amine_h_initial = inv['amine_h_initial']
+    n_epoxy_monomers = inv['n_epoxy_monomers']
+
     n_epoxide_final = len(find_epoxide_rings(bonds_final, species))
 
-    amine_h_initial = sum(amine_ranks(bonds_initial, species).values())
     ranks_final = amine_ranks(bonds_final, species)
     amine_h_final = sum(ranks_final.values())
     n_amine_n = len(ranks_final)
 
     counts = crosslink_counts(
         bonds_final, species, rings_initial, monomer_sets)
-
-    # Epoxy monomers = monomers owning at least one initial epoxide ring
-    # (the denominator for the fully-ring-opened DGEBA fraction).
-    atom2mono: dict[int, int] = {}
-    for m, atoms in enumerate(monomer_sets):
-        for a in atoms:
-            atom2mono[int(a)] = m
-    epoxy_monomers = {atom2mono[o] for _c1, _c2, o in rings_initial
-                      if o in atom2mono}
-    n_epoxy_monomers = len(epoxy_monomers)
 
     return {
         'n_monomers': len(monomer_sets),
@@ -176,9 +205,12 @@ def run_series(
     if not snapshots:
         return []
     bonds_initial = snapshots[0][2]
+    # Derive the initial-topology invariants once, then reuse across every
+    # snapshot (they only depend on bonds_initial) — output is unchanged.
+    initial = _initial_invariants(bonds_initial, species)
     rows: list[dict] = []
     for step, cycle, bonds in snapshots:
-        metrics = network_metrics(bonds_initial, bonds, species)
+        metrics = network_metrics(bonds_initial, bonds, species, initial=initial)
         rows.append({
             'step': int(step),
             'cycle': int(cycle),

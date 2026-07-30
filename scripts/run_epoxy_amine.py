@@ -423,6 +423,7 @@ def main() -> None:
         f'--bonds {args.output_dir}/bonds.jsonl '
         f'--n-reactive-sites {n_epoxide_sites} '
         f'--target-temperature {args.temperature} '
+        f'--timestep-fs {config.timestep_fs} '
         f'--output-dir {args.output_dir}/figures'
     )
 

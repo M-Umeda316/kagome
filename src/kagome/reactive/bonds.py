@@ -238,6 +238,45 @@ class BondTracker:
         self._reacted.add(reacted_key)
         confirmed.append(ev)
 
+    def record_confirmed_dissociation(
+        self,
+        *,
+        step: int,
+        cycle: int,
+        atom_a: int,
+        atom_b: int,
+        distance: float,
+        r0: float = 0.0,
+        candidate_id: int = -1,
+        counts_as_reaction: bool = True,
+        register_reacted: bool = False,
+    ) -> BondEvent:
+        """Append a ``confirmed_dissociation`` event through the public API.
+
+        Single source of truth for adding a confirmed dissociation to
+        ``_events`` and (optionally) the ``_reacted`` de-duplication set, so
+        callers do not reach into the private list by hand (which left
+        ``_reacted`` inconsistent with ``_events``).
+
+        The activation path (V^d on azo C-N bonds) historically appended to
+        ``_events`` WITHOUT touching ``_reacted``; ``register_reacted`` defaults
+        to ``False`` to preserve that behaviour byte-for-byte. Set it ``True``
+        for callers that want the ``(min, max, is_formation=False)`` key
+        de-duplicated the same way :meth:`_confirm_pair` does.
+        """
+        ev = BondEvent(
+            step=step, cycle=cycle,
+            atom_a=atom_a, atom_b=atom_b,
+            event_type='confirmed_dissociation',
+            distance=distance, r0=r0,
+            candidate_id=candidate_id,
+            counts_as_reaction=counts_as_reaction,
+        )
+        self._events.append(ev)
+        if register_reacted:
+            self._reacted.add((*self._key(atom_a, atom_b), False))
+        return ev
+
     def check_outcomes(
         self,
         positions: NDArray[np.floating],

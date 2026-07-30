@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import logging
 import pickle
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -40,9 +41,19 @@ from kagome.integrators.init_velocities import (
     instant_temperature_K, maxwell_boltzmann_velocities,
 )
 from kagome.analysis.conversion import monomer_site_count
+from kagome.workflows.audit import JsonlAuditLog
 from kagome.workflows.manifest import RunManifest, _normalize_value
 
 logger = logging.getLogger(__name__)
+
+
+def _starvation_diag_enabled() -> bool:
+    """Whether the KAGOME_DIAG_STARVATION candidate-starvation diagnostic is on.
+
+    Single source for the environment read that both the biased phase and the
+    activation phase consult (previously an inline ``os.environ.get`` in each).
+    """
+    return bool(os.environ.get('KAGOME_DIAG_STARVATION'))
 
 
 def _truncate_jsonl_after(path: Path, max_value: int, field: str = 'step') -> int:
@@ -57,14 +68,23 @@ def _truncate_jsonl_after(path: Path, max_value: int, field: str = 'step') -> in
     kept: list[str] = []
     removed = 0
     with open(path, 'r', encoding='utf-8') as f:
-        for raw in f:
+        for lineno, raw in enumerate(f, start=1):
             raw = raw.rstrip('\n')
             if not raw:
                 continue
             try:
                 rec = json.loads(raw)
             except json.JSONDecodeError:
-                kept.append(raw)
+                # A SIGKILL/OOM can leave a partially written final line. Keeping
+                # it would make the downstream json.loads in readers.py raise on
+                # every parse; drop it instead. The header line is valid JSON, so
+                # it is never affected. Surfaced (not silently swallowed) so a
+                # recurring truncation warning flags a deeper write problem.
+                removed += 1
+                logger.warning(
+                    'Discarding undecodable line %d in %s during resume '
+                    'truncation: %r', lineno, path.name, raw[:80],
+                )
                 continue
             value = rec.get(field)
             if value is not None and value > max_value:
@@ -131,6 +151,14 @@ def save_checkpoint(
     Written to ``path.with_suffix('.tmp')`` then renamed, so a crash mid-write
     never corrupts the previous good checkpoint.
     """
+    # RF-encapsulation: read the updater's mutable state through its public API
+    # instead of poking private attributes. The flat legacy keys are DERIVED
+    # from that dict and still written so an older code path (or a partly
+    # migrated checkpoint) can restore from them; the resume path prefers
+    # 'updater_state' when present.
+    updater_state: dict[str, Any] = (
+        updater.checkpoint_state()
+        if hasattr(updater, 'checkpoint_state') else {})
     data = {
         'version': CHECKPOINT_VERSION,
         'next_cycle': next_cycle,
@@ -139,9 +167,10 @@ def save_checkpoint(
         'cell': None if state.cell is None else np.asarray(state.cell),
         'step': state.step,
         'groups': {label: list(g.atom_indices) for label, g in groups.items()},
-        'updater_processed_formations': getattr(updater, '_processed_formations', 0),
-        'updater_processed_dissociations': getattr(updater, '_processed_dissociations', 0),
-        'updater_chain_c_map': dict(getattr(updater, 'chain_c_map', {})),
+        'updater_state': updater_state,
+        'updater_processed_formations': updater_state.get('processed_formations', 0),
+        'updater_processed_dissociations': updater_state.get('processed_dissociations', 0),
+        'updater_chain_c_map': dict(updater_state.get('chain_c_map', {})),
         'tracker_events': list(tracker._events) if tracker else [],
         'tracker_reacted': set(tracker._reacted) if tracker else set(),
         'rng_state': rng.bit_generator.state,
@@ -337,6 +366,46 @@ class PostCycleUpdater(Protocol):
         state: SimulationState,
     ) -> None: ...
 
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Return the mutable state the cycle loop must restore on resume.
+
+        Everything a resuming run needs to continue this updater's bookkeeping
+        (processed counters, propagation chain map, ...). Kept as a plain dict so
+        :func:`save_checkpoint` never reads private attributes and a custom
+        updater cannot silently resume with half its state (the asymmetry the
+        old ``getattr``/``hasattr`` code had).
+        """
+        ...
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None:
+        """Restore state produced by :meth:`checkpoint_state`.
+
+        Implementations must tolerate a dict that carries keys they do not use
+        (the resume path also feeds the flat legacy-checkpoint fields here), so
+        pick keys with ``.get`` rather than indexing.
+        """
+        ...
+
+
+def _dissociation_skipped_by_h2_guard(
+    ev: BondEvent, confirmed_cids: set[tuple[int, int]],
+) -> bool:
+    """H2 candidate-atomic guard shared by the condensation-style updaters.
+
+    A confirmed dissociation must NOT free its atoms unless the SAME candidate
+    (keyed on ``(cycle, candidate_id)`` — candidate_id restarts each cycle) also
+    produced a confirmed formation. Returns True (and logs) when the
+    dissociation should be skipped; legacy events (``candidate_id < 0``) are
+    never skipped, preserving the RF15 unconditional-free behaviour.
+    """
+    if ev.candidate_id >= 0 and (ev.cycle, ev.candidate_id) not in confirmed_cids:
+        logger.info(
+            'Skipping dissociation (%d,%d) cycle=%d candidate_id=%d: '
+            'no matching formation confirmed (H2)',
+            ev.atom_a, ev.atom_b, ev.cycle, ev.candidate_id)
+        return True
+    return False
+
 
 class DefaultPostCycleUpdater:
     """Remove reacted atoms from their groups after confirmed formation AND
@@ -362,6 +431,16 @@ class DefaultPostCycleUpdater:
     @property
     def processed_dissociations(self) -> int:
         return self._processed_dissociations
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        return {
+            'processed_formations': self._processed_formations,
+            'processed_dissociations': self._processed_dissociations,
+        }
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None:
+        self._processed_formations = state.get('processed_formations', 0)
+        self._processed_dissociations = state.get('processed_dissociations', 0)
 
     @staticmethod
     def _remove_pair(groups: dict[str, ReactiveGroup], ev) -> None:
@@ -391,12 +470,7 @@ class DefaultPostCycleUpdater:
 
         dissociations = tracker.confirmed_dissociations()
         for ev in dissociations[self._processed_dissociations:]:
-            if (ev.candidate_id >= 0
-                    and (ev.cycle, ev.candidate_id) not in confirmed_cids):
-                logger.info(
-                    'Skipping dissociation (%d,%d) cycle=%d candidate_id=%d: '
-                    'no matching formation confirmed (H2)',
-                    ev.atom_a, ev.atom_b, ev.cycle, ev.candidate_id)
+            if _dissociation_skipped_by_h2_guard(ev, confirmed_cids):
                 continue
             self._remove_pair(groups, ev)
         self._processed_dissociations = len(dissociations)
@@ -443,6 +517,18 @@ class EpoxyAmineAdditionUpdater:
     def processed_dissociations(self) -> int:
         return self._processed_dissociations
 
+    def checkpoint_state(self) -> dict[str, Any]:
+        # amine_h_map is immutable and the remaining-H count is derived from live
+        # group membership, so the processed counters are the only mutable state.
+        return {
+            'processed_formations': self._processed_formations,
+            'processed_dissociations': self._processed_dissociations,
+        }
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None:
+        self._processed_formations = state.get('processed_formations', 0)
+        self._processed_dissociations = state.get('processed_dissociations', 0)
+
     def _consume_atom(
         self,
         groups: dict[str, ReactiveGroup],
@@ -480,12 +566,7 @@ class EpoxyAmineAdditionUpdater:
 
         dissociations = tracker.confirmed_dissociations()
         for ev in dissociations[self._processed_dissociations:]:
-            if (ev.candidate_id >= 0
-                    and (ev.cycle, ev.candidate_id) not in confirmed_cids):
-                logger.info(
-                    'Skipping dissociation (%d,%d) cycle=%d candidate_id=%d: '
-                    'no matching formation confirmed (H2)',
-                    ev.atom_a, ev.atom_b, ev.cycle, ev.candidate_id)
+            if _dissociation_skipped_by_h2_guard(ev, confirmed_cids):
                 continue
             self._consume_atom(groups, ev.atom_a, touched_n)
             self._consume_atom(groups, ev.atom_b, touched_n)
@@ -527,6 +608,17 @@ class VinylChainPropagationUpdater:
     @property
     def processed_formations(self) -> int:
         return self._processed_formations
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        return {
+            'processed_formations': self._processed_formations,
+            'chain_c_map': dict(self.chain_c_map),
+        }
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None:
+        self._processed_formations = state.get('processed_formations', 0)
+        if 'chain_c_map' in state:
+            self.chain_c_map = dict(state['chain_c_map'])
 
     def update(
         self,
@@ -598,7 +690,7 @@ class PolymerizationWorkflow:
         self.barostat = barostat
         self.logs: list[CycleLog] = []
         # Per-cycle candidate-selection audit (RF18); set in run() when output_dir given.
-        self._selection_log: Path | None = None
+        self._selection_audit: JsonlAuditLog | None = None
 
         # Explicit bond topology (specs/decisions.md 2026-07-02): when initial
         # bonds are supplied we track connectivity through the run so the
@@ -609,12 +701,12 @@ class PolymerizationWorkflow:
             BondTopology.from_bonds(initial_bonds) if initial_bonds else None)
         self._topo_processed_formations = 0
         self._topo_processed_dissociations = 0
-        self._topology_log: Path | None = None
+        self._topology_audit: JsonlAuditLog | None = None
 
         # WM-P3 mixing stage: per-cycle audit log (mixing.jsonl) and the
         # workflow-lifetime fragment-template cache (NAGL cost once per
         # isomorphic fragment; rebuilt on resume — not checkpointed).
-        self._mixing_log: Path | None = None
+        self._mixing_audit: JsonlAuditLog | None = None
         self._mix_cache = None  # kagome.prep.mixing.FragmentParamCache (lazy)
 
         if updater is not None:
@@ -704,11 +796,17 @@ class PolymerizationWorkflow:
             for label, idxs in _ckpt['groups'].items():
                 if label in self.groups:
                     self.groups[label].atom_indices[:] = list(idxs)
-            self._updater._processed_formations = _ckpt['updater_processed_formations']
-            if hasattr(self._updater, '_processed_dissociations'):
-                self._updater._processed_dissociations = _ckpt['updater_processed_dissociations']
-            if hasattr(self._updater, 'chain_c_map'):
-                self._updater.chain_c_map = dict(_ckpt['updater_chain_c_map'])
+            # Restore updater bookkeeping through the public API. New checkpoints
+            # carry 'updater_state'; older ones only have the flat keys, which we
+            # reshape into the same dict so restore_checkpoint_state handles both.
+            if 'updater_state' in _ckpt:
+                self._updater.restore_checkpoint_state(_ckpt['updater_state'])
+            else:
+                self._updater.restore_checkpoint_state({
+                    'processed_formations': _ckpt['updater_processed_formations'],
+                    'processed_dissociations': _ckpt['updater_processed_dissociations'],
+                    'chain_c_map': _ckpt['updater_chain_c_map'],
+                })
             if self.bond_tracker is not None:
                 restored_events = list(_ckpt['tracker_events'])
                 # Migrate events pickled before candidate_id existed: pickle
@@ -743,79 +841,11 @@ class PolymerizationWorkflow:
 
         manifest_path = output_dir / 'manifest.json' if output_dir else None
         if output_dir:
-            if resuming and manifest_path.exists():
-                # W1: preserve the original run's provenance. Overwriting would
-                # erase the git_sha/timestamp of the code that produced most of
-                # the trajectory; instead append a resume record.
-                ckpt_step = int(_ckpt['step']) if _ckpt is not None else state.step
-                ckpt_cycle = (
-                    int(_ckpt['next_cycle']) if _ckpt is not None else start_cycle)
-                RunManifest.append_resume(manifest_path, ckpt_step, ckpt_cycle)
-            else:
-                effective_params = _normalize_value(asdict(self.config))
-                effective_params['backend'] = self.calculator.name
-                # Resolved weights identity (RF17): two runs with the same backend
-                # name but different weights are otherwise indistinguishable.
-                effective_params['model_id'] = getattr(
-                    self.calculator, 'model_id', self.calculator.name)
-                # alpha(t) denominator (RF17): also lives in the trajectory header, but
-                # record it in the manifest so provenance is complete without the JSONL.
-                effective_params['n_reactive_sites'] = n_reactive_sites
-                effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
-                effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
-                manifest = RunManifest(
-                    config_path=config_path,
-                    seed=self.config.seed,
-                    backend=self.calculator.name,
-                    output_dir=str(output_dir),
-                    extra=effective_params,
-                )
-                manifest.save(manifest_path)
-
-            # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
-            # must be reconstructable from artifacts, not just n_candidates counts.
-            # run_activation (S1) may already have set the log to this path and
-            # freshly truncated it; in that case do NOT re-truncate here or the
-            # activation-phase records would be lost.
-            selection_log_path = output_dir / 'selection.jsonl'
-            already_logging = self._selection_log == selection_log_path
-            self._selection_log = selection_log_path
-            if not resuming and not already_logging:
-                self._selection_log.write_text('', encoding='utf-8')  # truncate prior runs
-
-            # Explicit bond-topology history (specs/decisions.md 2026-07-02).
-            if self._topology is not None:
-                self._topology_log = output_dir / 'topology.jsonl'
-                if not resuming:
-                    self._topology_log.write_text('', encoding='utf-8')
-                    self._write_topology_snapshot(state, cycle=-1)  # initial
-
-            # WM-P3 mixing audit: one JSON line per mixing segment (classical
-            # diagnostics stay out of trajectory.jsonl — decisions.md 追補
-            # 2026-07-18 (h)).
-            if self.config.mixing is not None:
-                self._mixing_log = output_dir / 'mixing.jsonl'
-                if not resuming:
-                    self._mixing_log.write_text('', encoding='utf-8')
-
-            if resuming and _ckpt is not None:
-                ckpt_step = int(_ckpt['step'])
-                _truncate_jsonl_after(
-                    output_dir / 'trajectory.jsonl', ckpt_step)
-                # selection.jsonl records carry only 'cycle': the checkpoint's
-                # next_cycle is the first cycle to be re-run, so records from
-                # cycle >= next_cycle are the mid-crash duplicates.
-                _truncate_jsonl_after(
-                    self._selection_log, int(_ckpt['next_cycle']) - 1,
-                    field='cycle')
-                if self._topology_log is not None:
-                    _truncate_jsonl_after(self._topology_log, ckpt_step)
-                if self._mixing_log is not None:
-                    # mixing.jsonl records carry 'cycle' (no step), like
-                    # selection.jsonl: drop mid-crash duplicates.
-                    _truncate_jsonl_after(
-                        self._mixing_log, int(_ckpt['next_cycle']) - 1,
-                        field='cycle')
+            self._init_output_artifacts(
+                state, output_dir, config_path, n_reactive_sites,
+                manifest_path=manifest_path, resuming=resuming,
+                start_cycle=start_cycle, ckpt=_ckpt,
+            )
 
         writer: TrajectoryWriter | None = None
         if output_dir and self.config.save_interval > 0:
@@ -903,6 +933,13 @@ class PolymerizationWorkflow:
                         topo_processed_formations=self._topo_processed_formations,
                         topo_processed_dissociations=self._topo_processed_dissociations,
                     )
+
+                # Cycle-boundary durability: flush buffered trajectory frames so a
+                # SIGKILL/OOM before close() keeps this cycle's frames (bounded loss;
+                # not per-frame — that would defeat the write buffer). Placed after
+                # the checkpoint so the flushed frames are always <= the checkpoint.
+                if writer:
+                    writer.flush()
         finally:
             if writer:
                 writer.close()
@@ -910,6 +947,102 @@ class PolymerizationWorkflow:
                 self.bond_tracker.save(output_dir / 'bonds.jsonl')
 
         return self.logs
+
+    def _init_output_artifacts(
+        self,
+        state: SimulationState,
+        output_dir: Path,
+        config_path: str,
+        n_reactive_sites: int,
+        *,
+        manifest_path: Path | None,
+        resuming: bool,
+        start_cycle: int,
+        ckpt: dict | None,
+    ) -> None:
+        """Create/initialize the run's output artifacts (manifest + JSONL audits).
+
+        Extracted from run() so the ~75-line "prepare the output directory" block
+        is one named step: write (or resume-append) manifest.json, then set up the
+        selection / topology / mixing JSONL audit logs — truncating them on a fresh
+        run and truncating post-checkpoint records on resume. Output bytes are
+        unchanged from the previous inline block.
+        """
+        if resuming and manifest_path is not None and manifest_path.exists():
+            # W1: preserve the original run's provenance. Overwriting would erase
+            # the git_sha/timestamp of the code that produced most of the
+            # trajectory; instead append a resume record.
+            ckpt_step = int(ckpt['step']) if ckpt is not None else state.step
+            ckpt_cycle = (
+                int(ckpt['next_cycle']) if ckpt is not None else start_cycle)
+            RunManifest.append_resume(manifest_path, ckpt_step, ckpt_cycle)
+        else:
+            effective_params = _normalize_value(asdict(self.config))
+            effective_params['backend'] = self.calculator.name
+            # Resolved weights identity (RF17): two runs with the same backend
+            # name but different weights are otherwise indistinguishable.
+            effective_params['model_id'] = getattr(
+                self.calculator, 'model_id', self.calculator.name)
+            # alpha(t) denominator (RF17): also lives in the trajectory header, but
+            # record it in the manifest so provenance is complete without the JSONL.
+            effective_params['n_reactive_sites'] = n_reactive_sites
+            effective_params['candidate_r_min'] = self.template.pairs[0].r_min if self.template.pairs else None
+            effective_params['candidate_r_max'] = self.template.pairs[0].r_max if self.template.pairs else None
+            manifest = RunManifest(
+                config_path=config_path,
+                seed=self.config.seed,
+                backend=self.calculator.name,
+                output_dir=str(output_dir),
+                extra=effective_params,
+            )
+            manifest.save(manifest_path)
+
+        # Per-cycle candidate-selection audit (RF18): "why was X dropped for Y"
+        # must be reconstructable from artifacts, not just n_candidates counts.
+        # run_activation (S1) may already have set the log to this path and
+        # freshly truncated it; in that case do NOT re-truncate here or the
+        # activation-phase records would be lost.
+        selection_log_path = output_dir / 'selection.jsonl'
+        already_logging = (
+            self._selection_audit is not None
+            and self._selection_audit.path == selection_log_path)
+        self._selection_audit = JsonlAuditLog(selection_log_path)
+        if not resuming and not already_logging:
+            self._selection_audit.truncate()  # discard prior runs
+
+        # Explicit bond-topology history (specs/decisions.md 2026-07-02).
+        if self._topology is not None:
+            self._topology_audit = JsonlAuditLog(output_dir / 'topology.jsonl')
+            if not resuming:
+                self._topology_audit.truncate()
+                self._write_topology_snapshot(state, cycle=-1)  # initial
+
+        # WM-P3 mixing audit: one JSON line per mixing segment (classical
+        # diagnostics stay out of trajectory.jsonl — decisions.md 追補
+        # 2026-07-18 (h)).
+        if self.config.mixing is not None:
+            self._mixing_audit = JsonlAuditLog(output_dir / 'mixing.jsonl')
+            if not resuming:
+                self._mixing_audit.truncate()
+
+        if resuming and ckpt is not None:
+            ckpt_step = int(ckpt['step'])
+            _truncate_jsonl_after(
+                output_dir / 'trajectory.jsonl', ckpt_step)
+            # selection.jsonl records carry only 'cycle': the checkpoint's
+            # next_cycle is the first cycle to be re-run, so records from
+            # cycle >= next_cycle are the mid-crash duplicates.
+            _truncate_jsonl_after(
+                self._selection_audit.path, int(ckpt['next_cycle']) - 1,
+                field='cycle')
+            if self._topology_audit is not None:
+                _truncate_jsonl_after(self._topology_audit.path, ckpt_step)
+            if self._mixing_audit is not None:
+                # mixing.jsonl records carry 'cycle' (no step), like
+                # selection.jsonl: drop mid-crash duplicates.
+                _truncate_jsonl_after(
+                    self._mixing_audit.path, int(ckpt['next_cycle']) - 1,
+                    field='cycle')
 
     def _minimize(
         self,
@@ -1141,15 +1274,17 @@ class PolymerizationWorkflow:
         # mid-mix crash never loses a draw and desyncs a resume.
         mix_seed = int(rng.integers(1, 2 ** 31 - 1))
 
-        # The divergence surfaces either as our RuntimeError or as openmm's
-        # OpenMMException ('Particle coordinate is NaN'); openmm is a hard
+        # The divergence surfaces as our RuntimeError, openmm's OpenMMException
+        # ('Particle coordinate is NaN'), or a ValueError from mix.write_back when
+        # the classical MD returns non-finite coordinates — all three must join the
+        # graceful-skip path rather than crashing the whole run. openmm is a hard
         # requirement whenever mixing is active, so import it for the tuple.
         try:
             import openmm
             mix_errors: tuple[type[BaseException], ...] = (
-                RuntimeError, openmm.OpenMMException)
+                RuntimeError, ValueError, openmm.OpenMMException)
         except Exception:                    # pragma: no cover - openmm present
-            mix_errors = (RuntimeError,)
+            mix_errors = (RuntimeError, ValueError)
 
         try:
             result = run_mix_md(
@@ -1180,7 +1315,7 @@ class PolymerizationWorkflow:
                 'mix_settle also skipped. This should be RARE — investigate if it '
                 'recurs.', cycle, skip_reason,
             )
-            if self._mixing_log is not None:
+            if self._mixing_audit is not None:
                 record = {
                     'schema_version': 1,
                     'cycle': cycle,
@@ -1192,8 +1327,7 @@ class PolymerizationWorkflow:
                     'n_placeholder_h': mix.metadata.get('n_placeholder_h'),
                     'n_declashed': mix.metadata.get('n_declashed'),
                 }
-                with open(self._mixing_log, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps(record) + '\n')
+                self._mixing_audit.append(record)
             return [CycleLog(cycle=cycle, phase='mixing', steps=0)]
 
         # Diffusion metric (vi): OpenMM does not wrap coordinates, so the
@@ -1204,7 +1338,7 @@ class PolymerizationWorkflow:
         state.velocities = maxwell_boltzmann_velocities(
             state.masses, mcfg.temperature_K, rng)
 
-        if self._mixing_log is not None:
+        if self._mixing_audit is not None:
             record = {
                 'schema_version': 1,
                 'cycle': cycle,
@@ -1228,8 +1362,7 @@ class PolymerizationWorkflow:
                 'cache_hits': mix.metadata.get('cache_hits'),
                 'cache_misses': mix.metadata.get('cache_misses'),
             }
-            with open(self._mixing_log, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(record) + '\n')
+            self._mixing_audit.append(record)
         logger.info(
             'Cycle %d mixing: %.1f ps classical (%d steps), rms disp %.2f A, '
             'cap H %s, declashed %s, cache %s/%s',
@@ -1322,11 +1455,10 @@ class PolymerizationWorkflow:
         # criterion live. Counts raw i-j geometric pairs (formation window only)
         # and how many of those also satisfy each constraint (i-k, j-l), vs the
         # fully-qualified 4-tuple candidates. Isolates geometry vs constraint.
-        import os
-        if os.environ.get('KAGOME_DIAG_STARVATION'):
+        if _starvation_diag_enabled():
             self._log_starvation_diag(cycle, state.positions, state.cell,
                                       len(candidates))
-        if self._selection_log is not None:
+        if self._selection_audit is not None:
             selected, decisions = audited_selection(
                 scored,
                 policy=self.config.selection_policy,
@@ -1348,7 +1480,7 @@ class PolymerizationWorkflow:
 
         pre_valence = set(id(c) for c in selected)
         selected = self._valence_filter(selected, state, cycle)
-        if self._selection_log is not None:
+        if self._selection_audit is not None:
             dropped_ids = pre_valence - set(id(c) for c in selected)
             if dropped_ids:
                 self._write_valence_drop_audit(cycle, len(dropped_ids))
@@ -1613,7 +1745,7 @@ class PolymerizationWorkflow:
         line the connectivity after a cycle that formed a bond.  The XYZ exporter
         replays it to attach the correct bonds to each frame.
         """
-        if self._topology_log is None or self._topology is None:
+        if self._topology_audit is None or self._topology is None:
             return
         record = {
             'step': state.step,
@@ -1621,8 +1753,7 @@ class PolymerizationWorkflow:
             'n_bonds': len(self._topology),
             'bonds': [[i, j, o] for i, j, o in self._topology.bonds()],
         }
-        with open(self._topology_log, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record) + '\n')
+        self._topology_audit.append(record)
 
     # Cap on rejected candidates written per cycle; large systems can enumerate
     # many. Selected candidates are always written in full.
@@ -1642,7 +1773,7 @@ class PolymerizationWorkflow:
         readers treat a missing field as its default ('production',
         'deterministic', None).
         """
-        if self._selection_log is None:
+        if self._selection_audit is None:
             return
         selected = [d for d in decisions if d.selected]
         rejected = [d for d in decisions if not d.selected]
@@ -1672,8 +1803,7 @@ class PolymerizationWorkflow:
             record['policy'] = policy
             if softmax_temperature is not None:
                 record['softmax_temperature'] = softmax_temperature
-        with open(self._selection_log, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record) + '\n')
+        self._selection_audit.append(record)
         if record['rejected_truncated']:
             logger.info(
                 'Cycle %d selection audit: logged %d/%d rejected candidates '
@@ -1683,15 +1813,14 @@ class PolymerizationWorkflow:
 
     def _write_valence_drop_audit(self, cycle: int, n_dropped: int) -> None:
         """Append a valence-drop record to the selection audit log (L7)."""
-        if self._selection_log is None:
+        if self._selection_audit is None:
             return
         record = {
             'cycle': cycle,
             'event': 'valence_drop',
             'n_dropped': n_dropped,
         }
-        with open(self._selection_log, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record) + '\n')
+        self._selection_audit.append(record)
 
     def run_activation(
         self,
@@ -1730,10 +1859,9 @@ class PolymerizationWorkflow:
         # this is the run's start point); run() detects the pre-set log and will not
         # re-truncate it, preserving these activation records.
         if output_dir is not None:
-            self._selection_log = output_dir / 'selection.jsonl'
-            self._selection_log.parent.mkdir(parents=True, exist_ok=True)
-            self._selection_log.write_text('', encoding='utf-8')
-        if self._selection_log is not None:
+            self._selection_audit = JsonlAuditLog(output_dir / 'selection.jsonl')
+            self._selection_audit.truncate()
+        if self._selection_audit is not None:
             selected, decisions = audited_selection(scored)
             self._write_selection_audit(-1, decisions, phase='activation')
         else:
@@ -1744,8 +1872,7 @@ class PolymerizationWorkflow:
             )
             selected = select_non_overlapping(scored)
 
-        import os
-        if os.environ.get('KAGOME_DIAG_STARVATION'):
+        if _starvation_diag_enabled():
             # Measure the ACTUAL bonded azo C-N distances (azo_C[k] is bonded to
             # azo_N[k]). If these are stretched beyond the activation window the
             # structure prep distorted the AIBN molecules -> activation can't fire.
@@ -1837,16 +1964,17 @@ class PolymerizationWorkflow:
                         step_in_phase + 1, p.idx_a, p.idx_b, r,
                     )
                     if self.bond_tracker:
-                        from kagome.reactive.bonds import BondEvent
-                        self.bond_tracker._events.append(BondEvent(
+                        # Public API instead of a raw _events.append; register_reacted
+                        # defaults False to keep the activation path byte-identical to
+                        # its prior behaviour (it never populated _reacted).
+                        self.bond_tracker.record_confirmed_dissociation(
                             step=state.step,
                             cycle=-1,
                             atom_a=p.idx_a,
                             atom_b=p.idx_b,
-                            event_type='confirmed_dissociation',
                             distance=r,
                             r0=dissoc_threshold,
-                        ))
+                        )
 
             if len(dissociated) == len(pairs):
                 logger.info(

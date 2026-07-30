@@ -47,6 +47,27 @@ class _WellCalculator:
         return energy, np.zeros((n, 3))
 
 
+class _ConstantBiasFn:
+    """Deterministic stand-in for bias_energy_fn: returns fixed bias energies
+    regardless of the configuration passed in.
+
+    try_step calls bias_energy_fn twice per attempt, in this order (see
+    mc_barostat.py ~121-125): first with (new_positions, new_box), then with
+    (positions, box). So the first call returns ``new_bias`` and the second
+    returns ``old_bias``, giving an exact, deterministic ΔE_bias = new_bias -
+    old_bias regardless of the actual scaled positions/cell.
+    """
+
+    def __init__(self, new_bias: float, old_bias: float):
+        self._values = [new_bias, old_bias]
+        self._calls = 0
+
+    def __call__(self, positions, box):
+        value = self._values[self._calls]
+        self._calls += 1
+        return value
+
+
 class TestMCBarostatParams:
 
     def test_default_pressure_is_1atm(self):
@@ -212,3 +233,107 @@ class TestMCBarostatStep:
                 np.testing.assert_allclose(positions, orig_pos * scale, rtol=1e-10)
 
         assert n_accepted > 0, 'expected at least one accepted volume move'
+
+
+class TestMCBarostatBiasEnergy:
+    """bias_energy_fn must fold ΔE_bias into the ΔH acceptance criterion
+    (specs/decisions.md 2026-07-03 D2). Covers: (a) a fixed bias shifts the
+    accept/reject boundary by exactly ΔE_bias, (b) omitting bias_energy_fn
+    (default None) reproduces the pre-bias behaviour exactly, (c) a bias that
+    grows with volume makes expansion less likely to be accepted."""
+
+    def _cell(self, box: float = 10.0) -> np.ndarray:
+        return np.diag([box, box, box])
+
+    def _positions(self, n: int = 4, box: float = 10.0) -> np.ndarray:
+        rng = np.random.default_rng(0)
+        return rng.uniform(0, box, (n, 3))
+
+    def test_bias_shifts_delta_h_by_delta_e_bias(self):
+        # (a) P=0, flat calculator => dE=0, so without bias
+        # delta_H = -(n+1)*kT*delta_ln_V exactly (RF19b Jacobian term).
+        n = 4
+        dlnv = -0.01
+        kT = KB * 300.0
+        delta_h_no_bias = -(n + 1) * kT * dlnv
+
+        delta_e_bias = 0.5  # kcal/mol, arbitrary fixed shift added by the bias
+        delta_h_with_bias = delta_h_no_bias + delta_e_bias
+
+        thresh_no_bias = math.exp(-delta_h_no_bias / kT)
+        thresh_with_bias = math.exp(-delta_h_with_bias / kT)
+        assert thresh_with_bias < thresh_no_bias  # adding positive bias tightens acceptance
+
+        # Draw strictly between the two thresholds: accepted without bias,
+        # rejected once ΔE_bias is folded in — the boundary moved by exactly
+        # delta_e_bias.
+        draw = 0.5 * (thresh_with_bias + thresh_no_bias)
+
+        cell = self._cell(10.0)
+        positions = self._positions(n, 10.0)
+        calc = _FlatCalculator()
+
+        def run(bias_fn):
+            b = MCBarostat(MCBarostatParams(pressure_atm=0.0, max_volume_change_frac=0.01))
+            accepted, _, _ = b.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc,
+                _FixedRng(dlnv, draw), 300.0, bias_energy_fn=bias_fn,
+            )
+            return accepted
+
+        assert run(None) is True
+        assert run(_ConstantBiasFn(new_bias=delta_e_bias, old_bias=0.0)) is False
+
+    def test_bias_energy_fn_none_matches_omitted_argument(self):
+        # (b) explicit bias_energy_fn=None must be indistinguishable from
+        # leaving the argument out (the pre-bias code path).
+        n = 4
+        dlnv = -0.01
+        cell = self._cell(10.0)
+        positions = self._positions(n, 10.0)
+        calc = _WellCalculator(V_ref=900.0, k=0.05)  # nonzero dE, exercises dE + bias path
+
+        for draw in (0.1, 0.5, 0.9, 0.99):
+            b_omitted = MCBarostat(MCBarostatParams(pressure_atm=1.0, max_volume_change_frac=0.01))
+            b_explicit = MCBarostat(MCBarostatParams(pressure_atm=1.0, max_volume_change_frac=0.01))
+
+            accepted_omitted, e_omitted, _ = b_omitted.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc,
+                _FixedRng(dlnv, draw), 300.0,
+            )
+            accepted_explicit, e_explicit, _ = b_explicit.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc,
+                _FixedRng(dlnv, draw), 300.0, bias_energy_fn=None,
+            )
+            assert accepted_omitted == accepted_explicit
+            assert e_omitted == e_explicit
+
+    def test_bias_growing_with_volume_penalizes_expansion(self):
+        # (c) directional check: a bias energy that increases with volume
+        # should make the barostat accept volume-expanding moves less often
+        # overall, since ΔE_bias adds a positive penalty on expansion and a
+        # negative (favorable) term on contraction.
+        n = 4
+        cell = self._cell(10.0)
+        positions = self._positions(n, 10.0)
+        calc = _FlatCalculator()
+
+        def growing_bias(pos, box):
+            return 5.0 * float(np.prod(box))
+
+        barostat_no_bias = MCBarostat(MCBarostatParams(pressure_atm=0.0, max_volume_change_frac=0.05))
+        barostat_with_bias = MCBarostat(MCBarostatParams(pressure_atm=0.0, max_volume_change_frac=0.05))
+
+        rng_no_bias = np.random.default_rng(3)
+        rng_with_bias = np.random.default_rng(3)  # same seed => same proposal sequence
+
+        for _ in range(200):
+            barostat_no_bias.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc, rng_no_bias, 300.0,
+            )
+            barostat_with_bias.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc, rng_with_bias, 300.0,
+                bias_energy_fn=growing_bias,
+            )
+
+        assert barostat_with_bias.stats.acceptance_rate < barostat_no_bias.stats.acceptance_rate

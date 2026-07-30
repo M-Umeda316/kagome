@@ -85,6 +85,18 @@ class TrajectoryWriter:
         self._file.write(json.dumps(asdict(frame)) + '\n')
         self._step_counter += 1
 
+    def flush(self) -> None:
+        """Flush buffered frames to the OS so a SIGKILL/OOM keeps them.
+
+        Called at cycle boundaries (after the checkpoint save) rather than every
+        frame: per-frame flushing would negate the write buffer's throughput
+        benefit, while a cycle-boundary flush bounds the loss to at most the
+        frames of the in-progress cycle — which the resume truncation would
+        rewrite anyway.
+        """
+        if not self._file.closed:
+            self._file.flush()
+
     def close(self) -> None:
         if not self._file.closed:
             self._file.close()
