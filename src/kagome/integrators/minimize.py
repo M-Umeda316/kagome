@@ -21,7 +21,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from kagome.backends.base import Calculator
-from kagome.geometry import wrap_positions
+from kagome.geometry import validated_box, wrap_positions_fast
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,10 @@ def fire_minimize(
     """
     p = params or FireParams()
     pos = np.array(positions, dtype=np.float64, copy=True)
+    # ``cell`` is fixed for the whole relaxation, so validate its orthorhombicity
+    # once here and wrap with the fast path inside the loop (numerically
+    # identical to per-step wrap_positions).
+    box = validated_box(cell)
     # ASE sentinel: velocity is None until the first kick so the power/mixing
     # branch is skipped on step 0 (v is zero there).
     vel: NDArray[np.floating] | None = None
@@ -125,7 +129,7 @@ def fire_minimize(
         if dxmax > p.maxstep_A:
             dx *= p.maxstep_A / dxmax
         pos += dx
-        wrap_positions(pos, cell)
+        wrap_positions_fast(pos, box)
 
         energy, forces = calculator.compute(pos, species, cell)
         fmax = float(np.sqrt((forces ** 2).sum(axis=1).max()))

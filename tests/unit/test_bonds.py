@@ -4,6 +4,7 @@ import pytest
 
 from kagome.boost.tdbb import PairBias
 from kagome.reactive.bonds import BondTracker, is_dissociated, is_formed
+from kagome.reactive.pairs import TrackedPair
 
 
 class TestIsDissociated:
@@ -50,10 +51,10 @@ class TestIsFormed:
 class TestBondTracker:
 
     def _make_formation_pair(self, idx_a=0, idx_b=1, r0=1.9):
-        return PairBias(idx_a=idx_a, idx_b=idx_b, is_formation=True, r0=r0)
+        return TrackedPair(PairBias(idx_a=idx_a, idx_b=idx_b, is_formation=True, r0=r0))
 
     def _make_dissociation_pair(self, idx_a=0, idx_b=1, r0=1.9):
-        return PairBias(idx_a=idx_a, idx_b=idx_b, is_formation=False, r0=r0)
+        return TrackedPair(PairBias(idx_a=idx_a, idx_b=idx_b, is_formation=False, r0=r0))
 
     def test_record_attempts(self):
         tracker = BondTracker()
@@ -290,8 +291,10 @@ class TestBondTracker:
 
         boost = BoostState()
         boost.advance(1.0, 250.0, 250.0)
+        # The kernel takes the minimal PairBias; BondTracker takes the wrapping
+        # TrackedPair. Same ordering, so pair_dists indices align.
         _, _, pair_dists = total_bias_fast(
-            pairs, positions, boost, TDBBParams(), box,
+            [p.bias for p in pairs], positions, boost, TDBBParams(), box,
         )
 
         tracker_recompute = BondTracker(threshold_fraction=1.0)
@@ -346,7 +349,7 @@ class TestConjunctiveReactionEvent:
     gates the event; it may or may not close."""
 
     @staticmethod
-    def _nylon_pairs(cid: int = 0) -> list[PairBias]:
+    def _nylon_pairs(cid: int = 0) -> list[TrackedPair]:
         """Nylon-like candidate: atoms 0=N, 1=C, 2=H(on N), 3=OH(on C).
 
         Trigger pairs: amide N-C formation (counted), N-H dissociation, C-OH
@@ -354,14 +357,14 @@ class TestConjunctiveReactionEvent:
         counts_as_reaction=False).
         """
         return [
-            PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0,
-                     candidate_id=cid, is_trigger=True, counts_as_reaction=True),
-            PairBias(idx_a=0, idx_b=2, is_formation=False, r0=1.5,
-                     candidate_id=cid, is_trigger=True),
-            PairBias(idx_a=1, idx_b=3, is_formation=False, r0=1.5,
-                     candidate_id=cid, is_trigger=True),
-            PairBias(idx_a=2, idx_b=3, is_formation=True, r0=1.5,
-                     candidate_id=cid, is_trigger=False, counts_as_reaction=False),
+            TrackedPair(PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0),
+                        candidate_id=cid, is_trigger=True, counts_as_reaction=True),
+            TrackedPair(PairBias(idx_a=0, idx_b=2, is_formation=False, r0=1.5),
+                        candidate_id=cid, is_trigger=True),
+            TrackedPair(PairBias(idx_a=1, idx_b=3, is_formation=False, r0=1.5),
+                        candidate_id=cid, is_trigger=True),
+            TrackedPair(PairBias(idx_a=2, idx_b=3, is_formation=True, r0=1.5),
+                        candidate_id=cid, is_trigger=False, counts_as_reaction=False),
         ]
 
     # ── firing (check_reactions_during_bias) ──────────────────────────
@@ -468,8 +471,8 @@ class TestConjunctiveReactionEvent:
 
     def test_vinyl_single_formation_candidate_fires_and_confirms(self):
         tracker = BondTracker(threshold_fraction=1.0)
-        pair = PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0,
-                        candidate_id=0, is_trigger=True)
+        pair = TrackedPair(PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0),
+                           candidate_id=0, is_trigger=True)
         close = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
         assert tracker.check_reactions_during_bias(
             [pair], close, step=1, cycle=0) == [0]
@@ -484,8 +487,8 @@ class TestConjunctiveReactionEvent:
         """A candidate_id<0 dissociation pair (activation style) fires and
         confirms independently, on its own crossing."""
         tracker = BondTracker(threshold_fraction=1.0)
-        diss = PairBias(idx_a=0, idx_b=1, is_formation=False, r0=1.5,
-                        candidate_id=-1)
+        diss = TrackedPair(PairBias(idx_a=0, idx_b=1, is_formation=False, r0=1.5),
+                           candidate_id=-1)
         bonded = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])  # not dissociated
         broken = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])  # dissociated
         assert tracker.check_reactions_during_bias(

@@ -751,13 +751,13 @@ class TestBuildEpoxyAmineSystem:
 
     def test_kl_pair_is_bias_only(self):
         """The hydroxyl-forming k-l (amine_H - ring_O) pair must be bias-only:
-        score_pair=False (not a trigger) and count_as_reaction=False."""
+        score_pair=False (not a trigger) and counts_as_reaction=False."""
         _, _, template, _, _ = self._build()
         kl = [p for p in template.pairs
               if p.group_a == 'amine_H' and p.group_b == 'ring_O']
         assert len(kl) == 1
         assert kl[0].score_pair is False
-        assert kl[0].count_as_reaction is False
+        assert kl[0].counts_as_reaction is False
         assert kl[0].is_formation is True
 
     def test_amine_h_map_consistent_with_groups(self):

@@ -121,23 +121,19 @@ def dissociation_force_magnitude(
 
 @dataclass
 class PairBias:
-    """One pair in a reaction group with its bias mode."""
+    """One pair in a reaction group with its bias mode.
+
+    Minimal kernel record: only the fields the bias kernels
+    (:func:`total_bias`, :func:`total_bias_fast`) actually read — the two atom
+    indices, the bias mode, and the target distance r0.  Reaction bookkeeping
+    (candidate_id / counts_as_reaction / is_trigger) lives on
+    :class:`kagome.reactive.pairs.TrackedPair`, which composes a ``PairBias``;
+    this keeps the numerical kernel free of accounting concerns.
+    """
     idx_a: int
     idx_b: int
     is_formation: bool
     r0: float = 0.0
-    candidate_id: int = -1
-    # If False, a confirmed formation of this pair is excluded from reaction
-    # counting (alpha/Carothers p); bias/topology behaviour is unchanged.
-    # Used for nylon water-forming k-l pairs (specs/decisions.md 2026-07-06 A5).
-    counts_as_reaction: bool = True
-    # Whether this pair belongs to the paper's identification set P (§2.2 step
-    # 3-4): the reaction event fires / is confirmed only when ALL trigger pairs
-    # of a candidate simultaneously satisfy their bonding condition. Set from
-    # PairSpec.score_pair — the bias-only nylon k-l water pair (score_pair=False)
-    # is is_trigger=False and never participates in the trigger conjunction.
-    # Default True keeps existing callers/tests unchanged.
-    is_trigger: bool = True
 
 
 def total_bias(

@@ -308,6 +308,54 @@ class TestMCBarostatBiasEnergy:
             assert accepted_omitted == accepted_explicit
             assert e_omitted == e_explicit
 
+    def test_current_bias_energy_matches_recompute(self):
+        """Passing current_bias_energy (a precomputed old_bias) must give the
+        exact same accept/reject decision and returned energy as letting
+        try_step re-evaluate bias_energy_fn(positions, box). The reuse is a
+        performance shortcut only — the acceptance is bit-identical."""
+        n = 4
+        dlnv = -0.01
+        cell = self._cell(10.0)
+        positions = self._positions(n, 10.0)
+        calc = _WellCalculator(V_ref=900.0, k=0.05)
+
+        # A configuration-dependent bias so a stale value would actually differ:
+        # here we pass the SAME value try_step would compute for the current box.
+        def vol_bias(pos, box):
+            return 3.0 * float(np.prod(box))
+
+        current_box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
+        precomputed_old_bias = vol_bias(positions, current_box)
+
+        for draw in (0.1, 0.5, 0.9, 0.99):
+            b_recompute = MCBarostat(MCBarostatParams(pressure_atm=1.0, max_volume_change_frac=0.01))
+            b_reuse = MCBarostat(MCBarostatParams(pressure_atm=1.0, max_volume_change_frac=0.01))
+
+            acc_recompute, e_recompute, _ = b_recompute.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc,
+                _FixedRng(dlnv, draw), 300.0, bias_energy_fn=vol_bias,
+            )
+            acc_reuse, e_reuse, _ = b_reuse.try_step(
+                positions.copy(), ['C'] * n, cell.copy(), 0.0, calc,
+                _FixedRng(dlnv, draw), 300.0, bias_energy_fn=vol_bias,
+                current_bias_energy=precomputed_old_bias,
+            )
+            assert acc_reuse == acc_recompute
+            assert e_reuse == e_recompute
+
+    def test_triclinic_cell_raises(self):
+        """try_step guards orthorhombicity like Velocity-Verlet / Langevin."""
+        cell = np.array([[10.0, 1.0, 0.0],
+                         [0.0, 10.0, 0.0],
+                         [0.0, 0.0, 10.0]])
+        positions = self._positions(4, 10.0)
+        barostat = MCBarostat(MCBarostatParams())
+        with pytest.raises(ValueError, match='orthorhombic'):
+            barostat.try_step(
+                positions, ['C'] * 4, cell, 0.0, _FlatCalculator(),
+                np.random.default_rng(0), 300.0,
+            )
+
     def test_bias_growing_with_volume_penalizes_expansion(self):
         # (c) directional check: a bias energy that increases with volume
         # should make the barostat accept volume-expanding moves less often

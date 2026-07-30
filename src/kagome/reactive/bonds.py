@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from kagome.boost.tdbb import PairBias
 from kagome.geometry import minimum_image
+from kagome.reactive.pairs import TrackedPair
 
 
 def is_formed(r: float, r0: float, threshold_fraction: float = 1.0) -> bool:
@@ -52,7 +52,7 @@ class BondTracker:
     def __init__(self, threshold_fraction: float = 1.0) -> None:
         self._threshold_fraction = threshold_fraction
         self._events: list[BondEvent] = []
-        self._pending: list[tuple[PairBias, int]] = []
+        self._pending: list[tuple[TrackedPair, int]] = []
         # Pairs confirmed after unbiased relaxation — keyed by
         # (min_idx, max_idx, is_formation) so the same pair can undergo
         # formation and later dissociation in different cycles.
@@ -65,7 +65,7 @@ class BondTracker:
     def _key(a: int, b: int) -> tuple[int, int]:
         return (min(a, b), max(a, b))
 
-    def _pair_satisfied(self, pair: PairBias, r: float) -> bool:
+    def _pair_satisfied(self, pair: TrackedPair, r: float) -> bool:
         """True when *pair* meets its bonding condition at distance *r*.
 
         Paper §2.2 step 3-4: a formation pair is satisfied when the atoms are
@@ -78,7 +78,7 @@ class BondTracker:
 
     def _pair_distance(
         self,
-        pair: PairBias,
+        pair: TrackedPair,
         positions: NDArray[np.floating],
         cell: NDArray[np.floating] | None,
     ) -> float:
@@ -89,7 +89,7 @@ class BondTracker:
 
     def check_reactions_during_bias(
         self,
-        pairs: list[PairBias],
+        pairs: list[TrackedPair],
         positions: NDArray[np.floating],
         step: int,
         cycle: int,
@@ -157,8 +157,8 @@ class BondTracker:
             self._tentative.add(pair_key)
 
         # 2. Firing decision — conjunction over each candidate's trigger pairs.
-        grouped: dict[int, list[tuple[PairBias, float]]] = defaultdict(list)
-        singletons: list[tuple[PairBias, float]] = []
+        grouped: dict[int, list[tuple[TrackedPair, float]]] = defaultdict(list)
+        singletons: list[tuple[TrackedPair, float]] = []
         for i, pair in enumerate(pairs):
             if pair.candidate_id < 0:
                 singletons.append((pair, dists[i]))
@@ -179,7 +179,7 @@ class BondTracker:
 
     def record_attempts(
         self,
-        pairs: list[PairBias],
+        pairs: list[TrackedPair],
         positions: NDArray[np.floating],
         step: int,
         cycle: int,
@@ -204,7 +204,7 @@ class BondTracker:
 
     def _confirm_pair(
         self,
-        pair: PairBias,
+        pair: TrackedPair,
         r: float,
         step: int,
         cycle: int,
@@ -301,8 +301,8 @@ class BondTracker:
         """
         confirmed: list[BondEvent] = []
 
-        grouped: dict[int, list[tuple[PairBias, int, float]]] = defaultdict(list)
-        singletons: list[tuple[PairBias, int, float]] = []
+        grouped: dict[int, list[tuple[TrackedPair, int, float]]] = defaultdict(list)
+        singletons: list[tuple[TrackedPair, int, float]] = []
         for pair, cycle in self._pending:
             r = self._pair_distance(pair, positions, cell)
             if pair.candidate_id < 0:

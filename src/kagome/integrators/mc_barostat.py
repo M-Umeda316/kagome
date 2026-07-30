@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from kagome.geometry import validated_box
 from kagome.units import ATM_TO_KCAL_MOL_A3, KB
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ class MCBarostat:
         rng: np.random.Generator,
         temperature_K: float,
         bias_energy_fn: object | None = None,
+        current_bias_energy: float | None = None,
     ) -> tuple[bool, float, NDArray[np.floating]]:
         """Attempt an isotropic volume change.
 
@@ -94,14 +96,26 @@ class MCBarostat:
                             the bias energy at a given configuration. When provided,
                             the acceptance criterion includes ΔE_bias
                             (specs/decisions.md 2026-07-03 D2).
+            current_bias_energy: optional precomputed bias energy at the CURRENT
+                            (pre-move) ``positions``/``cell``. When given (and
+                            bias_energy_fn is set) it is used as ``old_bias``
+                            instead of re-evaluating ``bias_energy_fn(positions,
+                            box)`` — an exact reuse the caller may pass only when
+                            it holds the bias at exactly this configuration. Must
+                            equal ``bias_energy_fn(positions, box)`` bit-for-bit;
+                            the accept/reject decision is unchanged.
 
         Returns:
             (accepted, energy, forces)
             On acceptance: (True, new_base_energy, new_forces).
             On rejection: (False, current_energy, None).
+
+        Raises:
+            ValueError: if *cell* is triclinic (non-negligible off-diagonal),
+                mirroring the Velocity-Verlet / Langevin orthorhombic guard.
         """
         kT = KB * temperature_K
-        box = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
+        box = validated_box(cell)
         V_old = float(np.prod(box))
         n_atoms = positions.shape[0]
 
@@ -121,7 +135,13 @@ class MCBarostat:
         if bias_energy_fn is not None:
             new_box = np.array([new_cell[0, 0], new_cell[1, 1], new_cell[2, 2]])
             new_bias = float(bias_energy_fn(new_positions, new_box))
-            old_bias = float(bias_energy_fn(positions, box))
+            # Reuse the caller's precomputed bias at the current configuration
+            # when supplied; otherwise re-evaluate. The two are required to be
+            # bit-identical, so acceptance is unchanged either way.
+            if current_bias_energy is not None:
+                old_bias = float(current_bias_energy)
+            else:
+                old_bias = float(bias_energy_fn(positions, box))
             dE += new_bias - old_bias
 
         dV = V_new - V_old

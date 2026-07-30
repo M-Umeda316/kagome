@@ -1,19 +1,37 @@
 """Classical (OpenMM/OpenFF) Calculator backend.
 
-Guarded with importorskip so the suite still runs in ML-only environments that
-lack the OpenFF/OpenMM classical stack.
+The OpenMM/OpenFF-driven tests importorskip per test so the suite still runs in
+ML-only environments that lack the classical stack. The Context-reuse contract
+check (``test_compute_rejects_species_mismatch``) needs neither, because the
+guard fires before ``compute`` imports openmm.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-pytest.importorskip('openmm')
-pytest.importorskip('openff.toolkit')
-
 from scripts._systems import _INITIATOR_SMILES, _MONOMER_SMILES, build_vinyl_aibn_system
-from kagome.backends.classical_backend import create_classical_calculator
-from kagome.prep.openmm_equilibrate import MoleculeSpec
+from kagome.backends.classical_backend import ClassicalCalculator, create_classical_calculator
+from kagome.prep.openmm_equilibrate import ClassicalPrepConfig, MoleculeSpec
+
+
+def test_compute_rejects_species_mismatch() -> None:
+    """Contract (#7): the cached OpenMM Context is bound to the initial atom
+    order, so a later compute() with a different species list must raise rather
+    than silently compute against the wrong topology. The check runs before the
+    openmm import, so this test does not need the classical stack."""
+    specs = [MoleculeSpec(_INITIATOR_SMILES, 1, rdkit_seed=42)]
+    calc = ClassicalCalculator(specs, ClassicalPrepConfig(), platform='CPU')
+    # Simulate an already-built Context bound to a 3-atom system.
+    calc._context = object()
+    calc._built_species = ['C', 'C', 'O']
+
+    # Different length -> raises.
+    with pytest.raises(ValueError, match='species list'):
+        calc.compute(np.zeros((2, 3)), ['C', 'C'], None)
+    # Same length but different order -> also raises (order, not just count).
+    with pytest.raises(ValueError, match='species list'):
+        calc.compute(np.zeros((3, 3)), ['C', 'O', 'C'], None)
 
 
 def _tiny_system():
@@ -32,6 +50,8 @@ def _tiny_system():
 
 
 def test_compute_returns_finite_energy_and_forces() -> None:
+    pytest.importorskip('openmm')
+    pytest.importorskip('openff.toolkit')
     positions, species, cell, specs = _tiny_system()
     calc = create_classical_calculator(specs, platform='CPU')
 
@@ -44,6 +64,8 @@ def test_compute_returns_finite_energy_and_forces() -> None:
 
 
 def test_compress_box_shrinks_with_classical_calculator() -> None:
+    pytest.importorskip('openmm')
+    pytest.importorskip('openff.toolkit')
     from kagome.integrators.minimize import FireParams, compress_box
 
     positions, species, cell, specs = _tiny_system()

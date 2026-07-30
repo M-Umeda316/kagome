@@ -76,16 +76,54 @@ def validated_box(
     return np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
 
 
+def validated_box_cached(
+    cell: NDArray[np.floating] | None,
+    cached_cell: NDArray[np.floating] | None,
+    cached_box: NDArray[np.floating] | None,
+) -> tuple[NDArray[np.floating] | None, NDArray[np.floating] | None]:
+    """Return the (3,) box for *cell*, validating only when its contents changed.
+
+    Shared inner-loop helper for the Velocity-Verlet / Langevin integrators.
+    ``cached_cell`` is a *copy* of the cell contents last validated (or None on
+    the first call) and ``cached_box`` the (3,) diagonal returned for it. The
+    orthorhombic check (:func:`validated_box`) runs only when ``cell`` differs
+    from ``cached_cell`` (by value), so the steady state — an unchanged cell
+    passed every step — skips it entirely.
+
+    A content comparison (not identity) is required because the MC barostat
+    mutates the cell in place (``cell[:] = new_cell``): the same array object is
+    handed back each step, but its values change on an accepted move.
+
+    Returns ``(box, cell_snapshot)`` where ``box`` is the diagonal to use (None
+    when ``cell`` is None) and ``cell_snapshot`` is the copy to store for the
+    next call. The returned ``box`` is numerically identical to
+    ``validated_box(cell)``.
+    """
+    if cell is None:
+        return None, None
+    if (cached_cell is not None and cached_box is not None
+            and np.array_equal(cell, cached_cell)):
+        return cached_box, cached_cell
+    return validated_box(cell), np.array(cell, copy=True)
+
+
 def minimum_image_fast(
     r_vec: NDArray[np.floating],
     box: NDArray[np.floating] | None,
 ) -> NDArray[np.floating]:
-    """Minimum image without per-call validation.
+    """Minimum image without per-call orthorhombic validation.
 
-    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``.
+    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``. A
+    lightweight shape guard catches a (3, 3) cell passed here by mistake, which
+    would otherwise broadcast silently into a wrong minimum image.
     """
     if box is None:
         return r_vec
+    if box.ndim != 1:
+        raise ValueError(
+            f'box must be a (3,) diagonal from validated_box, got ndim={box.ndim} '
+            '(a full (3,3) cell?)'
+        )
     return r_vec - box * np.round(r_vec / box)
 
 
@@ -93,10 +131,16 @@ def wrap_positions_fast(
     positions: NDArray[np.floating],
     box: NDArray[np.floating] | None,
 ) -> None:
-    """In-place wrap without per-call validation.
+    """In-place wrap without per-call orthorhombic validation.
 
-    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``.
+    ``box`` must be a prevalidated (3,) diagonal from ``validated_box``. A
+    lightweight shape guard catches a (3, 3) cell passed here by mistake.
     """
     if box is None:
         return
+    if box.ndim != 1:
+        raise ValueError(
+            f'box must be a (3,) diagonal from validated_box, got ndim={box.ndim} '
+            '(a full (3,3) cell?)'
+        )
     positions[:] = positions % box

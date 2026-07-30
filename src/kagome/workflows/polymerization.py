@@ -26,6 +26,7 @@ from kagome.integrators.verlet import Integrator, VelocityVerletIntegrator
 from kagome.io.trajectory import TrajectoryFrame, TrajectoryWriter
 from kagome.reactive.bonds import BondEvent, BondTracker, is_dissociated
 from kagome.reactive.groups import ReactiveGroup, ReactionTemplate
+from kagome.reactive.pairs import TrackedPair
 from kagome.reactive.topology import (
     BondTopology, apply_vinyl_addition, vinyl_addition_over_coordinates,
 )
@@ -1135,14 +1136,23 @@ class PolymerizationWorkflow:
                 and state.cell is not None
                 and self.barostat.should_attempt(step_in_phase)):
             bias_fn = None
+            reuse_bias: float | None = None
             if active_pairs is not None and boost is not None and tdbb is not None:
                 def bias_fn(pos, bx):
                     return total_bias_fast(active_pairs, pos, boost, tdbb, bx)[0]
+                # ``bias_energy`` above was computed by total_bias_fast from the
+                # SAME (state.positions, box, active_pairs, boost, tdbb) that the
+                # barostat's old_bias would use: post_force only mutated
+                # velocities, so positions/cell are unchanged here. It is thus
+                # bit-identical to bias_energy_fn(state.positions, box) and can be
+                # reused, skipping one redundant total_bias_fast evaluation.
+                reuse_bias = bias_energy
             accepted, new_base_e, new_base_f = self.barostat.try_step(
                 state.positions, state.species, state.cell,
                 base_energy, self.calculator, rng,
                 _integrator_temperature(self.integrator, state),
                 bias_energy_fn=bias_fn,
+                current_bias_energy=reuse_bias,
             )
             if accepted and new_base_f is not None:
                 base_energy = new_base_e
@@ -1485,11 +1495,15 @@ class PolymerizationWorkflow:
             if dropped_ids:
                 self._write_valence_drop_audit(cycle, len(dropped_ids))
 
-        active_pairs = self._build_pair_biases(selected, state.species)
+        tracked_pairs = self._build_pair_biases(selected, state.species)
+        # The bias kernels see only the minimal PairBias; BondTracker and the
+        # audit log see the metadata-carrying TrackedPair. Same ordering, so
+        # pair_dists indices align across both views.
+        kernel_pairs = [tp.bias for tp in tracked_pairs]
 
         if self.bond_tracker:
             self.bond_tracker.record_attempts(
-                active_pairs, state.positions, state.step, cycle, state.cell,
+                tracked_pairs, state.positions, state.step, cycle, state.cell,
             )
 
         boost = BoostState()
@@ -1502,11 +1516,11 @@ class PolymerizationWorkflow:
             state.positions, state.species, state.cell,
         )
         bias_energy, bias_forces, _ = total_bias_fast(
-            active_pairs, state.positions, boost, self.config.tdbb, box,
+            kernel_pairs, state.positions, boost, self.config.tdbb, box,
         )
         current_forces = base_forces + bias_forces
 
-        form_indices = {i for i, p in enumerate(active_pairs) if p.is_formation}
+        form_indices = {i for i, p in enumerate(kernel_pairs) if p.is_formation}
         min_form_dist = float('inf')
 
         watchdog = StepWatchdog()
@@ -1522,7 +1536,7 @@ class PolymerizationWorkflow:
             watchdog.arm()
             base_energy, bias_energy, current_forces, pair_dists = self._md_step(
                 state, current_forces, dt, rng, step_in_phase,
-                active_pairs=active_pairs, boost=boost, tdbb=self.config.tdbb,
+                active_pairs=kernel_pairs, boost=boost, tdbb=self.config.tdbb,
                 box=box,
             )
             watchdog.step_done(phase='biased', cycle=cycle, step=state.step)
@@ -1563,7 +1577,7 @@ class PolymerizationWorkflow:
                 # only then, so the amide and its leaving groups are committed
                 # together at unbiased confirmation and the amide cannot revert.
                 fired = self.bond_tracker.check_reactions_during_bias(
-                    active_pairs, state.positions, state.step, cycle, state.cell,
+                    tracked_pairs, state.positions, state.step, cycle, state.cell,
                     pair_dists=pair_dists,
                 )
                 if fired:
@@ -1896,9 +1910,12 @@ class PolymerizationWorkflow:
             logger.warning('Activation: no C-N candidates found.')
             return []
 
-        pairs = self._build_pair_biases(
+        tracked_pairs = self._build_pair_biases(
             selected, state.species, template=activation_template,
         )
+        # Activation only needs the kernel view (V^d on azo C-N) plus atom
+        # indices; the metadata (candidate_id<0 etc.) is unused here.
+        pairs = [tp.bias for tp in tracked_pairs]
 
         logger.info(
             'Activation: %d candidates, %d selected, %d V^d pairs',
@@ -1992,9 +2009,17 @@ class PolymerizationWorkflow:
         species: list[str],
         *,
         template: ReactionTemplate | None = None,
-    ) -> list[PairBias]:
+    ) -> list[TrackedPair]:
+        """Build the biased pairs for the selected candidates.
+
+        Returns :class:`TrackedPair` objects carrying the reaction-accounting
+        metadata BondTracker and the audit log consume.  The bias kernels take
+        only the composed minimal ``PairBias`` — the caller extracts them via
+        ``[tp.bias for tp in tracked]`` so the numerical kernel never sees the
+        accounting fields (candidate_id / counts_as_reaction / is_trigger).
+        """
         template = template or self.template
-        pairs: list[PairBias] = []
+        pairs: list[TrackedPair] = []
         label_list = template.groups
 
         for cand_idx, cand in enumerate(selected):
@@ -2018,13 +2043,15 @@ class PolymerizationWorkflow:
                     self.config.tdbb.lambda_vdw,
                 )
 
-                pairs.append(PairBias(
-                    idx_a=atom_a,
-                    idx_b=atom_b,
-                    is_formation=ps.is_formation,
-                    r0=r0,
+                pairs.append(TrackedPair(
+                    bias=PairBias(
+                        idx_a=atom_a,
+                        idx_b=atom_b,
+                        is_formation=ps.is_formation,
+                        r0=r0,
+                    ),
                     candidate_id=cand_idx,
-                    counts_as_reaction=ps.count_as_reaction,
+                    counts_as_reaction=ps.counts_as_reaction,
                     is_trigger=ps.score_pair,
                 ))
         return pairs
