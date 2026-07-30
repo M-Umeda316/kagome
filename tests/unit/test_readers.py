@@ -78,9 +78,10 @@ class TestReadBondEvents:
         import numpy as np
         from kagome.boost.tdbb import PairBias
         from kagome.reactive.bonds import BondTracker
+        from kagome.reactive.pairs import TrackedPair
 
         tracker = BondTracker(threshold_fraction=1.3)
-        pairs = [PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0)]
+        pairs = [TrackedPair(PairBias(idx_a=0, idx_b=1, is_formation=True, r0=2.0))]
         positions = np.array([[0.0, 0.0, 0.0], [3.5, 0.0, 0.0]])
 
         tracker.record_attempts(pairs, positions, step=0, cycle=0)

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from kagome.geometry import minimum_image
+from kagome.geometry import minimum_image_fast, validated_box
 from kagome.reactive.groups import ReactiveGroup, ReactionTemplate, PairSpec
 from kagome.reactive.topology import BondTopology
 
@@ -26,9 +26,16 @@ def _distance(
     positions: NDArray[np.floating],
     i: int,
     j: int,
-    cell: NDArray[np.floating] | None = None,
+    box: NDArray[np.floating] | None = None,
 ) -> float:
-    r_vec = minimum_image(positions[j] - positions[i], cell)
+    """Minimum-image distance between atoms *i* and *j*.
+
+    ``box`` is a prevalidated (3,) diagonal from ``validated_box`` (the
+    orthorhombicity check is hoisted to ``find_candidates`` and done once),
+    so this uses ``minimum_image_fast``.  Numerically identical to the previous
+    per-pair ``minimum_image`` — same ``r - box*round(r/box)`` rounding.
+    """
+    r_vec = minimum_image_fast(positions[j] - positions[i], box)
     return float(np.linalg.norm(r_vec))
 
 
@@ -68,10 +75,14 @@ def find_candidates(
             else:
                 dissociation_group_pairs.add(key)
 
+    # Validate the orthorhombic cell once here; every _distance call reuses the
+    # resulting (3,) box via minimum_image_fast (numerically identical).
+    box = validated_box(cell)
+
     candidates: list[Candidate] = []
     _enumerate_recursive(
         group_atoms, label_list, pair_specs, positions, candidates,
-        depth=0, chosen=[], running_score=0.0, cell=cell,
+        depth=0, chosen=[], running_score=0.0, box=box,
         topology=topology, formation_group_pairs=formation_group_pairs,
         dissociation_group_pairs=dissociation_group_pairs,
     )
@@ -87,7 +98,7 @@ def _enumerate_recursive(
     depth: int,
     chosen: list[int],
     running_score: float,
-    cell: NDArray[np.floating] | None = None,
+    box: NDArray[np.floating] | None = None,
     topology: BondTopology | None = None,
     formation_group_pairs: set[tuple[int, int]] | None = None,
     dissociation_group_pairs: set[tuple[int, int]] | None = None,
@@ -110,7 +121,7 @@ def _enumerate_recursive(
             if key not in pair_specs:
                 continue
             ps = pair_specs[key]
-            d = _distance(positions, chosen[prev_depth], atom_idx, cell)
+            d = _distance(positions, chosen[prev_depth], atom_idx, box)
             if d < ps.r_min or d > ps.r_max:
                 ok = False
                 break
@@ -139,7 +150,7 @@ def _enumerate_recursive(
         chosen.append(atom_idx)
         _enumerate_recursive(
             group_atoms, label_list, pair_specs, positions, out,
-            depth + 1, chosen, running_score + added_score, cell=cell,
+            depth + 1, chosen, running_score + added_score, box=box,
             topology=topology, formation_group_pairs=formation_group_pairs,
             dissociation_group_pairs=dissociation_group_pairs,
         )

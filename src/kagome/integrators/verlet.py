@@ -6,7 +6,7 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from kagome.geometry import validated_box, wrap_positions_fast
+from kagome.geometry import validated_box_cached, wrap_positions_fast
 from kagome.units import force_to_accel_fast, precompute_inv_masses
 
 
@@ -46,6 +46,7 @@ class VelocityVerletIntegrator:
         self._inv_masses: NDArray[np.floating] | None = None
         self._cached_masses: NDArray[np.floating] | None = None
         self._box: NDArray[np.floating] | None = None
+        self._cached_cell: NDArray[np.floating] | None = None
 
     def _get_inv_masses(self, masses: NDArray[np.floating] | None) -> NDArray[np.floating] | None:
         if masses is not self._cached_masses:
@@ -54,13 +55,11 @@ class VelocityVerletIntegrator:
         return self._inv_masses
 
     def _get_box(self, cell: NDArray[np.floating] | None) -> NDArray[np.floating] | None:
-        if cell is None:
-            return None
-        box = validated_box(cell)
-        if box is None:
-            return None
-        if self._box is None or self._box[0] != box[0] or self._box[1] != box[1] or self._box[2] != box[2]:
-            self._box = box
+        # Validate only on a cell content change; unchanged steps reuse the
+        # cached box (see geometry.validated_box_cached).
+        self._box, self._cached_cell = validated_box_cached(
+            cell, self._cached_cell, self._box,
+        )
         return self._box
 
     def pre_force(

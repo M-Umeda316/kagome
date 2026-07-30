@@ -918,7 +918,7 @@ def build_nylon66_system(
             PairSpec(
                 group_a='amine_H', group_b='carboxyl_OH',
                 is_formation=True, r_min=0.0, r_max=100.0,
-                score_pair=False, count_as_reaction=False,
+                score_pair=False, counts_as_reaction=False,
             ),
         ],
     )
@@ -1073,7 +1073,7 @@ def build_epoxy_amine_system(
             PairSpec(
                 group_a='amine_H', group_b='ring_O',
                 is_formation=True, r_min=0.0, r_max=100.0,
-                score_pair=False, count_as_reaction=False,
+                score_pair=False, counts_as_reaction=False,
             ),
         ],
     )

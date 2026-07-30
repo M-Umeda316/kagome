@@ -93,10 +93,17 @@ def fit_conversion_exponential(
 
     Eq. 11 (PDF p.9): α(t) = 1 - exp(-k*_p · t)
 
+    The ``timestep_fs`` default (0.25) is a fallback ONLY; callers must pass the
+    run's actual timestep explicitly, since kp_eff scales inversely with it and a
+    wrong value silently distorts the fitted rate. reproduce_figures.py resolves
+    the timestep (CLI > manifest > 1.0) and always passes it here — the two
+    defaults deliberately differ and neither is authoritative.
+
     Args:
         steps:       step indices (integer), shape (N,)
         alpha:       conversion values in [0, 1], shape (N,)
-        timestep_fs: MD timestep in fs (converts steps -> physical time)
+        timestep_fs: MD timestep in fs (converts steps -> physical time).
+                     Fallback default only; pass the run's real value.
         production_start_step: global step at which production begins;
             subtracted from *steps* before converting to physical time
             so the fit starts at t=0 (L8).

@@ -48,6 +48,7 @@ _INSTALL_TO_IMPORT: dict[str, list[str]] = {
     'rdkit': ['rdkit'],
     'pyyaml': ['yaml'],
     'nvalchemiops': ['nvalchemiops'],
+    'aimnet': ['aimnet'],
     'pfp': ['pfp', 'matlantis'],
     # MACE-OFF23 is selected by model string, not a distinct import, so it cannot
     # be detected by import scanning — see the `detect_strings` field in the YAML.

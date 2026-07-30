@@ -58,6 +58,30 @@ class TestTrajectoryWriter:
         assert writer.should_write(100) is False
         writer.close()
 
+    def test_flush_persists_frames_before_close(self, tmp_path):
+        """flush() makes buffered frames durable without close() (SIGKILL/OOM
+        safety at cycle boundaries)."""
+        path = tmp_path / 'traj.jsonl'
+        writer = TrajectoryWriter(path, species=['C', 'C'], save_interval=1)
+        writer.write_frame(_make_frame(step=0))
+        writer.write_frame(_make_frame(step=1))
+        writer.flush()
+
+        # Read while the writer is still OPEN: without flush the frames could sit
+        # in the write buffer and be lost on an abrupt kill.
+        lines = path.read_text(encoding='utf-8').strip().split('\n')
+        assert len(lines) == 3  # header + 2 frames
+        assert json.loads(lines[1])['step'] == 0
+        assert json.loads(lines[2])['step'] == 1
+        writer.close()
+
+    def test_flush_after_close_is_safe(self, tmp_path):
+        """flush() after close() is a no-op, not a ValueError on a closed file."""
+        path = tmp_path / 'traj.jsonl'
+        writer = TrajectoryWriter(path, species=['C'], save_interval=1)
+        writer.close()
+        writer.flush()  # must not raise
+
     def test_metadata_in_header(self, tmp_path):
         path = tmp_path / 'traj.jsonl'
         writer = TrajectoryWriter(

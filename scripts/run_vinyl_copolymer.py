@@ -598,6 +598,7 @@ def main() -> None:
         f'--bonds {args.output_dir}/bonds.jsonl '
         f'--n-reactive-sites {n_monomers} '
         f'--target-temperature {args.temperature} '
+        f'--timestep-fs {args.timestep_fs} '
         f'--output-dir {args.output_dir}/figures'
     )
 

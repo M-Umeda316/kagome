@@ -60,14 +60,8 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src:${PYTHONPATH:-}"
-
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
-
-# Interpreter: override with PYTHON=/abs/path/to/python for a specific conda env.
-PYTHON="${PYTHON:-python}"
+# shellcheck source=scripts/_paper_scale_common.sh
+source "$(dirname "$0")/_paper_scale_common.sh"
 
 # Source calibrated parameters if available (from calibrate_tdbb.py).
 # These set ACTIVATION_F2, ACTIVATION_F1_MAX, ACTIVATION_STEPS, F2,
@@ -97,25 +91,15 @@ ACTIVATION_STEPS="${ACTIVATION_STEPS:-5000}"
 # RESUME=1 continues from ${OUTPUT_DIR}/checkpoint.pkl after a killed run
 # (skips build-time activation, restarts at the saved cycle). Checkpoints are
 # written every cycle by default.
-RESUME="${RESUME:-0}"
-RESUME_FLAG=""
-if [ "${RESUME}" = "1" ]; then RESUME_FLAG="--resume"; fi
+build_resume_flag
 
-# ─── Perf flags (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix) ─
-# NO_EMPTY_CACHE=1 (default): skip per-step torch.cuda.empty_cache(). On WSL,
-#   expandable_segments absorbs fragmentation (reserved flat over 1000 steps,
-#   1.29-1.41x faster) — the measured recommended operation for WSL runs.
-#   Set NO_EMPTY_CACHE=0 only on Windows-native python, where
-#   expandable_segments is a no-op (historical 2026-06-15 fragmentation hang).
-# COMPILE=1 (opt-in, default 0): torch.compile — 1.24x alone, 1.65x combined
-#   with NO_EMPTY_CACHE=1, and ~8% less VRAM. Forces match eager within the
-#   TF32 noise floor. Kept opt-in until the first long soak on a production
-#   workload (bond formation + resume) per decisions.md 2026-07-23.
-NO_EMPTY_CACHE="${NO_EMPTY_CACHE:-1}"
-COMPILE="${COMPILE:-0}"
-PERF_FLAGS=""
-if [ "${NO_EMPTY_CACHE}" = "1" ]; then PERF_FLAGS="--no-empty-cache"; fi
-if [ "${COMPILE}" = "1" ]; then PERF_FLAGS="${PERF_FLAGS} --compile"; fi
+# Perf flags: see _paper_scale_common.sh for NO_EMPTY_CACHE/COMPILE rationale
+# (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix; historical
+# 2026-06-15 fragmentation hang on Windows-native python is why NO_EMPTY_CACHE=0
+# should stay reserved for that case). COMPILE=1 kept opt-in until the first
+# long soak on a production workload (bond formation + resume) per
+# decisions.md 2026-07-23.
+build_perf_flags
 
 echo "=== S6 paper-scale run ==="
 echo "  Seed:           ${SEED}"
@@ -130,14 +114,7 @@ echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off
 echo ""
 
 # Warn if VRAM might be insufficient
-if command -v nvidia-smi &>/dev/null; then
-    VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
-    VRAM_GB=$(echo "scale=1; ${VRAM_MB:-0} / 1024" | bc 2>/dev/null || echo "?")
-    echo "  GPU VRAM:       ${VRAM_GB} GB (200+10 system: measured peak ~9.8 GB on WSL)"
-    if [ "${VRAM_MB:-0}" -lt 12000 ] 2>/dev/null; then
-        echo "  WARNING: VRAM may be insufficient. Consider --n-monomers 100 --n-initiators 5 (half scale)."
-    fi
-fi
+check_vram 12000 "S6 200+10 system; measured peak ~9.8 GB on WSL — consider --n-monomers 100 --n-initiators 5 (half scale) if insufficient"
 
 echo ""
 echo "Starting run..."

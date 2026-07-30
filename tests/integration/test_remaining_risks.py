@@ -448,24 +448,48 @@ class TestR3_CheckpointResumeIntegration:
                 assert isinstance(item[2], bool), f'Third element should be bool, got {type(item[2])}'
 
     def test_topology_preserved_across_resume(self, tmp_path):
-        """Topology state survives checkpoint/resume."""
+        """Topology survives checkpoint/resume: the checkpoint stores the exact
+        connectivity at the cycle boundary, and a resumed run reaches the SAME
+        final topology as an uninterrupted run (bit-exact resume — specs/
+        decisions.md 2026-07-02).
+        """
+        # Uninterrupted 4-cycle reference topology.
+        out_full = tmp_path / 'full'
+        out_full.mkdir()
+        wf_full, state_full, _ = self._nylon_wf(4)
+        wf_full.run(state_full, output_dir=out_full, config_path='test')
+        assert wf_full._topology is not None
+        topo_ref = set((i, j) for i, j, _ in wf_full._topology.bonds())
+
+        # First leg: 2 cycles, writing a checkpoint each cycle ("crash").
         ckpt = tmp_path / 'checkpoint.pkl'
         out1 = tmp_path / 'out1'
         out1.mkdir()
-
         wf_a, state_a, _ = self._nylon_wf(2)
         wf_a.run(state_a, output_dir=out1, checkpoint_path=ckpt, config_path='test')
-        topo_before = wf_a._topology
+        assert ckpt.exists()
+        bonds_2cyc = set((i, j) for i, j, _ in wf_a._topology.bonds())
 
-        if ckpt.exists() and topo_before is not None:
-            bonds_before = set((i, j) for i, j, _ in topo_before.bonds())
+        # The checkpoint must carry the EXACT 2-cycle connectivity (resume rebuilds
+        # BondTopology from this list, not from a re-derived or empty graph).
+        with open(ckpt, 'rb') as f:
+            ckpt_data = pickle.load(f)
+        ckpt_bonds = set((i, j) for i, j, _ in ckpt_data['topology_bonds'])
+        assert ckpt_bonds == bonds_2cyc
 
-            out2 = tmp_path / 'out2'
-            out2.mkdir()
-            wf_b, state_b, _ = self._nylon_wf(4)
-            wf_b.run(state_b, output_dir=out2, checkpoint_path=ckpt, resume=True, config_path='test')
-
-            topo_after_resume_start = set(
-                (i, j) for i, j, _ in wf_b._topology.bonds()
-            )
-            assert bonds_before.issubset(topo_after_resume_start) or True
+        # Second leg: fresh objects, resume to 4 cycles. The resumed final topology
+        # must equal the uninterrupted reference exactly.
+        #
+        # Note: we deliberately do NOT assert bonds_2cyc ⊆ topo_resumed. A
+        # condensation cycle legitimately REMOVES leaving-group bonds (N-H, C-OH)
+        # via confirmed dissociations (_apply_topology_updates), so a bond present
+        # after cycle 2 can be gone by cycle 4. The invariant that actually holds
+        # across resume is resumed-final == uninterrupted-final, which the old
+        # `... or True` assertion never checked.
+        out2 = tmp_path / 'out2'
+        out2.mkdir()
+        wf_b, state_b, _ = self._nylon_wf(4)
+        wf_b.run(state_b, output_dir=out2, checkpoint_path=ckpt, resume=True, config_path='test')
+        assert wf_b._topology is not None
+        topo_resumed = set((i, j) for i, j, _ in wf_b._topology.bonds())
+        assert topo_resumed == topo_ref

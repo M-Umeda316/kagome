@@ -50,13 +50,8 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src:${PYTHONPATH:-}"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
-
-# Interpreter: override with PYTHON=/abs/path/to/python for a specific conda env.
-PYTHON="${PYTHON:-python}"
+# shellcheck source=scripts/_paper_scale_common.sh
+source "$(dirname "$0")/_paper_scale_common.sh"
 
 SEED="${SEED:-7}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/copolymer_seed${SEED}}"
@@ -80,29 +75,17 @@ TEMPERATURE="${TEMPERATURE:-333.0}"
 MINIMIZE_FMAX="${MINIMIZE_FMAX:-1.0}"
 
 # NVT by default (validated). BAROSTAT=1 -> NPT at PRESSURE atm.
-BAROSTAT_FLAG=""
-if [ "${BAROSTAT:-0}" = "1" ]; then BAROSTAT_FLAG="--barostat --pressure ${PRESSURE:-1.0}"; fi
+build_barostat_flag nvt
 
 # RESUME=1 continues from ${OUTPUT_DIR}/checkpoint.pkl after a killed run.
-RESUME_FLAG=""
-if [ "${RESUME:-0}" = "1" ]; then RESUME_FLAG="--resume"; fi
+build_resume_flag
 
-# ─── Perf flags (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix) ─
-# Applied only for the orb backend (the toy smoke path has no CUDA cache).
-# NO_EMPTY_CACHE=1 (default): skip per-step torch.cuda.empty_cache(). On WSL,
-#   expandable_segments absorbs fragmentation (reserved flat, 1.29-1.41x faster)
-#   — the measured recommended operation for WSL runs. Set NO_EMPTY_CACHE=0 only
-#   on Windows-native python, where expandable_segments is a no-op.
-# COMPILE=1 (opt-in, default 0): torch.compile — 1.24x alone, 1.65x combined
-#   with NO_EMPTY_CACHE=1, and ~8% less VRAM. Forces match eager within the
-#   TF32 noise floor. Kept opt-in until the first long soak on a production
-#   workload (bond formation + resume) per decisions.md 2026-07-23.
-NO_EMPTY_CACHE="${NO_EMPTY_CACHE:-1}"
-COMPILE="${COMPILE:-0}"
+# Perf flags: see _paper_scale_common.sh for NO_EMPTY_CACHE/COMPILE rationale
+# (decisions.md 追補 2026-07-22/23, runs/scaleup_a + scaleup_matrix). Applied
+# only for the orb backend (the toy smoke path has no CUDA cache).
 PERF_FLAGS=""
 if [ "${BACKEND}" = "orb" ]; then
-    if [ "${NO_EMPTY_CACHE}" = "1" ]; then PERF_FLAGS="--no-empty-cache"; fi
-    if [ "${COMPILE}" = "1" ]; then PERF_FLAGS="${PERF_FLAGS} --compile"; fi
+    build_perf_flags
 fi
 
 # MIX=1 enables the well-mixed measurement mode (--mix): a classical OpenMM
@@ -131,14 +114,7 @@ echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off
 echo "  Mixing:         $( [ -n "${MIX_FLAG}" ] && echo 'on (--mix, CLI defaults: 25 ps)' || echo off )"
 echo ""
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-    VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
-    echo "  GPU VRAM: ${VRAM_MB:-?} MB (~1500-atom default wants >=16 GB; shrink N_ACRYLATE/N_METHACRYLATE if OOM)"
-    if [ "${VRAM_MB:-0}" -lt 12000 ] 2>/dev/null; then
-        echo "  WARNING: <12 GB VRAM — reduce system, e.g. N_ACRYLATE=20 N_METHACRYLATE=20 N_INITIATORS=2."
-    fi
-    echo ""
-fi
+check_vram 16000 "vinyl copolymer ~1500-atom default; wants >=16 GB — shrink N_ACRYLATE/N_METHACRYLATE/N_INITIATORS if OOM, e.g. N_ACRYLATE=20 N_METHACRYLATE=20 N_INITIATORS=2"
 
 echo "Starting run..."
 "${PYTHON}" scripts/run_vinyl_copolymer.py \
@@ -169,11 +145,13 @@ echo "Starting run..."
 
 echo ""
 echo "Run complete. Generating figures..."
+# n-reactive-sites is intentionally omitted: reproduce_figures.py auto-reads
+# the true count from the trajectory header, and passing an explicit value
+# here would overwrite that (correct) figure with a stale/manual one.
 "${PYTHON}" scripts/reproduce_figures.py \
     --trajectory "${OUTPUT_DIR}/trajectory.jsonl" \
     --bonds "${OUTPUT_DIR}/bonds.jsonl" \
     --summary "${OUTPUT_DIR}/summary.json" \
-    --n-reactive-sites "${N_MONOMERS}" \
     --target-temperature "${TEMPERATURE}" \
     --timestep-fs "${TIMESTEP_FS}" \
     --output-dir "${OUTPUT_DIR}/figures"

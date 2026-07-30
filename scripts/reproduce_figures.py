@@ -36,6 +36,7 @@ from kagome.analysis.network import (
     gel_point_flory_stockmayer,
     largest_component_fraction,
     load_topology_snapshots,
+    max_inter_monomer_degree,
     species_series,
 )
 from kagome.io.readers import (
@@ -329,7 +330,7 @@ def plot_density_profile(
     """
     events = read_bond_events(bonds_path)
     # A5: rho_rxn is the density of *reactions*. Exclude water-forming (and other
-    # count_as_reaction=False) formation events so a condensation reaction is
+    # counts_as_reaction=False) formation events so a condensation reaction is
     # placed once, at its primary bond. Missing field -> True (vinyl unaffected).
     formations = [
         e for e in events
@@ -741,6 +742,60 @@ def _infer_production_start_step(manifest_path: Path) -> int | None:
     return int(equil or 0) + int(activation or 0)
 
 
+def _infer_timestep_fs(manifest_path: Path) -> float | None:
+    """Best-effort MD timestep (fs) from a run's manifest.json.
+
+    Reads ``extra['timestep_fs']`` — the workflow serializes PolymerizationConfig
+    (which carries ``timestep_fs``) into the manifest's ``extra`` block. Returns
+    None when the manifest is missing or lacks the field, so the caller can warn
+    and fall back to a default. Mirrors :func:`_infer_production_start_step`.
+    """
+    import json
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    extra = data.get('extra') or {}
+    ts = extra.get('timestep_fs')
+    if ts is None:
+        return None
+    return float(ts)
+
+
+def _resolve_timestep_fs(
+    cli_timestep_fs: float | None,
+    trajectory: Path | None,
+    bonds: Path | None,
+    topology: Path | None,
+) -> float:
+    """Single source of truth for the MD timestep used by the time-axis figures.
+
+    Priority (approved 2026-07-30): explicit ``--timestep-fs`` > manifest.json
+    ``extra['timestep_fs']`` (looked up next to bonds/trajectory/topology) >
+    1.0 fs. The last case emits a warning because the ps time axis (Eq. 11 fit,
+    species traces) would be inaccurate.
+    """
+    if cli_timestep_fs is not None:
+        return cli_timestep_fs
+    manifest_dir = None
+    for candidate in (bonds, trajectory, topology):
+        if candidate is not None:
+            manifest_dir = candidate.parent
+            break
+    inferred = (_infer_timestep_fs(manifest_dir / 'manifest.json')
+                if manifest_dir is not None else None)
+    if inferred is None:
+        print(
+            'WARNING: --timestep-fs not given and could not be inferred from '
+            'manifest.json; using 1.0 fs. The time axis (ps) may be inaccurate '
+            '-- pass --timestep-fs with the run\'s actual value.'
+        )
+        return 1.0
+    return inferred
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Reproduce figures from trajectory')
     parser.add_argument('--trajectory', type=Path, default=None)
@@ -759,8 +814,11 @@ def main() -> None:
                         help='Deprecated alias for --n-reactive-sites.')
     parser.add_argument('--target-temperature', type=float, default=None,
                         help='Target temperature in K for reference line in temperature plot')
-    parser.add_argument('--timestep-fs', type=float, default=1.0,
-                        help='MD timestep in fs (for Eq. 11 exponential fit). Default 1.0.')
+    parser.add_argument('--timestep-fs', type=float, default=None,
+                        help='MD timestep in fs (for the Eq. 11 fit and species '
+                             'time axis). If omitted, inferred from manifest.json '
+                             "(extra['timestep_fs']); if that is unavailable, "
+                             'defaults to 1.0 with a warning.')
     parser.add_argument('--production-start-step', type=int, default=None,
                         dest='production_start_step',
                         help='Global step where production (the cycle loop) begins; '
@@ -798,6 +856,12 @@ def main() -> None:
     if args.trajectory is not None and not args.trajectory.exists():
         print(f'Trajectory file not found: {args.trajectory}')
         return
+
+    # Resolve the MD timestep once (CLI > manifest > 1.0) so the Eq. 11 fit and
+    # the species time axis share one authoritative value (approved 2026-07-30).
+    timestep_fs = _resolve_timestep_fs(
+        args.timestep_fs, args.trajectory, args.bonds, args.topology,
+    )
 
     if args.trajectory is not None:
         plot_energy_vs_step(args.trajectory, args.output_dir)
@@ -847,7 +911,7 @@ def main() -> None:
             n_sites = n_atoms
 
         plot_conversion_vs_step(args.bonds, n_sites, args.output_dir,
-                               timestep_fs=args.timestep_fs,
+                               timestep_fs=timestep_fs,
                                production_start_step=production_start,
                                step_range=step_range)
         plot_density_profile(
@@ -867,11 +931,28 @@ def main() -> None:
                     summary_path.read_text(encoding='utf-8'))
             except (OSError, json.JSONDecodeError):
                 is_step_growth = False
-        if is_step_growth and topo_path.exists():
-            plot_dpn_vs_conversion(args.bonds, topo_path, n_sites, args.output_dir)
-        elif args.topology is not None and topo_path.exists():
-            # Explicit --topology overrides the auto-detection guard.
-            plot_dpn_vs_conversion(args.bonds, topo_path, n_sites, args.output_dir)
+        want_dpn = (is_step_growth or args.topology is not None) and topo_path.exists()
+        if want_dpn:
+            # Carothers DPn = 1/(1-p) assumes LINEAR step-growth. A branched
+            # network (epoxy-amine, functionality f>2) has monomers bonded to
+            # more than two neighbours; the theory does not apply, so skip the
+            # plot with a clear warning rather than emit a misleading figure
+            # (approved 2026-07-30). Linear systems (nylon) are unaffected.
+            snaps = load_topology_snapshots(topo_path)
+            max_deg = (
+                max_inter_monomer_degree(
+                    snaps[-1][2], monomer_sets_from_bonds(snaps[0][2]))
+                if snaps else 0
+            )
+            if max_deg > 2:
+                print(
+                    f'WARNING: branching detected (max inter-monomer bonds per '
+                    f'monomer = {max_deg}); Carothers DPn plot assumes linear '
+                    f'step-growth -- skipped.'
+                )
+            else:
+                plot_dpn_vs_conversion(
+                    args.bonds, topo_path, n_sites, args.output_dir)
 
     if args.species_figures:
         if args.topology is None or not args.topology.exists():
@@ -885,7 +966,7 @@ def main() -> None:
         if species is not None:
             plot_species_concentrations(
                 args.topology, species, args.output_dir,
-                timestep_fs=args.timestep_fs,
+                timestep_fs=timestep_fs,
             )
             plot_gel_curve(args.topology, species, args.output_dir)
 

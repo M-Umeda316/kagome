@@ -38,12 +38,13 @@ class PairSpec:
         is_formation/constraint_only.  Use for nylon k-l (H-OH water
         formation) which is bias-only per Table S2 (Eq. 7: d_ijkl = r_ij +
         r_ik + r_jl, 3 terms fixed).
-    count_as_reaction: if False, confirmed formations of this pair are NOT
+    counts_as_reaction: if False, confirmed formations of this pair are NOT
         counted toward alpha(t) / Carothers p.  The bias and topology effect
         are unchanged.  Use for nylon k-l (amine_H-carboxyl_OH, water O-H
         formation): one condensation = one amide bond (amine_N-carboxyl_C),
         so the paired water-forming event must not be double-counted
-        (specs/decisions.md 2026-07-06, A5).
+        (specs/decisions.md 2026-07-06, A5).  Name matches
+        ``PairBias``/``TrackedPair``/``BondEvent.counts_as_reaction``.
     """
     group_a: str
     group_b: str
@@ -52,7 +53,7 @@ class PairSpec:
     r_max: float = 5.0
     constraint_only: bool = False
     score_pair: bool = True
-    count_as_reaction: bool = True
+    counts_as_reaction: bool = True
 
 
 @dataclass

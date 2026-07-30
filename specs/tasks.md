@@ -83,6 +83,12 @@ Rationale: the all-ML pipeline spent ~1-2k expensive ML evals on packing/densifi
 2. Produce on Windows GPU: `<pfpoly-gpu>/python scripts/run_vinyl_aibn.py --load-structure runs/prep/paper100.json --n-monomers 100 --n-initiators 5 --seed 42 --backend orb --device cuda --no-barostat --n-cycles 3 --biased-steps 2000 --unbiased-steps 2000 --equil-steps 2000 --output-dir runs/vinyl_aibn_paper100`
 3. Figures: `scripts/reproduce_figures.py --trajectory ...trajectory.jsonl --bonds ...bonds.jsonl --n-reactive-sites 205 --target-temperature 333 --output-dir .../figures`
 
+Note (2026-07-30): the driver's `--f2` default has changed from 10.0 to 2.0
+(decisions.md 2026-06-26/2026-07-30). The command in step 2 above does not
+pass `--f2`, so it now runs at the current default (2.0), not the paper value
+(10.0) it was originally recorded with. To reproduce with the paper's f2=10.0,
+pass `--f2 10.0` explicitly.
+
 ### RESOLVED (2026-06-15): formations=0 diagnosed; first bond demonstrated
 - PDF Table S1 confirms the [3,6] window is paper-correct (earlier "window bug" hypothesis withdrawn).
 - Fix A implemented: in-phase reaction detection during the biased phase + run-until-reaction (paper §2.2 step 3).

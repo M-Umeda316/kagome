@@ -77,12 +77,13 @@ def main() -> None:
     parser.add_argument('--n-cycles', type=int, default=3)
     parser.add_argument('--biased-steps', type=int, default=500)
     parser.add_argument('--unbiased-steps', type=int, default=500)
-    parser.add_argument('--f2', type=float, default=10.0,
-                        help='TDBB Gaussian width f2 (Å⁻²). Paper default 10.0. With '
-                             'OrbMol-v2 the amine_N–carboxyl_C formation bias has a '
-                             'capture-shell dead-zone at f2=10 (force ≈0 in the [3,6] Å '
-                             'candidate window; decisions.md 2026-07-08) — use ~2 for '
-                             'OrbMol production, mirroring the vinyl/MA recipe.')
+    parser.add_argument('--f2', type=float, default=2.0,
+                        help='TDBB Gaussian width f2 (Å⁻²). Default 2.0 for OrbMol-v2: the '
+                             'paper value 10.0 leaves the amine_N–carboxyl_C formation bias '
+                             'in a capture-shell dead-zone (force ≈0 across the [3,6] Å '
+                             'candidate window) so no amide bond forms; f2=2 bridges it, '
+                             'mirroring the vinyl/MA recipe. For a paper-faithful run pass '
+                             '--f2 10.0 explicitly. See decisions.md 2026-07-08 / 2026-07-30.')
     # Pre-TDBB relaxation of the classical-compressed dense structure. The
     # compressed 0.5 g/mL box carries close intermolecular contacts (fmax
     # ~60 kcal/mol/Å, unconverged) whose extreme forces segfault the MLIP on the
@@ -113,6 +114,18 @@ def main() -> None:
                         help='Initial density (g/mL). Paper SI S-3 uses 0.5. Used only '
                              'when --box-size is omitted.')
     parser.add_argument('--temperature', type=float, default=300.0)
+    parser.add_argument('--friction-per-fs', type=float, default=0.01,
+                        help='Langevin friction (1/fs). Default 0.01 as the cooling '
+                             'lever for the OrbMol f2=2 recipe: the TDBB bias work + '
+                             'condensation exotherm accumulates under the paper-faithful '
+                             '0.001, the same overheating seen in the epoxy 549 K smoke '
+                             '(decisions.md 2026-07-07 friction / 2026-07-30). Pass 0.001 '
+                             'to restore the paper-faithful value.')
+    parser.add_argument('--timestep-fs', type=float, default=0.25,
+                        help='MD timestep (fs). Default 0.25 fs (conservative, validated '
+                             'for FIRE densification + ML NVT; current behaviour). 1.0 fs '
+                             'is standard for organic ML MD and gives 4x speed for the '
+                             'same physical time.')
     parser.add_argument('--pressure', type=float, default=1.0)
     parser.add_argument('--no-barostat', action='store_true')
     parser.add_argument('--backend', type=str, default='orb',
@@ -250,9 +263,10 @@ def main() -> None:
     # Initial box edge for provenance (state.cell evolves under NPT during the run).
     initial_box_edge_A = float(cell[0, 0])
 
-    langevin_params = LangevinParams(temperature_K=args.temperature)
+    langevin_params = LangevinParams(
+        temperature_K=args.temperature, friction_per_fs=args.friction_per_fs)
     config = PolymerizationConfig(
-        timestep_fs=0.25,
+        timestep_fs=args.timestep_fs,
         biased_steps=args.biased_steps,
         unbiased_steps=args.unbiased_steps,
         n_cycles=args.n_cycles,
@@ -428,6 +442,7 @@ def main() -> None:
         f'--bonds {args.output_dir}/bonds.jsonl '
         f'--n-reactive-sites {n_reactive_sites} '
         f'--target-temperature {args.temperature} '
+        f'--timestep-fs {args.timestep_fs} '
         f'--output-dir {args.output_dir}/figures'
     )
 

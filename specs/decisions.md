@@ -1907,3 +1907,35 @@ empty_cache × compile の4条件+挟み込みを同日連続5本で実測(条�
 - **copolymer ランチャーに `MIX=1` → `--mix` を配線**(既定 off): CLI 側の documented defaults(mix_ps=25、WM-P5b 決定)に委譲。25 ps 既定の適用範囲限定(40モノマー系で導出、大系は要再確認)のため大規模ランチャーでは既定 off。
 - **run_s6_paper_scale.sh の修正**: PYTHONPATH に `src/` 追加(従来は repo root のみ — 環境の editable install に依存していた)、`PYTHON` 環境変数対応(他2本と対称化)、VRAM 記述を実測(paper-scale ピーク ~9.8 GB、16GB WSL で可)に更新。
 - **削除(git 履歴に残る)**: `run_s6_paper_scale.ps1`(native Windows は CPU torch で orb 不可のため死路; `specs/s6-environment-setup.md` を WSL 専用に書き換え、域外レシピ f2=5/dt=1.0fs の half-scale 例も検証済みレシピへの参照に置換)、`run_epoxy_e0_when_gpu_free.sh`(E0 完了済みの一回性 GPU 待ちラッパ、参照ゼロ)、`wm_p5b_supervisor.ps1`(P5b キャンペーン完走済み・実運用では nohup バッチ方式に置換された監督スクリプト、参照ゼロ。WSL CUDA 劣化の知見は本 decisions.md 追補 2026-07-19/22 に記録済み)。
+
+## 追補 2026-07-30 — リポジトリ全体レビュー(5領域並列)に基づく修正一式(branch review/2026-07-30-repo-review)
+
+5領域(TDBBコア/積分器・バックエンド/ワークフロー・prep・I/O/解析・スクリプト/テスト・仕様整合)の並列コードレビューを実施。コア数式(Eq.2-5,8)・積分器(BAOAB/Verlet/MC Jacobian N+1)・単位系は仕様と一致し high 級のアルゴリズム欠陥なしと確認。以下の修正を実装した。
+
+### 決定 1: `--f2` 既定値 10.0 → 2.0(run_vinyl_aibn.py / run_nylon66.py、ユーザー承認 2026-07-30)
+2026-07-08 エントリで PENDING(Ask-first)としていた項目の決着。paper 値 f2=10 は OrbMol-v2 の PES では [3,6] Å 候補窓でバイアス力 ≈0(デッドゾーン、2026-06-26)となり既定実行で結合形成が起きないため、検証済み運用値 2.0 を既定に昇格。paper 値での再現は `--f2 10.0` を明示(help に記載)。epoxy/copolymer は既に 2.0 既定で、これで 4 ドライバが整合。
+
+### 決定 2: run_nylon66.py に `--friction-per-fs` 追加(既定 0.01、ユーザー承認 2026-07-30)
+従来はフラグ自体が無く Langevin 既定 0.001 固定。f2=2 運用ではバイアス仕事+反応発熱が蓄積する(epoxy 10+5 smoke で T 目標 333K に対し平均 549K まで過熱した実測が根拠、2026-07-12)ため、epoxy と同じ 0.01 を既定とし CLI 化。paper-scale ランチャーにも `FRICTION_PER_FS` ノブとして配線。併せて `--timestep-fs`(既定 0.25、従来のハードコードと同値・挙動不変)も CLI 化。
+
+### 決定 3: 分岐系トポロジーでは Carothers DPn 図を自動スキップ(ユーザー承認 2026-07-30)
+Carothers 式(DPn = 1/(1-p))は線形逐次重合前提。明示 `--topology` 指定時に分岐系(エポキシ、f>2)でも図が生成されるレビュー指摘に対し、最終スナップショットの「モノマーあたりの相異なる隣接モノマー数」の最大値 > 2 で分岐と判定し(`analysis/network.py` の `max_inter_monomer_degree`/`is_branching_topology`、単体テストあり)、DPn 図のみスキップ+警告出力。nylon の「アミド結合+脱水結合が同一モノマーペアを二重に結ぶ」ケースは相異なる隣接数=1 と数えるため誤検出しない。線形系・species 図・他の図は不変。
+
+### 決定 4: reproduce_figures の timestep_fs 解決順 = CLI 明示 > manifest > 1.0(警告付き)
+時間軸 4 倍ずれバグ(図生成呼び出しでの `--timestep-fs 0.25` 渡し忘れ)の根本対策。manifest.json の effective_params に記録済みの timestep_fs を自動推論する `_infer_timestep_fs` を追加(`_infer_production_start_step` と同パターン)。ランチャー/ドライバ側の案内コマンドにも `--timestep-fs` を明示追加(多層防御)。
+
+### 決定 5: resume 時の JSONL truncate は破損行(JSONDecodeError)を警告付きで破棄
+従来 `_truncate_jsonl_after` はデコード不能な行を保持しており、クラッシュ時の行途中書き込みが残ると後段 `read_trajectory` が無条件例外で解析が落ちる。ヘッダ行は有効 JSON のため影響なし。併せて `TrajectoryWriter.flush()` をサイクル境界(checkpoint 直後)で呼び、SIGKILL/OOM 時のフレーム損失窓を checkpoint 粒度に揃えた(毎フレーム flush はしない)。
+
+### 決定 6: mixing graceful-skip の捕捉例外に ValueError を追加
+WM-P4 de-clash Layer 2(2026-07-18)の graceful-skip 契約は RuntimeError/OpenMMException のみ捕捉で、`write_back` の非有限座標検出(ValueError)が漏れておりワークフロー全体がクラッシュする経路だった。ValueError も同契約(当該サイクルの mixing をスキップし mixing.jsonl に記録して継続)に合流。
+
+### 運用変更(科学的内容の変更なし)
+- **paper-scale ランチャー共通化**: `scripts/_paper_scale_common.sh` 新設(REPO_ROOT/env export、perf/resume/barostat フラグビルダー、耐障害 `check_vram`)。nvidia-smi 失敗時の silent exit(set -euo pipefail 起因)を全ランチャーで解消。VRAM 警告閾値をヘッダ記述と整合(epoxy 28000 / nylon 24000 / copolymer 16000 MB)。図生成エピローグは非致命化+topology.jsonl 欠如時の縮退フォールバック。
+- **`--n-reactive-sites` の明示指定を全ランチャーから撤去**: trajectory ヘッダの正値(ワークフローが記録)自動読取に統一(s6 が先行採用済みのパターン)。シェル算術とビルダー実装の暗黙のズレを封鎖。
+- **epoxy ランチャーヘッダの「measured ~27GB」を「estimated(half-scale からの外挿)」に訂正**(実測記録なしのため)。
+- **カプセル化修正**: PostCycleUpdater に `checkpoint_state()`/`restore_checkpoint_state()` 公開 API(旧フラットキー checkpoint も復元可)、`BondTracker.record_confirmed_dissociation()` 公開メソッド(activation の `_events` 直接 append を廃止、記録内容・`_reacted` 非登録の現行挙動は不変)、監査 JSONL 4系統(selection/topology/valence-drop/mixing)を `workflows/audit.py` に抽出(出力バイト同一)。
+- **テスト強化**: MC バロスタットの bias_energy_fn 込み受理(D2 2026-07-03)を単体テスト化、`ReactionTemplate` バリデーション 3 分岐、AIMNet バックエンド最小カバレッジ、統合テストの常真アサーション(`or True`)修正 → resume 不変条件を「resume 後最終トポロジー == 無停止ランの最終トポロジー」に是正。
+- **仕様同期**: `approved_dependencies.yaml`/`pyproject.toml [aimnet]` を license matrix と同期、`claims.yaml` の実装パスを `src/kagome/...` に更新、`tasks.md` レシピに f2 既定変更の注記。
+- **数値カーネルと簿記の分離(PairBias 分割)**: `boost.tdbb.PairBias` をカーネル参照フィールド(idx_a/idx_b/is_formation/r0)のみに縮小し、反応簿記メタ(candidate_id/counts_as_reaction/is_trigger)は新設 `reactive/pairs.py` の `TrackedPair`(PairBias を合成、委譲プロパティ付き)へ移動。BondTracker 本体はバイト不変(型ヒントのみ変更)、監査 JSONL の値も不変。`PairSpec.count_as_reaction` は `counts_as_reaction` に統一リネーム。
+- **積分器・幾何の等価最適化(数値ビット同一)**: selection の候補距離計算を validated_box+minimum_image_fast 化(旧実装とビット同一を等価テストで確認)、verlet/langevin の `_get_box` を実質キャッシュ化(`geometry.validated_box_cached` に共通化)、minimize のループ内 wrap をループ外 validated_box+fast 版に。MCBarostat に直交セル検証ガード(triclinic で ValueError、verlet/langevin と対称)と `current_bias_energy` 引数(_md_step 計算済み値の再利用でバイアス二重計算を削減、reuse/recompute の受理判定厳密一致をテストで確認)を追加。fast-path 関数に box 形状 (3,) ガード、ClassicalCalculator.compute() に Context 再利用の契約アサーションを追加。

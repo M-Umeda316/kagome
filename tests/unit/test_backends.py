@@ -250,3 +250,81 @@ class TestOrbEmptyCacheGating:
         energy, forces = self._compute(calc)
         assert calls == []
         assert forces.shape == (2, 3)
+
+
+class TestAimnetBackend:
+    """AIMNet2 backend (code+weights MIT, verified 2026-06-25; specs/
+    dependency-license-matrix.md). Complements OrbMol-v2 for open-shell/
+    radical chemistry (specs/decisions.md 2026-06-25)."""
+
+    @pytest.fixture
+    def _skip_no_aimnet(self):
+        pytest.importorskip('aimnet')
+
+    @pytest.mark.usefixtures('_skip_no_aimnet')
+    @pytest.mark.slow
+    def test_aimnet_compute(self):
+        from kagome.backends.aimnet_backend import create_aimnet_calculator
+
+        calc = create_aimnet_calculator(model='aimnet2-nse', device='cpu', spin=2)
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [1.5, 0.0, 0.0],
+        ])
+        energy, forces = calc.compute(positions, ['C', 'C'])
+
+        assert isinstance(energy, float)
+        assert forces.shape == (2, 3)
+        assert 'aimnet' in calc.name
+
+    def test_create_aimnet_calculator_raises_without_aimnet_package(self, monkeypatch):
+        """Error path: missing 'aimnet' package must raise a clear ImportError
+        (mirrors the mace-torch / orb-models missing-dependency messages)."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, 'aimnet', None)
+        monkeypatch.setitem(sys.modules, 'aimnet.calculators', None)
+
+        from kagome.backends.aimnet_backend import create_aimnet_calculator
+
+        with pytest.raises(ImportError, match='pip install aimnet'):
+            create_aimnet_calculator()
+
+    @pytest.fixture
+    def _skip_no_ase(self):
+        pytest.importorskip('ase')
+
+    @pytest.mark.usefixtures('_skip_no_ase')
+    def test_adapter_compute_with_fake_ase_calculator(self):
+        """Adapter generation + compute() path, exercised with a fake
+        ASE-calculator-like stand-in so this test does not require the real
+        aimnet package (only ase, which is already exercised elsewhere)."""
+        from ase.calculators.lj import LennardJones
+
+        from kagome.backends.aimnet_backend import AimnetCalculatorAdapter
+
+        class _FakeAimnetAseCalc(LennardJones):
+            def __init__(self):
+                super().__init__()
+                self.mult_calls: list[int] = []
+                self.charge_calls: list[int] = []
+
+            def set_mult(self, mult):
+                self.mult_calls.append(mult)
+
+            def set_charge(self, charge):
+                self.charge_calls.append(charge)
+
+        fake_calc = _FakeAimnetAseCalc()
+        adapter = AimnetCalculatorAdapter(fake_calc, name='aimnet-test', spin=3, charge=0)
+
+        positions = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        energy, forces = adapter.compute(positions, ['Ar', 'Ar'])
+
+        assert isinstance(energy, float)
+        assert forces.shape == (2, 3)
+        assert fake_calc.mult_calls == [3]
+        assert fake_calc.charge_calls == [0]
+        assert adapter.supports_spin is True
+        assert adapter.model_id == 'aimnet-test'
+        assert adapter.magnetic_moments() is None  # LJ has no magnetic moments

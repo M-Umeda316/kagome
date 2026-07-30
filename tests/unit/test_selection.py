@@ -97,6 +97,50 @@ class TestFindCandidates:
         assert len(cands) == 0
 
 
+class TestFindCandidatesPBC:
+    """#3: the distance fast-path (validated_box once + minimum_image_fast) must
+    be numerically identical to the previous per-pair minimum_image call, and
+    must still reject triclinic cells."""
+
+    def test_fast_path_matches_minimum_image(self):
+        from kagome.geometry import minimum_image
+
+        # atom 2 (J) sits just across the periodic boundary from atom 0 (I), so
+        # the minimum image (not the raw separation) decides membership/score.
+        positions = np.array([
+            [0.3, 0.0, 0.0],   # 0 (I)
+            [5.0, 0.0, 0.0],   # 1 (I)
+            [9.8, 0.0, 0.0],   # 2 (J) — MIC distance to atom 0 is 0.5, raw is 9.5
+            [6.0, 0.0, 0.0],   # 3 (J)
+        ])
+        cell = np.diag([10.0, 10.0, 10.0]).astype(float)
+        template = _make_template()
+        groups = _make_groups()
+
+        cands = find_candidates(template, groups, positions, cell=cell)
+
+        # Reference scores via the OLD full-validation minimum_image path.
+        def ref_dist(i, j):
+            return float(np.linalg.norm(
+                minimum_image(positions[j] - positions[i], cell)))
+
+        by_atoms = {c.atom_indices: c.score for c in cands}
+        # (0, 2) is only a candidate because the minimum image brings them to 0.5.
+        assert (0, 2) in by_atoms
+        for atoms, score in by_atoms.items():
+            # single-pair template => score is just the I-J distance
+            assert score == ref_dist(atoms[0], atoms[1])  # bit-identical
+
+    def test_triclinic_cell_raises(self):
+        positions = np.array([
+            [0.0, 0.0, 0.0], [5.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0], [6.0, 0.0, 0.0],
+        ])
+        cell = np.array([[10.0, 1.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
+        with pytest.raises(ValueError, match='orthorhombic'):
+            find_candidates(_make_template(), _make_groups(), positions, cell=cell)
+
+
 class TestScoreCandidates:
 
     def test_sorted_ascending(self):

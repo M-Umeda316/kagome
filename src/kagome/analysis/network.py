@@ -198,6 +198,58 @@ def largest_component_fraction(
     return max(len(c) for c in components) / n_monomers
 
 
+def max_inter_monomer_degree(
+    bonds: Iterable[Sequence[float]],
+    monomer_sets: Sequence[Iterable[int]],
+) -> int:
+    """Largest number of DISTINCT neighbouring monomers any one monomer bonds to.
+
+    Builds the monomer-level graph (nodes = ``monomer_sets`` as produced by
+    :func:`kagome.analysis.carothers.monomer_sets_from_bonds` on the initial
+    topology; an edge joins two monomers when any bond connects an atom of one
+    to an atom of the other) and returns the maximum monomer degree.
+
+    Distinct *neighbours* are counted, not raw bonds, so the nylon amide plus its
+    paired water-forming bond — which join the SAME diamine/diacid pair — count
+    once. An ideal LINEAR step-growth chain therefore caps this at 2 (interior
+    repeat units bond to two neighbours, chain ends to one); a value > 2 means a
+    branch point exists, i.e. a monomer of functionality f > 2 (e.g. epoxy-amine
+    curing), for which the linear Carothers relation DPn = 1/(1-p) does not hold.
+
+    Returns 0 when there are no monomers or no inter-monomer bonds.
+    """
+    atom2mono: dict[int, int] = {}
+    for m, atoms in enumerate(monomer_sets):
+        for a in atoms:
+            atom2mono[int(a)] = m
+
+    neighbours: dict[int, set[int]] = {}
+    for bond in bonds:
+        mi = atom2mono.get(int(bond[0]))
+        mj = atom2mono.get(int(bond[1]))
+        if mi is None or mj is None or mi == mj:
+            continue
+        neighbours.setdefault(mi, set()).add(mj)
+        neighbours.setdefault(mj, set()).add(mi)
+
+    if not neighbours:
+        return 0
+    return max(len(n) for n in neighbours.values())
+
+
+def is_branching_topology(
+    bonds: Iterable[Sequence[float]],
+    monomer_sets: Sequence[Iterable[int]],
+    max_linear_degree: int = 2,
+) -> bool:
+    """True if any monomer bonds to more than ``max_linear_degree`` neighbours.
+
+    Thin predicate over :func:`max_inter_monomer_degree`; the default threshold
+    of 2 flags any network with a branch point (functionality f > 2).
+    """
+    return max_inter_monomer_degree(bonds, monomer_sets) > max_linear_degree
+
+
 def gel_point_flory_stockmayer(f: int, g: int, r: float = 1.0) -> float:
     """Flory-Stockmayer gel-point conversion for an f-functional + g-functional
     step-growth system: ``alpha_gel = 1 / sqrt(r * (f - 1) * (g - 1))``.

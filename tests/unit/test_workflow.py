@@ -156,6 +156,73 @@ class TestDefaultPostCycleUpdater:
         assert 1 not in groups['amine_H'].atom_indices
 
 
+class TestPostCycleUpdaterCheckpointAPI:
+    """RF-encapsulation: checkpoint_state()/restore_checkpoint_state() replace the
+    direct private-attribute poking save_checkpoint/resume used to do."""
+
+    def test_default_updater_roundtrip(self):
+        upd = DefaultPostCycleUpdater()
+        upd._processed_formations = 3
+        upd._processed_dissociations = 5
+        state = upd.checkpoint_state()
+        assert state == {'processed_formations': 3, 'processed_dissociations': 5}
+
+        restored = DefaultPostCycleUpdater()
+        restored.restore_checkpoint_state(state)
+        assert restored.processed_formations == 3
+        assert restored.processed_dissociations == 5
+
+    def test_epoxy_updater_roundtrip_is_counters_only(self):
+        upd = EpoxyAmineAdditionUpdater({0: [1, 2]})
+        upd._processed_formations = 2
+        upd._processed_dissociations = 4
+        state = upd.checkpoint_state()
+        assert state == {'processed_formations': 2, 'processed_dissociations': 4}
+
+        restored = EpoxyAmineAdditionUpdater({0: [1, 2]})
+        restored.restore_checkpoint_state(state)
+        assert restored.processed_formations == 2
+        assert restored.processed_dissociations == 4
+
+    def test_vinyl_updater_roundtrip_carries_chain_c_map(self):
+        from kagome.workflows.polymerization import VinylChainPropagationUpdater
+        upd = VinylChainPropagationUpdater(propagation_map={1: 2})
+        upd._processed_formations = 1
+        upd.chain_c_map = {2: 5}
+        state = upd.checkpoint_state()
+        assert state == {'processed_formations': 1, 'chain_c_map': {2: 5}}
+        # deep copy: mutating the live map does not corrupt a saved snapshot
+        upd.chain_c_map[9] = 9
+        assert state['chain_c_map'] == {2: 5}
+
+        restored = VinylChainPropagationUpdater(propagation_map={1: 2})
+        restored.restore_checkpoint_state(state)
+        assert restored.processed_formations == 1
+        assert restored.chain_c_map == {2: 5}
+
+    def test_restore_tolerates_legacy_flat_dict(self):
+        """The resume path feeds a dict carrying keys an updater does not use
+        (the flat legacy-checkpoint fields); restore must pick with .get."""
+        upd = DefaultPostCycleUpdater()
+        upd.restore_checkpoint_state({
+            'processed_formations': 7,
+            'processed_dissociations': 8,
+            'chain_c_map': {1: 2},  # unused by DefaultPostCycleUpdater
+        })
+        assert upd.processed_formations == 7
+        assert upd.processed_dissociations == 8
+
+        vinyl = None
+        from kagome.workflows.polymerization import VinylChainPropagationUpdater
+        vinyl = VinylChainPropagationUpdater(propagation_map={1: 2})
+        vinyl.restore_checkpoint_state({
+            'processed_formations': 4,
+            'processed_dissociations': 9,  # unused by the vinyl updater
+        })
+        assert vinyl.processed_formations == 4
+        assert vinyl.chain_c_map == {}  # absent key leaves it unchanged
+
+
 class TestEpoxyAmineAdditionUpdater:
     """1° -> 2° -> 3° amine multi-addition (Track 2 E1, decisions.md
     2026-07-09): a confirmed ring-opening consumes the epoxy C, the ring O and
@@ -317,6 +384,44 @@ class TestTruncateJsonl:
     def test_missing_file_is_noop(self, tmp_path):
         from kagome.workflows.polymerization import _truncate_jsonl_after
         assert _truncate_jsonl_after(tmp_path / 'nope.jsonl', 100) == 0
+
+    def test_corrupt_trailing_line_dropped(self, tmp_path, caplog):
+        """A SIGKILL/OOM can leave a truncated final line. It must be DROPPED on
+        resume (kept, it would make readers.py json.loads raise on every parse)
+        and reported with the line number, while the valid header/records stay."""
+        import logging
+        from kagome.workflows.polymerization import _truncate_jsonl_after
+        p = tmp_path / 'trajectory.jsonl'
+        good = [
+            json.dumps({'_header': True, 'species': ['C']}),
+            json.dumps({'step': 100, 'cycle': 0}),
+        ]
+        # Mid-write crash: an unterminated JSON object as the final line.
+        p.write_text('\n'.join(good) + '\n' + '{"step": 200, "cyc', encoding='utf-8')
+
+        with caplog.at_level(logging.WARNING):
+            removed = _truncate_jsonl_after(p, 100)
+
+        assert removed == 1  # the corrupt tail line
+        kept = [json.loads(l) for l in p.read_text(encoding='utf-8').splitlines()]
+        assert len(kept) == 2  # header + step-100 record; corrupt line gone
+        assert kept[0].get('_header') is True
+        assert kept[1]['step'] == 100
+        assert any('undecodable line 3' in r.message for r in caplog.records)
+
+    def test_corrupt_line_dropped_without_post_checkpoint_records(self, tmp_path):
+        """Even when nothing is past the checkpoint, a corrupt line triggers the
+        rewrite so it is removed (removed counter includes corrupt lines)."""
+        from kagome.workflows.polymerization import _truncate_jsonl_after
+        p = tmp_path / 'selection.jsonl'
+        p.write_text(
+            json.dumps({'cycle': 0}) + '\n' + '{"cycle": 1, trunc',
+            encoding='utf-8',
+        )
+        removed = _truncate_jsonl_after(p, 5, field='cycle')
+        assert removed == 1
+        kept = [json.loads(l) for l in p.read_text(encoding='utf-8').splitlines()]
+        assert [rec['cycle'] for rec in kept] == [0]
 
 
 def _make_simple_setup():

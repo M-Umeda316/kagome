@@ -253,6 +253,73 @@ class TestMixingGating:
         assert 'mixing' not in phases1 and 'mix_settle' not in phases1
 
 
+# ── graceful skip on write_back ValueError (no openmm needed) ─────────────────
+
+class TestMixingValueErrorGracefulSkip:
+    """mix.write_back raises ValueError on non-finite coordinates. That must join
+    the graceful-skip path (RuntimeError/OpenMMException) instead of crashing the
+    whole run. Monkeypatches build_classical_mix + run_mix_md so the test needs
+    neither OpenMM nor RDKit — it exercises only the _run_mixing_phase except
+    clause and the skip record."""
+
+    def test_write_back_value_error_skips_cycle(self, tmp_path, monkeypatch):
+        import kagome.prep.mixing as mixing_mod
+        import kagome.prep.mix_md as mix_md_mod
+
+        class _FakeMix:
+            metadata: dict = {}
+
+            def write_back(self, positions_A):
+                raise ValueError('non-finite coordinate (test)')
+
+        class _FakeResult:
+            positions_A = np.zeros((2, 3))
+            n_steps = 10
+            n_warmup_steps = 0
+
+        monkeypatch.setattr(
+            mixing_mod, 'build_classical_mix',
+            lambda *a, **k: _FakeMix())
+        monkeypatch.setattr(
+            mix_md_mod, 'run_mix_md',
+            lambda mix, cfg, seed: _FakeResult())
+
+        wf = _tiny_workflow(
+            MixConfig(mix_time_ps=0.005, settle_steps=3, temperature_K=300.0),
+            initial_bonds=[(0, 1, 1.0)],
+        )
+        state = SimulationState(
+            positions=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            velocities=np.zeros((2, 3)),
+            species=['C', 'C'],
+            cell=np.eye(3) * 20.0,
+            masses=masses_from_species(['C', 'C']),
+        )
+        pos_before = state.positions.copy()
+
+        logs = wf.run(state, output_dir=tmp_path)   # must NOT raise
+
+        # mixing recorded as a zero-step skip; no mix_settle segment
+        assert [l.phase for l in logs] == ['biased', 'unbiased', 'mixing']
+        assert logs[-1].steps == 0
+
+        records = [json.loads(l) for l in
+                   (tmp_path / 'mixing.jsonl').read_text(encoding='utf-8')
+                   .splitlines() if l.strip()]
+        assert len(records) == 1
+        assert records[0]['skipped'] is True
+        assert 'ValueError' in records[0]['skip_reason']
+
+        # pre-mixing MLIP state kept (write_back never applied): positions are the
+        # post-unbiased state, and velocities/positions stay finite.
+        assert np.isfinite(state.positions).all()
+        assert np.isfinite(state.velocities).all()
+        # write_back failed, so the biased/unbiased MLIP positions were NOT
+        # overwritten by any mixed coordinates.
+        assert not np.array_equal(state.positions, np.zeros((2, 3)))
+        del pos_before  # (state advanced by MLIP MD; identity not asserted)
+
+
 # ── asdict round trip (manifest provenance) ───────────────────────────────────
 
 class TestConfigAsdict:

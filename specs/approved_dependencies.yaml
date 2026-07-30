@@ -96,6 +96,14 @@ software:
       YAML parsing for config validation and this license registry
       (scripts/validate_configs.py, scripts/check_dependency_licenses.py). MIT.
 
+  - name: aimnet
+    status: approved
+    evidence: MIT
+    notes: >
+      AIMNet2 calculator code (github.com/isayevlab/aimnetcentral), pip install
+      aimnet. Natively supports periodic boundary conditions (Ewald/PME) and is
+      spin-charge aware. Verified MIT 2026-06-25 (specs/dependency-license-matrix.md).
+
 models:
   - name: toy
     status: approved
@@ -124,6 +132,16 @@ models:
       Windows caveat REMAINS: periodic PME triggers torch.compile/cl.exe failures on
       Windows. Run periodic jobs on Linux/WSL/cloud, or set TORCHDYNAMO_DISABLE=1.
       Installed in pfpoly-gpu (WSL) as nvalchemi-toolkit-ops==0.3.1.
+
+  - name: aimnet2-nse
+    status: approved
+    evidence: MIT
+    notes: >
+      AIMNet2-NSE pretrained weights (HF isayevlab/aimnet2-nse), MIT licensed.
+      Purpose-trained for open-shell/radical chemistry via neural spin-charge
+      equilibration (total spin multiplicity input). Second-backend candidate
+      for cross-validation alongside OrbMol-v2, not a replacement (spike
+      evaluation; specs/decisions.md 2026-06-25).
 
   - name: pfp
     status: blocked_pending_review

@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from kagome.boost.tdbb import PairBias
 from kagome.geometry import minimum_image
+from kagome.reactive.pairs import TrackedPair
 
 
 def is_formed(r: float, r0: float, threshold_fraction: float = 1.0) -> bool:
@@ -52,7 +52,7 @@ class BondTracker:
     def __init__(self, threshold_fraction: float = 1.0) -> None:
         self._threshold_fraction = threshold_fraction
         self._events: list[BondEvent] = []
-        self._pending: list[tuple[PairBias, int]] = []
+        self._pending: list[tuple[TrackedPair, int]] = []
         # Pairs confirmed after unbiased relaxation — keyed by
         # (min_idx, max_idx, is_formation) so the same pair can undergo
         # formation and later dissociation in different cycles.
@@ -65,7 +65,7 @@ class BondTracker:
     def _key(a: int, b: int) -> tuple[int, int]:
         return (min(a, b), max(a, b))
 
-    def _pair_satisfied(self, pair: PairBias, r: float) -> bool:
+    def _pair_satisfied(self, pair: TrackedPair, r: float) -> bool:
         """True when *pair* meets its bonding condition at distance *r*.
 
         Paper §2.2 step 3-4: a formation pair is satisfied when the atoms are
@@ -78,7 +78,7 @@ class BondTracker:
 
     def _pair_distance(
         self,
-        pair: PairBias,
+        pair: TrackedPair,
         positions: NDArray[np.floating],
         cell: NDArray[np.floating] | None,
     ) -> float:
@@ -89,7 +89,7 @@ class BondTracker:
 
     def check_reactions_during_bias(
         self,
-        pairs: list[PairBias],
+        pairs: list[TrackedPair],
         positions: NDArray[np.floating],
         step: int,
         cycle: int,
@@ -157,8 +157,8 @@ class BondTracker:
             self._tentative.add(pair_key)
 
         # 2. Firing decision — conjunction over each candidate's trigger pairs.
-        grouped: dict[int, list[tuple[PairBias, float]]] = defaultdict(list)
-        singletons: list[tuple[PairBias, float]] = []
+        grouped: dict[int, list[tuple[TrackedPair, float]]] = defaultdict(list)
+        singletons: list[tuple[TrackedPair, float]] = []
         for i, pair in enumerate(pairs):
             if pair.candidate_id < 0:
                 singletons.append((pair, dists[i]))
@@ -179,7 +179,7 @@ class BondTracker:
 
     def record_attempts(
         self,
-        pairs: list[PairBias],
+        pairs: list[TrackedPair],
         positions: NDArray[np.floating],
         step: int,
         cycle: int,
@@ -204,7 +204,7 @@ class BondTracker:
 
     def _confirm_pair(
         self,
-        pair: PairBias,
+        pair: TrackedPair,
         r: float,
         step: int,
         cycle: int,
@@ -238,6 +238,45 @@ class BondTracker:
         self._reacted.add(reacted_key)
         confirmed.append(ev)
 
+    def record_confirmed_dissociation(
+        self,
+        *,
+        step: int,
+        cycle: int,
+        atom_a: int,
+        atom_b: int,
+        distance: float,
+        r0: float = 0.0,
+        candidate_id: int = -1,
+        counts_as_reaction: bool = True,
+        register_reacted: bool = False,
+    ) -> BondEvent:
+        """Append a ``confirmed_dissociation`` event through the public API.
+
+        Single source of truth for adding a confirmed dissociation to
+        ``_events`` and (optionally) the ``_reacted`` de-duplication set, so
+        callers do not reach into the private list by hand (which left
+        ``_reacted`` inconsistent with ``_events``).
+
+        The activation path (V^d on azo C-N bonds) historically appended to
+        ``_events`` WITHOUT touching ``_reacted``; ``register_reacted`` defaults
+        to ``False`` to preserve that behaviour byte-for-byte. Set it ``True``
+        for callers that want the ``(min, max, is_formation=False)`` key
+        de-duplicated the same way :meth:`_confirm_pair` does.
+        """
+        ev = BondEvent(
+            step=step, cycle=cycle,
+            atom_a=atom_a, atom_b=atom_b,
+            event_type='confirmed_dissociation',
+            distance=distance, r0=r0,
+            candidate_id=candidate_id,
+            counts_as_reaction=counts_as_reaction,
+        )
+        self._events.append(ev)
+        if register_reacted:
+            self._reacted.add((*self._key(atom_a, atom_b), False))
+        return ev
+
     def check_outcomes(
         self,
         positions: NDArray[np.floating],
@@ -262,8 +301,8 @@ class BondTracker:
         """
         confirmed: list[BondEvent] = []
 
-        grouped: dict[int, list[tuple[PairBias, int, float]]] = defaultdict(list)
-        singletons: list[tuple[PairBias, int, float]] = []
+        grouped: dict[int, list[tuple[TrackedPair, int, float]]] = defaultdict(list)
+        singletons: list[tuple[TrackedPair, int, float]] = []
         for pair, cycle in self._pending:
             r = self._pair_distance(pair, positions, cell)
             if pair.candidate_id < 0:

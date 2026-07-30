@@ -11,31 +11,31 @@ equations:
   - id: eq2
     desc: Time-dependent bond formation potential
     formula: V^f(r,t) = f1(t)·(1 - exp(-f2·(r - r0)²))
-    implemented_in: src/boost/tdbb.py::formation_potential
+    implemented_in: src/kagome/boost/tdbb.py::formation_potential
   - id: eq3
     desc: Time-dependent bond dissociation potential
     formula: V^d(r,t) = f1(t)·exp(-f2·r²)
-    implemented_in: src/boost/tdbb.py::dissociation_potential
+    implemented_in: src/kagome/boost/tdbb.py::dissociation_potential
   - id: eq4
     desc: Target distance from vdW radii
     formula: r0 = λ·Σ r_a^vdw
-    implemented_in: src/boost/tdbb.py::target_distance
+    implemented_in: src/kagome/boost/tdbb.py::target_distance
   - id: eq5
     desc: Time-dependent boost amplitude with cap
     formula: f1(t) = min(γ·t, f1_max)
-    implemented_in: src/boost/tdbb.py::boost_amplitude
+    implemented_in: src/kagome/boost/tdbb.py::boost_amplitude
   - id: eq6
     desc: Reactive atomic group definition
     formula: G_X = {a | a ∈ X}
-    implemented_in: src/reactive/groups.py::ReactiveGroup
+    implemented_in: src/kagome/reactive/groups.py::ReactiveGroup
   - id: eq7
     desc: Candidate reaction group selection with distance bounds
     formula: G_ijkl filtered by r_ab ∈ [r_min, r_max] for pairs in P
-    implemented_in: src/reactive/selection.py::find_candidates
+    implemented_in: src/kagome/reactive/selection.py::find_candidates
   - id: eq8
     desc: Total bias potential over selected groups
     formula: ΔV = Σ_groups Σ_pairs [fp·V^f + (1-fp)·V^d]
-    implemented_in: src/boost/tdbb.py::total_bias, src/boost/tdbb.py::total_bias_fast
+    implemented_in: src/kagome/boost/tdbb.py::total_bias, src/kagome/boost/tdbb.py::total_bias_fast
 
   # Eq. 9-11 confirmed from PDF (2026-06-18). Eq.11 is the last numbered equation.
   - id: eq9
@@ -53,16 +53,16 @@ equations:
   - id: eq11
     desc: Exponential fitting to conversion curve (last numbered equation in PDF)
     formula: alpha(t) = 1 - exp(-kp_eff * t)
-    implemented_in: src/analysis/conversion.py::fit_conversion_exponential
+    implemented_in: src/kagome/analysis/conversion.py::fit_conversion_exponential
     notes: >
       PDF p.9. Post-hoc curve fitting to alpha(t) data. kp_eff is the apparent propagation
       rate constant. The raw conversion fraction alpha = N_reacted / N_total is computed from
-      bond events (see src/analysis/conversion.py::conversion); it is not a numbered equation.
+      bond events (see src/kagome/analysis/conversion.py::conversion); it is not a numbered equation.
 
   - id: unnumbered_density
     desc: Depth-resolved reaction density profile (unnumbered in PDF)
     formula: rho_rxn(z) = N_rxn(z) / (A * dz * N_frames)
-    implemented_in: src/analysis/density.py::reaction_density_profile
+    implemented_in: src/kagome/analysis/density.py::reaction_density_profile
     notes: >
       PDF p.12, unnumbered equation. Eq.11 is the last numbered equation in the paper;
       this density formula appears later without a number.
@@ -76,7 +76,7 @@ claims:
       equations: [2, 3, 4, 5, 8]
       figures: []
     implementation_targets:
-      - src/boost/tdbb.py
+      - src/kagome/boost/tdbb.py
       - tests/unit/test_tdbb.py
 
   - id: workflow.selection
@@ -87,8 +87,8 @@ claims:
       equations: [6, 7]
       figures: [1]
     implementation_targets:
-      - src/reactive/groups.py
-      - src/reactive/selection.py
+      - src/kagome/reactive/groups.py
+      - src/kagome/reactive/selection.py
       - tests/unit/test_selection.py
 
   - id: workflow.schedule
@@ -99,7 +99,7 @@ claims:
       equations: []
       figures: [1]
     implementation_targets:
-      - src/workflows/polymerization.py
+      - src/kagome/workflows/polymerization.py
       - configs/boost/paper_faithful.yaml
 
   - id: eval.qualitative
@@ -112,5 +112,5 @@ claims:
     implementation_targets:
       - specs/acceptance-criteria.md
       - scripts/reproduce_figures.py
-      - src/analysis/conversion.py
-      - src/analysis/density.py
+      - src/kagome/analysis/conversion.py
+      - src/kagome/analysis/density.py

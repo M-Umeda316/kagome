@@ -139,6 +139,9 @@ class ClassicalCalculator(Calculator):
         self._context = None       # built lazily on first compute
         self._system = None
         self._n_atoms = sum(s.count for s in molecule_specs) if molecule_specs else 0
+        # The species order validated when the Context was built. Later compute()
+        # calls reuse that Context, so they must present the same atom order.
+        self._built_species: list[str] | None = None
 
     @property
     def name(self) -> str:
@@ -174,6 +177,7 @@ class ClassicalCalculator(Calculator):
         platform = openmm.Platform.getPlatformByName(self._platform_name)
         self._system = system
         self._context = openmm.Context(system, integrator, platform)
+        self._built_species = list(species)
         logger.info(
             'ClassicalCalculator built: %d atoms, FF=%s, charges=%s, platform=%s, '
             'periodic=%s, cutoff_nm=%s.',
@@ -211,6 +215,22 @@ class ClassicalCalculator(Calculator):
         species: list[str],
         cell: NDArray[np.floating] | None = None,
     ) -> tuple[float, NDArray[np.floating]]:
+        # Contract check first (before importing openmm) so a misuse raises a
+        # clear error even in environments where openmm is unavailable: the
+        # cached Context is bound to the initial atom order, so a later call with
+        # a different species list would silently compute against the wrong
+        # topology.
+        if self._context is not None and self._built_species is not None:
+            if list(species) != self._built_species:
+                raise ValueError(
+                    'ClassicalCalculator.compute called with a species list '
+                    f'({len(species)} atoms) differing from the '
+                    f'{len(self._built_species)} atoms its OpenMM Context was '
+                    'built for. This Calculator caches a Context bound to the '
+                    'initial atom order and cannot be reused for a different '
+                    'system.'
+                )
+
         import openmm
         from openmm import unit as ommunit
 
