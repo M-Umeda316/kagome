@@ -23,6 +23,12 @@ Usage:
     python scripts/run_epoxy_amine.py --seed 7 --output-dir runs/epoxy_smoke
     python scripts/run_epoxy_amine.py --seed 7 --n-epoxies 100 --n-amines 50 \
         --device cuda --output-dir runs/epoxy_paper
+
+    # well-mixed measurement mode (NOT paper-faithful): classical OpenMM/OpenFF
+    # mixing after every cycle to refresh the reactive neighbourhood
+    # (decisions.md 2026-08-04).
+    python scripts/run_epoxy_amine.py --seed 7 --mix --mix-ps 25 \
+        --mix-platform CUDA --output-dir runs/epoxy_mix
 """
 from __future__ import annotations
 
@@ -36,6 +42,15 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
 import numpy as np
 
+from scripts._mixing_cli import (
+    add_mixing_arguments,
+    collect_mixing_skips,
+    mix_config_from_args,
+    mixing_setup_from_args,
+    mixing_setup_mismatch,
+    mixing_summary_fields,
+    resolve_mixing_args,
+)
 from scripts._systems import (
     _DETA_SMILES,
     _DGEBA_SMILES,
@@ -54,6 +69,7 @@ from kagome.workflows.polymerization import (
     PolymerizationConfig,
     PolymerizationWorkflow,
     SimulationState,
+    load_checkpoint,
     masses_from_species,
 )
 
@@ -160,7 +176,12 @@ def main() -> None:
                         help='Resume from <output-dir>/checkpoint.pkl if present.')
     parser.add_argument('--no-checkpoint', action='store_true', default=False,
                         help='Disable per-cycle checkpoint writing.')
+    # WM-P3 mixing stage (--mix + 6 knobs), shared with run_vinyl_copolymer /
+    # run_nylon66 via scripts/_mixing_cli.py (decisions.md 2026-08-04).
+    add_mixing_arguments(parser)
     args = parser.parse_args()
+
+    resolve_mixing_args(parser, args)
 
     rng = np.random.default_rng(args.seed)
 
@@ -275,6 +296,7 @@ def main() -> None:
         minimize=args.minimize,
         minimize_fmax=args.minimize_fmax,
         equil_steps=args.equil_steps,
+        mixing=mix_config_from_args(args, args.temperature),
     )
 
     integrator = LangevinIntegrator(langevin_params)
@@ -318,6 +340,14 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 — topology output is non-critical
         logger.warning('Bond-topology extraction failed (%s); trajectory will '
                        'carry no explicit bonds.', exc)
+    if args.mix and init_bonds is None:
+        # Topology is optional for a plain run but MANDATORY for mixing, which
+        # translates the live bond graph into a classical system. Fail here
+        # rather than deep inside wf.run (decisions.md 2026-08-04 nylon 固有ガード;
+        # run_epoxy_amine shares the same best-effort extraction).
+        parser.error('--mix requires the initial bond topology, but its '
+                     'extraction failed (see the warning above). Fix the '
+                     'topology extraction or drop --mix.')
 
     # 1° -> 2° -> 3° amine reassignment: an N stays selectable until its last
     # registered H is consumed (EpoxyAmineAdditionUpdater docstring).
@@ -338,6 +368,20 @@ def main() -> None:
     if args.resume and not ckpt_file.exists():
         logger.warning('--resume given but %s not found; starting a fresh run.', ckpt_file)
 
+    _now_mix = mixing_setup_from_args(args)
+    if resuming:
+        # Guard the measurement mode across resume: silently switching mixing
+        # on/off (or changing its duration) mid-run would corrupt the well-mixed
+        # measurement without any recorded reason. The checkpoint records the
+        # mixing setup; a mismatch with the current CLI args is a hard error.
+        # (Older checkpoints predate this key: absent => the run had mixing off.)
+        _ckpt_mix = (load_checkpoint(ckpt_file).get('extra', {}) or {}).get('mixing')
+        if mixing_setup_mismatch(_ckpt_mix, _now_mix):
+            parser.error(
+                f'--mix settings differ from the checkpoint being resumed '
+                f'(checkpoint: {_ckpt_mix}, now: {_now_mix}). Resume with the '
+                f'same mixing configuration, or start a fresh run.')
+
     logs = wf.run(
         state,
         output_dir=args.output_dir,
@@ -345,6 +389,11 @@ def main() -> None:
         n_monomers=n_epoxide_sites,
         checkpoint_path=run_checkpoint_path,
         resume=resuming,
+        # Record the mixing setup so resume can detect a mode switch (the guard
+        # above compares this against the resume-time CLI args). Same
+        # single-source-of-truth builder, so persisted and compared dicts can
+        # never drift apart. Epoxy has no spin state, so 'mixing' is the only key.
+        checkpoint_extra={'mixing': _now_mix},
     )
 
     # One counted N-C formation per opened epoxide; the hydroxyl O-H event
@@ -364,6 +413,8 @@ def main() -> None:
     amine_h_conversion = n_form / n_amine_h_sites if n_amine_h_sites > 0 else 0.0
     logger.info('Epoxide conversion: %.4f (%d/%d rings), amine-H conversion: %.4f',
                 epoxide_conversion, n_form, n_epoxide_sites, amine_h_conversion)
+
+    mixing_skipped_cycles = collect_mixing_skips(args, args.output_dir, logger)
 
     summary = {
         'total_steps': state.step,
@@ -386,6 +437,7 @@ def main() -> None:
         'minimize': args.minimize,
         'minimize_fmax': args.minimize_fmax,
         'equil_steps': args.equil_steps,
+        **mixing_summary_fields(args, mixing_skipped_cycles),
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'n_epoxide_sites': n_epoxide_sites,
