@@ -1722,6 +1722,14 @@ Use this template for each decision.
 3. **密度図の分母修正(オーナー承認済み・適用済み)**: `scripts/reproduce_figures.py` の `plot_density_profile` が ρ_rxn(z)=N_rxn/(A·Δz·N_frames) の N_frames に mixing/mix_settle フレームを算入していた不整合を修正し、決定 (k) のエネルギー図除外(`_analysis_frames` によるマスク)と揃えた。mix_settle 中は反応が発火しないため、これを分母に含めると混合ランの ρ_rxn(z) が系統的に過小評価され、非混合ラン(baseline)と比較不能になる。Eq.12 の「解析窓の全サンプルフレーム」は MLIP 動力学窓(古典 mix_settle 緩和を除く)と解釈する。既存の非混合ランの図はビット不変(mixing フェーズを持たないランでは `_analysis_frames` が no-op になるため)。
 
 4. **歩留低下の解釈(オーナー承認・力学は変更せず記録のみ)**: WM-P4 の暫定 3 腕比較で確定生成数が A1(baseline)=5 / A3=4 / A4(mix 系)=1 と、混合腕が最少だった。これは**バグでなく、well-mixed 測定が捉えている実在の物理的特性が最有力**と判断する。
+
+## 2026-08-04: 混合(well-mixed)CLI 配線を nylon-6,6 / epoxy-amine スクリプトへ拡張
+
+- **動機(観測)**: nylon paper-scale(100 diamine + 100 diacid、NPT、200 cycles、混合なし — 2026-07-09 起動、WM 機能マージ以前のラン)が大マシンで完走し、**~100 ps で転化率(Carothers p 相当)≈12% で頭打ち**(2026-08-03 図の写真報告; データは大マシンから持ち出し不可)。ステップ成長は末端基ペアの近傍枯渇後、MLIP 時間スケール(~0.9 ps/cycle)の拡散では再供給できず、MA で WM 導入の動機となったペア枯渇(2026-07-17 well-mixed 測定モード)と同型のプラトーと解釈する。この完走ランは**混合なし対照データとして保持**する。
+- **決定**: `scripts/run_vinyl_copolymer.py` に実装済みの `--mix` CLI 一式(6 ノブ+既定解決、`--mix` なしの迷子ノブ検出、resume 時の mixing 設定不一致ガード、`checkpoint_extra['mixing']` 記録)を共有モジュール **`scripts/_mixing_cli.py`** へ抽出し、`run_nylon66.py` / `run_epoxy_amine.py` へ同一セマンティクスで配線する。paper-faithful 経路は不変(`--mix` は opt-in のまま、既定 OFF)。
+- **適用可能性の確認(新規仮定なし)**: 混合トランスレータ(`src/kagome/prep/mixing.py`)はライブ結合トポロジからフラグメントを認識し、キャップ判定は元素既定原子価との結合次数差のみ(2026-07-17 決定 (iii))でビニル特化の仮定を持たない。nylon のアミドオリゴマー+縮合水、epoxy の β-ヒドロキシアミンはいずれも閉殻でそのまま通過する。epoxy の zwitterion 様過渡状態(O–H 未定着、mid30 で確定 3/10)は O の原子価不足 1 → cap H 1 本で閉殻化されて古典混合を通り、cap H は write-back で破棄される(既存設計どおり)。
+- **既定値の注記**: `mix_ps=25` は WM-P5b 由来(**det・40 モノマー系で導出**)。paper-scale での妥当性は未確認のため、再ラン時は最初の数十サイクルの mixing.jsonl(RMS 変位)と再選択率を確認してから続行する(2026-07-22 TDBB pair re-selection 記録の残課題)。
+- **nylon 固有ガード**: `run_nylon66.py` の init_bonds 抽出は best-effort(失敗時 warning で継続)だが、混合はトポロジ必須のため **`--mix` 指定時は抽出失敗を即時エラー**とする(wf.run 深部での fail-fast より原因が明確)。
    - 主要因: 混合が「同一ペアを連続サイクルで再選択して cook し続ける」baseline の経路(2026-07-17 決定の Context に記録された再選択率 46-53%)を破壊するため。決定的根拠: BoostState は毎サイクル新規生成でありバイアス持ち越しは無い(paper-faithful)、かつ確定済み結合トポロジーは混合フェーズの**前**(決定 (f) の挿入位置)に永続化済みで混合は `state.positions`/`state.velocities` のみを更新する(グラフは不変入力 — 決定 (d))。
    - 副次要因: 決定 (i) の毎サイクル MB 速度再抽選が反応相関運動量を消去すること、および WM-P4 ungated bridge 追補の非ゲート warm-up(短 `mix_time_ps` 時は総線量の最大 ~20% を占めうる、friction 50/ps)が測定アンサンブルを撹乱しうる。ただしいずれも NVT 整合を保つ意図的設計(決定 (g)/(l))であり、歩留低下対策として取り除かない。
    - 混合時間の既定値確定は先送り: A2_mix50 の複数シード化 + `mix_time_ps` sweep で歩留を再検証してから判断する。現データは単桁カウント(1〜5)でノイズ支配であり統計的結論を出せない。決定 (v)(無根拠デフォルト禁止則)を維持し、混合時間の既定値は本追補時点でも decisions.md に確定記載しない。
