@@ -168,4 +168,4 @@ echo "  Artifacts: ${OUTPUT_DIR}/  (summary.json has carothers_p / carothers_dpn
 echo "  Figures:   ${OUTPUT_DIR}/figures/  (dpn_vs_conversion.png = measured DPn vs 1/(1-p))"
 echo ""
 echo "Resume/extend:"
-echo "  RESUME=1 N_CYCLES=$(( N_CYCLES + 100 )) OUTPUT_DIR=${OUTPUT_DIR} bash scripts/run_nylon66_paper_scale.sh"
+echo "  $(mix_env_repro)RESUME=1 N_CYCLES=$(( N_CYCLES + 100 )) OUTPUT_DIR=${OUTPUT_DIR} bash scripts/run_nylon66_paper_scale.sh"

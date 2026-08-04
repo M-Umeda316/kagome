@@ -102,6 +102,20 @@ mix_status() {
     fi
 }
 
+# mix_env_repro: the MIX env assignments of this run as a command prefix
+# (trailing space; empty when mixing is off). For the Resume/extend footer:
+# a mixing run resumed WITHOUT the same mixing env dies on the driver's
+# checkpoint-mismatch guard, so the printed resume command must carry it.
+mix_env_repro() {
+    if [ "${MIX:-0}" = "1" ]; then
+        local repro="MIX=1"
+        if [ -n "${MIX_PS:-}" ]; then repro="${repro} MIX_PS=${MIX_PS}"; fi
+        if [ -n "${MIX_SETTLE_STEPS:-}" ]; then repro="${repro} MIX_SETTLE_STEPS=${MIX_SETTLE_STEPS}"; fi
+        if [ -n "${MIX_PLATFORM:-}" ]; then repro="${repro} MIX_PLATFORM=${MIX_PLATFORM}"; fi
+        echo "${repro} "
+    fi
+}
+
 # check_vram <warn_threshold_mb> <description>
 # Prints the detected total GPU VRAM and a warning if it is below the given
 # threshold. `description` is echoed alongside the reading and reused in the
