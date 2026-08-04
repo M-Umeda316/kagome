@@ -44,9 +44,11 @@ import numpy as np
 
 from scripts._mixing_cli import (
     add_mixing_arguments,
+    collect_mixing_skips,
     mix_config_from_args,
     mixing_setup_from_args,
     mixing_setup_mismatch,
+    mixing_summary_fields,
     resolve_mixing_args,
 )
 from scripts._systems import (
@@ -412,6 +414,8 @@ def main() -> None:
     logger.info('Epoxide conversion: %.4f (%d/%d rings), amine-H conversion: %.4f',
                 epoxide_conversion, n_form, n_epoxide_sites, amine_h_conversion)
 
+    mixing_skipped_cycles = collect_mixing_skips(args, args.output_dir, logger)
+
     summary = {
         'total_steps': state.step,
         'n_epoxies': args.n_epoxies,
@@ -433,6 +437,7 @@ def main() -> None:
         'minimize': args.minimize,
         'minimize_fmax': args.minimize_fmax,
         'equil_steps': args.equil_steps,
+        **mixing_summary_fields(args, mixing_skipped_cycles),
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'n_epoxide_sites': n_epoxide_sites,

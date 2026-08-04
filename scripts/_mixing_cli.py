@@ -7,26 +7,33 @@ nylon-6,6 / epoxy-amine スクリプトへ拡張"). The mixing stage itself is u
 it stays opt-in and OFF by default, so the paper-faithful path is untouched
 (specs/decisions.md 2026-07-17 "well-mixed 測定モード" (i), 追補 2026-07-18).
 
-Consumers wire it in four places:
+Consumers wire it in five places:
 
 1. ``add_mixing_arguments(parser)``       — the ``--mix`` flag + 6 knobs
 2. ``resolve_mixing_args(parser, args)``  — default resolution + guards
 3. ``mix_config_from_args(args, T)``      — the ``MixConfig`` for the workflow
 4. ``mixing_setup_from_args(args)``       — checkpoint record + resume guard,
    compared via ``mixing_setup_mismatch``
+5. ``collect_mixing_skips`` + ``mixing_summary_fields`` — summary.json
+   provenance, including the de-clash red-flag counter
 """
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+from pathlib import Path
 
 from kagome.workflows.polymerization import MixConfig
 
 __all__ = [
     'MIX_KNOB_DEFAULTS',
     'add_mixing_arguments',
+    'collect_mixing_skips',
     'mix_config_from_args',
     'mixing_setup_from_args',
     'mixing_setup_mismatch',
+    'mixing_summary_fields',
     'resolve_mixing_args',
 ]
 
@@ -189,3 +196,61 @@ def mix_config_from_args(args: argparse.Namespace,
         platform=args.mix_platform,
         charge_method=args.mix_charge_method,
     )
+
+
+def collect_mixing_skips(args: argparse.Namespace, output_dir: Path,
+                         log: logging.Logger) -> list[int]:
+    """Cycle indices whose classical mixing was gracefully skipped.
+
+    Surfaces graceful mixing skips (WM-P4 de-clash safety net, specs/decisions.md
+    追補 2026-07-18): a cycle whose classical mixing diverged even after de-clash
+    + minimize + warm-up is skipped (pre-mixing MLIP state kept) rather than
+    crashing the run. De-clash should make this near-zero; a non-trivial tally
+    (say > 2 of n_cycles) is a RED FLAG that the measurement is compromised, so
+    it is recorded here for the analysis to check.
+
+    ``log`` is the caller's logger so the warning keeps the driver's name.
+    """
+    skipped: list[int] = []
+    mixing_log = output_dir / 'mixing.jsonl'
+    if args.mix and mixing_log.exists():
+        for raw in mixing_log.read_text(encoding='utf-8').splitlines():
+            if not raw.strip():
+                continue
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if rec.get('skipped'):
+                skipped.append(rec.get('cycle'))
+    if skipped:
+        log.warning(
+            'Mixing was SKIPPED on %d/%d cycle(s): %s. De-clash should make this '
+            'near-zero — investigate the packing/geometry if this is non-trivial.',
+            len(skipped), args.n_cycles, skipped,
+        )
+    return skipped
+
+
+def mixing_summary_fields(args: argparse.Namespace,
+                          skipped_cycles: list[int]) -> dict:
+    """The mixing block of a driver's summary.json (decisions.md 2026-08-04).
+
+    Every knob is None when ``--mix`` is off (unresolved sentinels), so a
+    non-mixing run's provenance stays explicit rather than silently absent.
+    Key order is part of the contract: splice this with ``**`` where the vinyl
+    driver already writes these keys so its summary.json stays byte-identical.
+    """
+    return {
+        'mixing_enabled': args.mix,
+        'mix_ps': args.mix_ps,
+        'mix_settle_steps': args.mix_settle_steps,
+        'mix_timestep_fs': args.mix_timestep_fs if args.mix else None,
+        'mix_platform': args.mix_platform if args.mix else None,
+        'mix_charge_method': args.mix_charge_method if args.mix else None,
+        # Graceful mixing-skip tally (WM-P4 de-clash safety net): cycle indices
+        # whose classical mixing diverged and was skipped. Empty is the healthy
+        # case; a non-trivial count flags a compromised measurement.
+        'mixing_skipped_cycles': skipped_cycles,
+        'n_mixing_skipped': len(skipped_cycles),
+    }

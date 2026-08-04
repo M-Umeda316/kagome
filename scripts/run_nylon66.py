@@ -35,9 +35,11 @@ import numpy as np
 
 from scripts._mixing_cli import (
     add_mixing_arguments,
+    collect_mixing_skips,
     mix_config_from_args,
     mixing_setup_from_args,
     mixing_setup_mismatch,
+    mixing_summary_fields,
     resolve_mixing_args,
 )
 from scripts._systems import (
@@ -427,6 +429,7 @@ def main() -> None:
         'Confirmed formations: %d counted (%d total incl. water-forming), '
         'dissociations: %d', n_form, n_form_all, n_dissoc,
     )
+    mixing_skipped_cycles = collect_mixing_skips(args, args.output_dir, logger)
     summary = {
         'total_steps': state.step,
         'n_diamines': args.n_diamines,
@@ -444,6 +447,7 @@ def main() -> None:
         'minimize': args.minimize,
         'minimize_fmax': args.minimize_fmax,
         'equil_steps': args.equil_steps,
+        **mixing_summary_fields(args, mixing_skipped_cycles),
         'confirmed_formations': n_form,
         'confirmed_dissociations': n_dissoc,
         'n_reactive_sites': n_reactive_sites,

@@ -13,8 +13,11 @@ Covers:
 * ``MIX_KNOB_DEFAULTS`` and its resolution by ``resolve_mixing_args``;
 * the symmetric stray-knob guard (a knob without --mix is a usage error);
 * ``mix_config_from_args`` -> MixConfig field mapping;
-* end-to-end wiring in run_nylon66 / run_epoxy_amine: PolymerizationConfig.mixing
-  and checkpoint_extra['mixing'] with and without --mix;
+* ``collect_mixing_skips`` / ``mixing_summary_fields`` — the summary.json
+  provenance block, including the WM-P4 de-clash red-flag counter;
+* end-to-end wiring in run_nylon66 / run_epoxy_amine: PolymerizationConfig.mixing,
+  checkpoint_extra['mixing'] and the summary.json mixing block, with and
+  without --mix;
 * the nylon/epoxy guard that --mix with a failed bond-topology extraction is a
   hard error (mixing needs the topology; decisions.md 2026-08-04 nylon 固有ガード).
 
@@ -24,6 +27,8 @@ OpenMM/OpenFF are absent (same convention as test_workflow_mixing.py).
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import sys
 
 import pytest
@@ -33,10 +38,23 @@ from kagome.workflows.polymerization import MixConfig
 from scripts._mixing_cli import (
     MIX_KNOB_DEFAULTS,
     add_mixing_arguments,
+    collect_mixing_skips,
     mix_config_from_args,
     mixing_setup_from_args,
     mixing_setup_mismatch,
+    mixing_summary_fields,
     resolve_mixing_args,
+)
+
+_LOG = logging.getLogger('test_mixing_cli')
+
+# The summary.json mixing block, in order. Pinned because run_vinyl_copolymer
+# splices it with ** where it used to write the keys inline: a reorder or rename
+# would silently change that script's long-standing summary.json layout.
+MIXING_SUMMARY_KEYS = (
+    'mixing_enabled', 'mix_ps', 'mix_settle_steps', 'mix_timestep_fs',
+    'mix_platform', 'mix_charge_method', 'mixing_skipped_cycles',
+    'n_mixing_skipped',
 )
 
 
@@ -236,6 +254,75 @@ class TestMixConfigFromArgs:
         assert cfg.charge_method == 'nagl'
 
 
+# ── summary.json provenance (decisions.md 2026-08-04 追補) ────────────────────
+
+def _write_mixing_log(tmp_path, records) -> None:
+    (tmp_path / 'mixing.jsonl').write_text(
+        ''.join(json.dumps(r) + '\n' for r in records), encoding='utf-8')
+
+
+class TestCollectMixingSkips:
+
+    def test_no_log_file_is_empty(self, tmp_path):
+        assert collect_mixing_skips(_args(n_cycles=3), tmp_path, _LOG) == []
+
+    def test_mixing_off_ignores_an_existing_log(self, tmp_path):
+        _write_mixing_log(tmp_path, [{'cycle': 0, 'skipped': True}])
+        args = _args(mix=False, n_cycles=3)
+        assert collect_mixing_skips(args, tmp_path, _LOG) == []
+
+    def test_collects_only_skipped_cycles(self, tmp_path):
+        _write_mixing_log(tmp_path, [
+            {'cycle': 0, 'skipped': False},
+            {'cycle': 1, 'skipped': True, 'skip_reason': 'diverged'},
+            {'cycle': 2},                                   # no key => not skipped
+            {'cycle': 3, 'skipped': True},
+        ])
+        args = _args(n_cycles=4)
+        assert collect_mixing_skips(args, tmp_path, _LOG) == [1, 3]
+
+    def test_blank_and_malformed_lines_are_tolerated(self, tmp_path):
+        (tmp_path / 'mixing.jsonl').write_text(
+            '\n{"cycle": 0, "skipped": true}\nnot json\n\n', encoding='utf-8')
+        args = _args(n_cycles=2)
+        assert collect_mixing_skips(args, tmp_path, _LOG) == [0]
+
+    def test_skips_are_warned(self, tmp_path, caplog):
+        _write_mixing_log(tmp_path, [{'cycle': 1, 'skipped': True}])
+        with caplog.at_level(logging.WARNING, logger='test_mixing_cli'):
+            collect_mixing_skips(_args(n_cycles=2), tmp_path, _LOG)
+        assert 'SKIPPED' in caplog.text
+
+
+class TestMixingSummaryFields:
+
+    def test_key_order_is_pinned(self):
+        assert tuple(mixing_summary_fields(_args(), [])) == MIXING_SUMMARY_KEYS
+
+    def test_mixing_on(self):
+        fields = mixing_summary_fields(_args(), [2, 5])
+        assert fields['mixing_enabled'] is True
+        assert fields['mix_ps'] == 1.0
+        assert fields['mix_settle_steps'] == 100
+        assert fields['mix_timestep_fs'] == 0.5
+        assert fields['mix_platform'] == 'CPU'
+        assert fields['mix_charge_method'] == 'nagl'
+        assert fields['mixing_skipped_cycles'] == [2, 5]
+        assert fields['n_mixing_skipped'] == 2
+
+    def test_mixing_off_is_all_none(self):
+        """--mix off leaves every knob at its None sentinel, so the block stays
+        explicit (recorded as off) rather than absent."""
+        off = argparse.Namespace(
+            mix=False, temperature=300.0,
+            **{knob: None for knob in MIX_KNOB_DEFAULTS})
+        fields = mixing_summary_fields(off, [])
+        assert fields['mixing_enabled'] is False
+        assert all(fields[k] is None for k in MIXING_SUMMARY_KEYS[1:6])
+        assert fields['mixing_skipped_cycles'] == []
+        assert fields['n_mixing_skipped'] == 0
+
+
 # ── driver wiring: run_nylon66 / run_epoxy_amine ──────────────────────────────
 
 def _run_driver(monkeypatch, module, argv: list[str]) -> dict:
@@ -265,6 +352,10 @@ def _run_driver(monkeypatch, module, argv: list[str]) -> dict:
     return captured
 
 
+def _summary(tmp_path) -> dict:
+    return json.loads((tmp_path / 'summary.json').read_text(encoding='utf-8'))
+
+
 def _nylon_argv(tmp_path, *extra: str) -> list[str]:
     return [
         'run_nylon66.py', '--output-dir', str(tmp_path),
@@ -288,6 +379,12 @@ class TestNylonWiring:
         cap = _run_driver(monkeypatch, run_nylon66, _nylon_argv(tmp_path))
         assert cap['config'].mixing is None
         assert cap['run_kwargs']['checkpoint_extra'] == {'mixing': None}
+        summary = _summary(tmp_path)
+        assert set(MIXING_SUMMARY_KEYS) <= set(summary)
+        assert summary['mixing_enabled'] is False
+        assert summary['mix_ps'] is None
+        assert summary['mixing_skipped_cycles'] == []
+        assert summary['n_mixing_skipped'] == 0
 
     @requires_openmm
     def test_mix_builds_mixconfig_and_checkpoint_extra(self, monkeypatch, tmp_path):
@@ -315,6 +412,15 @@ class TestNylonWiring:
         }
         # mixing needs the bond topology, which must have been extracted
         assert cap['initial_bonds'] is not None
+        summary = _summary(tmp_path)
+        assert summary['mixing_enabled'] is True
+        assert summary['mix_ps'] == 2.0
+        assert summary['mix_settle_steps'] == 10
+        assert summary['mix_timestep_fs'] == 0.5
+        assert summary['mix_platform'] == 'Reference'
+        assert summary['mix_charge_method'] == 'gasteiger'
+        assert summary['mixing_skipped_cycles'] == []
+        assert summary['n_mixing_skipped'] == 0
 
     @requires_openmm
     def test_mix_without_bond_topology_is_a_hard_error(self, monkeypatch, tmp_path):
@@ -356,6 +462,11 @@ class TestEpoxyWiring:
         cap = _run_driver(monkeypatch, run_epoxy_amine, _epoxy_argv(tmp_path))
         assert cap['config'].mixing is None
         assert cap['run_kwargs']['checkpoint_extra'] == {'mixing': None}
+        summary = _summary(tmp_path)
+        assert set(MIXING_SUMMARY_KEYS) <= set(summary)
+        assert summary['mixing_enabled'] is False
+        assert summary['mix_ps'] is None
+        assert summary['n_mixing_skipped'] == 0
 
     @requires_openmm
     def test_mix_builds_mixconfig_and_checkpoint_extra(self, monkeypatch, tmp_path):
@@ -370,6 +481,14 @@ class TestEpoxyWiring:
         assert mixing.temperature_K == 333.0     # epoxy production setpoint
         assert cap['run_kwargs']['checkpoint_extra']['mixing']['mix_ps'] == 3.0
         assert cap['initial_bonds'] is not None
+        summary = _summary(tmp_path)
+        assert summary['mixing_enabled'] is True
+        assert summary['mix_ps'] == 3.0
+        assert summary['mix_settle_steps'] == 20
+        assert summary['mix_platform'] == 'Reference'
+        assert summary['mix_charge_method'] == 'gasteiger'
+        assert summary['mixing_skipped_cycles'] == []
+        assert summary['n_mixing_skipped'] == 0
 
     @requires_openmm
     def test_mix_without_bond_topology_is_a_hard_error(self, monkeypatch, tmp_path):
