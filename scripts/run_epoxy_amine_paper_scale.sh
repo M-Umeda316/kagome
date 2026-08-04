@@ -26,6 +26,12 @@
 #   # E2 comparison formulation (Provenzano 5:2):
 #   N_AMINES=40 OUTPUT_DIR=runs/epoxy_e2_seed7 bash scripts/run_epoxy_amine_paper_scale.sh
 #
+#   # Well-mixed measurement mode (NOT paper-faithful; opt-in per-cycle classical
+#   # mixing that refreshes the reactive neighbourhood, decisions.md 2026-08-04):
+#   MIX=1 MIX_PLATFORM=CUDA OUTPUT_DIR=runs/epoxy_mix_seed7 bash scripts/run_epoxy_amine_paper_scale.sh
+#   # mix_ps defaults to 25 ps (WM-P5b, derived on a 40-monomer system) — watch
+#   # mixing.jsonl and summary.json n_mixing_skipped over the first cycles.
+#
 # Estimated wall-clock: LONG. ~3500 MD steps/cycle over ~5900 atoms at ~1.9 s/step
 # ≈ 1.8 h/cycle eager; N_CYCLES=100 is on the order of a week. Fully resumable —
 # run in chunks with RESUME=1 and raise N_CYCLES as conversion climbs. Judge
@@ -96,6 +102,11 @@ build_resume_flag
 # measured on (decisions.md 2026-07-23).
 build_perf_flags
 
+# MIX=1 (+ optional MIX_PS / MIX_SETTLE_STEPS / MIX_PLATFORM) enables the
+# per-cycle classical mixing stage; see build_mix_flags in
+# _paper_scale_common.sh and the RUN IT note above (decisions.md 2026-08-04).
+build_mix_flags
+
 echo "=== Epoxy-amine paper-scale run ==="
 echo "  Python:         ${PYTHON}"
 echo "  Seed:           ${SEED}"
@@ -106,6 +117,7 @@ echo "  Ensemble:       $( [ -n "${BAROSTAT_FLAG}" ] && echo 'NVT (--no-barostat
 echo "  Schedule:       ${N_CYCLES} cycles x (${BIASED_STEPS} biased + ${UNBIASED_STEPS} unbiased), f2=${F2}, T=${TEMPERATURE} K"
 echo "  Resume:         $( [ -n "${RESUME_FLAG}" ] && echo yes || echo 'no (fresh; checkpoints written each cycle)' )"
 echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off || echo on ), compile=$( [ "${COMPILE}" = "1" ] && echo on || echo off )"
+echo "  Mixing:         $(mix_status)"
 echo ""
 
 check_vram 28000 "epoxy-amine ~5900 atoms; estimated ~27 GB (extrapolated from 16 GB-machine half-scale measurements, paper-scale not yet measured) — shrink N_EPOXIES/N_AMINES if OOM, e.g. N_EPOXIES=50 N_AMINES=25"
@@ -130,6 +142,7 @@ echo "Starting run..."
     --backend orb \
     --device "${DEVICE}" \
     ${PERF_FLAGS} \
+    ${MIX_FLAGS} \
     ${BAROSTAT_FLAG} \
     ${RESUME_FLAG}
 

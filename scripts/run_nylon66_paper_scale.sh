@@ -21,6 +21,15 @@
 #   # every cycle by default; resume skips build/minimize/equilibration):
 #   RESUME=1 OUTPUT_DIR=runs/nylon_paper_seed7 bash scripts/run_nylon66_paper_scale.sh
 #
+#   # Well-mixed measurement mode (NOT paper-faithful) — the answer to the
+#   # no-mixing paper-scale plateau at p≈12% (decisions.md 2026-08-04):
+#   MIX=1 MIX_PLATFORM=CUDA OUTPUT_DIR=runs/nylon_mix_seed7 bash scripts/run_nylon66_paper_scale.sh
+#   # NOTE: mix_ps=25 was derived on a 40-monomer system (WM-P5b), NOT at paper
+#   # scale. Check the first few dozen cycles before leaning on it: mixing.jsonl
+#   # RMS displacement should show real diffusion, and summary.json
+#   # n_mixing_skipped must stay near zero (a non-trivial tally means the
+#   # measurement is compromised). See decisions.md 2026-08-04 / 追補 2026-07-22.
+#
 # Estimated wall-clock: LONG (a Carothers curve needs many cycles). Each cycle is
 # ~4000 MD steps over ~4400 atoms; budget on the order of minutes/cycle on a
 # modern GPU, so N_CYCLES=200 is many hours. The run is fully resumable — run it
@@ -85,6 +94,11 @@ build_resume_flag
 # measured on (decisions.md 2026-07-23).
 build_perf_flags
 
+# MIX=1 (+ optional MIX_PS / MIX_SETTLE_STEPS / MIX_PLATFORM) enables the
+# per-cycle classical mixing stage; see build_mix_flags in
+# _paper_scale_common.sh and the RUN IT note above (decisions.md 2026-08-04).
+build_mix_flags
+
 echo "=== Nylon-6,6 paper-scale run ==="
 echo "  Python:         ${PYTHON}"
 echo "  Seed:           ${SEED}"
@@ -95,6 +109,7 @@ echo "  Ensemble:       $( [ -n "${BAROSTAT_FLAG}" ] && echo 'NVT (--no-barostat
 echo "  Schedule:       ${N_CYCLES} cycles x (${BIASED_STEPS} biased + ${UNBIASED_STEPS} unbiased), f2=${F2}, T=${TEMPERATURE} K"
 echo "  Resume:         $( [ -n "${RESUME_FLAG}" ] && echo yes || echo 'no (fresh; checkpoints written each cycle)' )"
 echo "  Perf:           empty_cache=$( [ "${NO_EMPTY_CACHE}" = "1" ] && echo off || echo on ), compile=$( [ "${COMPILE}" = "1" ] && echo on || echo off )"
+echo "  Mixing:         $(mix_status)"
 echo ""
 
 check_vram 24000 "nylon66 ~4400 atoms; wants >=24 GB — shrink N_DIAMINES/N_DIACIDS if OOM, e.g. N_DIAMINES=50 N_DIACIDS=50"
@@ -119,6 +134,7 @@ echo "Starting run..."
     --backend orb \
     --device "${DEVICE}" \
     ${PERF_FLAGS} \
+    ${MIX_FLAGS} \
     ${BAROSTAT_FLAG} \
     ${RESUME_FLAG}
 
